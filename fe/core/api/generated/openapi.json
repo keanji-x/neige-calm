@@ -1005,6 +1005,145 @@
             }
           }
         }
+      },
+      "post": {
+        "tags": [
+          "tracks"
+        ],
+        "summary": "Use the existing allocation owner; the URL is the authoritative Area.",
+        "operationId": "create_area_track",
+        "parameters": [
+          {
+            "name": "area_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateTrackRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Track created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TrackWire"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid creation request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthorized`: no valid session cookie.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Area or creation source outside share scope",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Area not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Creation conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "`payload_too_large`: the body is over the request size limit.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "`unsupported_media_type`: the request does not say `Content-Type: application/json`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`invalid_body`: the JSON is not the body's shape (a field missing or of the wrong type).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Creation currently unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/api/areas/{id}": {
@@ -1331,7 +1470,7 @@
             }
           },
           "400": {
-            "description": "`bad_request`: the body is not parseable JSON, or a path or query parameter does not parse.",
+            "description": "Invalid creation request",
             "content": {
               "application/json": {
                 "schema": {
@@ -5612,6 +5751,59 @@
         }
       }
     },
+    "/api/fs/roots": {
+      "get": {
+        "tags": [
+          "fs"
+        ],
+        "operationId": "roots",
+        "responses": {
+          "200": {
+            "description": "Accessible filesystem roots",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthorized`: no valid session cookie.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Deployment owner or scoped share required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/github/preview": {
       "get": {
         "tags": [
@@ -9277,17 +9469,16 @@
         }
       }
     },
-    "/api/share/{token}": {
+    "/api/share-links/{id}/access": {
       "get": {
         "tags": [
           "share_links"
         ],
-        "operationId": "resolve",
+        "operationId": "access",
         "parameters": [
           {
-            "name": "token",
+            "name": "id",
             "in": "path",
-            "description": "Shared resource identifier",
             "required": true,
             "schema": {
               "type": "string"
@@ -9296,11 +9487,11 @@
         ],
         "responses": {
           "200": {
-            "description": "Shared resource",
+            "description": "Locked expiry or unlocked scope",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/SharedTarget"
+                  "$ref": "#/components/schemas/ShareAccessStatus"
                 }
               }
             }
@@ -9315,28 +9506,8 @@
               }
             }
           },
-          "403": {
-            "description": "Share authority no longer current",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
           "404": {
-            "description": "Active share or resource not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "Resource revision or read contract changed",
+            "description": "Share unavailable",
             "content": {
               "application/json": {
                 "schema": {
@@ -9361,204 +9532,16 @@
         ]
       }
     },
-    "/api/share/{token}/events": {
-      "get": {
-        "tags": [
-          "share_links"
-        ],
-        "operationId": "upgrade",
-        "parameters": [
-          {
-            "name": "token",
-            "in": "path",
-            "description": "Share access token",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "101": {
-            "description": "Scope-only invalidation WebSocket"
-          },
-          "400": {
-            "description": "`bad_request`: a path or query parameter does not parse.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Share authority no longer current",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Active share not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "Internal error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {}
-        ]
-      }
-    },
-    "/api/share/{token}/tracks/{track_id}/conversations": {
-      "get": {
-        "tags": [
-          "share_links"
-        ],
-        "operationId": "conversations",
-        "parameters": [
-          {
-            "name": "token",
-            "in": "path",
-            "description": "Shared resource identifier",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "track_id",
-            "in": "path",
-            "description": "Shared resource identifier",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Shared resource",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/components/schemas/TrackConversationSummary"
-                  }
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "`bad_request`: a path or query parameter does not parse.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Share authority no longer current",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Active share or resource not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "Resource revision or read contract changed",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "Internal error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {}
-        ]
-      }
-    },
-    "/api/share/{token}/tracks/{track_id}/conversations/{card_id}/input": {
+    "/api/share-links/{id}/unlock": {
       "post": {
         "tags": [
           "share_links"
         ],
-        "operationId": "send",
+        "operationId": "unlock",
         "parameters": [
           {
-            "name": "token",
+            "name": "id",
             "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "track_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "card_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "Idempotency-Key",
-            "in": "header",
-            "description": "Required source-bound receipt key",
             "required": true,
             "schema": {
               "type": "string"
@@ -9569,7 +9552,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/ShareInputRequest"
+                "$ref": "#/components/schemas/UnlockShareLinkRequest"
               }
             }
           },
@@ -9577,17 +9560,17 @@
         },
         "responses": {
           "200": {
-            "description": "Accepted or active source receipt replayed",
+            "description": "Unlocked; isolated session cookie set",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/SendPlannerInputResponse"
+                  "$ref": "#/components/schemas/UnlockedShareLink"
                 }
               }
             }
           },
           "400": {
-            "description": "Invalid text or key",
+            "description": "Invalid request",
             "content": {
               "application/json": {
                 "schema": {
@@ -9597,7 +9580,7 @@
             }
           },
           "401": {
-            "description": "Deployment issuer unavailable",
+            "description": "Wrong token",
             "content": {
               "application/json": {
                 "schema": {
@@ -9607,7 +9590,7 @@
             }
           },
           "403": {
-            "description": "Share authority lost",
+            "description": "Cross-origin unlock",
             "content": {
               "application/json": {
                 "schema": {
@@ -9617,17 +9600,7 @@
             }
           },
           "404": {
-            "description": "Active shared conversation unavailable",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "Historical conversation or key conflict",
+            "description": "Share unavailable",
             "content": {
               "application/json": {
                 "schema": {
@@ -9666,786 +9639,18 @@
               }
             }
           },
-          "500": {
-            "description": "Internal error",
-            "content": {
-              "application/json": {
+          "429": {
+            "description": "Unlock throttled",
+            "headers": {
+              "Retry-After": {
                 "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {}
-        ]
-      }
-    },
-    "/api/share/{token}/tracks/{track_id}/conversations/{card_id}/items": {
-      "get": {
-        "tags": [
-          "share_links"
-        ],
-        "operationId": "items",
-        "parameters": [
-          {
-            "name": "token",
-            "in": "path",
-            "description": "Shared resource identifier",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "track_id",
-            "in": "path",
-            "description": "Shared resource identifier",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "card_id",
-            "in": "path",
-            "description": "Shared resource identifier",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "contract",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "oneOf": [
-                {
-                  "type": "null"
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
                 },
-                {
-                  "$ref": "#/components/schemas/ConversationReadContract"
-                }
-              ]
-            }
-          },
-          {
-            "name": "cursor",
-            "in": "query",
-            "description": "URL-encoded strict ConversationCursor JSON; exclusive with after_id.",
-            "required": false,
-            "schema": {
-              "type": [
-                "string",
-                "null"
-              ]
-            }
-          },
-          {
-            "name": "after_id",
-            "in": "query",
-            "description": "Legacy physical item cursor. Accepted only without contract on V1 history.",
-            "required": false,
-            "schema": {
-              "type": [
-                "integer",
-                "null"
-              ],
-              "format": "int64"
-            }
-          },
-          {
-            "name": "limit",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": [
-                "integer",
-                "null"
-              ],
-              "format": "int64"
-            }
-          },
-          {
-            "name": "direction",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "$ref": "#/components/schemas/ConversationItemsDirection"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Shared resource",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ConversationItemsReadResponse"
-                }
+                "description": "Seconds until retry"
               }
-            }
-          },
-          "400": {
-            "description": "`bad_request`: a path or query parameter does not parse.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Share authority no longer current",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Active share or resource not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "Resource revision or read contract changed",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "Internal error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {}
-        ]
-      }
-    },
-    "/api/share/{token}/tracks/{track_id}/conversations/{card_id}/live": {
-      "get": {
-        "tags": [
-          "share_links"
-        ],
-        "operationId": "live",
-        "parameters": [
-          {
-            "name": "token",
-            "in": "path",
-            "description": "Shared resource identifier",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "track_id",
-            "in": "path",
-            "description": "Shared resource identifier",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "card_id",
-            "in": "path",
-            "description": "Shared resource identifier",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "contract",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "oneOf": [
-                {
-                  "type": "null"
-                },
-                {
-                  "$ref": "#/components/schemas/ConversationReadContract"
-                }
-              ]
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Shared resource",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HarnessLiveReadResponse"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "`bad_request`: a path or query parameter does not parse.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Share authority no longer current",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Active share or resource not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "Resource revision or read contract changed",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "Internal error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {}
-        ]
-      }
-    },
-    "/api/share/{token}/tracks/{track_id}/conversations/{card_id}/run": {
-      "get": {
-        "tags": [
-          "share_links"
-        ],
-        "operationId": "run",
-        "parameters": [
-          {
-            "name": "token",
-            "in": "path",
-            "description": "Shared resource identifier",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "track_id",
-            "in": "path",
-            "description": "Shared resource identifier",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "card_id",
-            "in": "path",
-            "description": "Shared resource identifier",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Shared resource",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SharedRun"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "`bad_request`: a path or query parameter does not parse.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Share authority no longer current",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Active share or resource not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "Resource revision or read contract changed",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "Internal error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {}
-        ]
-      }
-    },
-    "/api/share/{token}/tracks/{track_id}/report": {
-      "get": {
-        "tags": [
-          "share_links"
-        ],
-        "operationId": "report",
-        "parameters": [
-          {
-            "name": "token",
-            "in": "path",
-            "description": "Shared resource identifier",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "track_id",
-            "in": "path",
-            "description": "Shared resource identifier",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Shared resource",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/TrackReportReadResponse"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "`bad_request`: a path or query parameter does not parse.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Share authority no longer current",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Active share or resource not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "Resource revision or read contract changed",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "Internal error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {}
-        ]
-      }
-    },
-    "/api/share/{token}/tracks/{track_id}/report/series": {
-      "get": {
-        "tags": [
-          "share_links"
-        ],
-        "operationId": "series",
-        "parameters": [
-          {
-            "name": "token",
-            "in": "path",
-            "description": "Shared resource identifier",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "track_id",
-            "in": "path",
-            "description": "Shared resource identifier",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "block_id",
-            "in": "query",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "rev",
-            "in": "query",
-            "required": true,
-            "schema": {
-              "type": "integer",
-              "format": "int64",
-              "minimum": 0
-            }
-          },
-          {
-            "name": "detail",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "$ref": "#/components/schemas/ReportSeriesDetail"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Shared resource",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ReportSeriesResolved"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "`bad_request`: a path or query parameter does not parse.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Share authority no longer current",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Active share or resource not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "Block revision changed",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ReportSeriesRevConflict"
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "Internal error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {}
-        ]
-      }
-    },
-    "/api/share/{token}/tracks/{track_id}/sources": {
-      "get": {
-        "tags": [
-          "share_links"
-        ],
-        "operationId": "sources",
-        "parameters": [
-          {
-            "name": "token",
-            "in": "path",
-            "description": "Shared resource identifier",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "track_id",
-            "in": "path",
-            "description": "Shared resource identifier",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Shared resource",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/TrackSourceList"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "`bad_request`: a path or query parameter does not parse.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Share authority no longer current",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Active share or resource not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "Resource revision or read contract changed",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "Internal error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {}
-        ]
-      }
-    },
-    "/api/share/{token}/tracks/{track_id}/sources/{source_id}": {
-      "get": {
-        "tags": [
-          "share_links"
-        ],
-        "operationId": "source",
-        "parameters": [
-          {
-            "name": "token",
-            "in": "path",
-            "description": "Shared resource identifier",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "track_id",
-            "in": "path",
-            "description": "Shared resource identifier",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "source_id",
-            "in": "path",
-            "description": "Shared resource identifier",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Shared resource",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/TrackSourceDetail"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "`bad_request`: a path or query parameter does not parse.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Share authority no longer current",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Active share or resource not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "Resource revision or read contract changed",
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -13995,7 +13200,7 @@
             }
           },
           "400": {
-            "description": "`bad_request`: the body is not parseable JSON, or a path or query parameter does not parse.",
+            "description": "Invalid creation request",
             "content": {
               "application/json": {
                 "schema": {
@@ -18502,7 +17707,7 @@
         "properties": {
           "attachments_supported": {
             "type": "boolean",
-            "description": "Whether this card can take image attachments at all: not when the track's workspace is an attached directory, since neige never writes into one. Answered by the same function the upload runs (`planner_attachments::attachment_root`)."
+            "description": "Whether this credential, backend and workspace support image input.\nGuest credentials accept text only. Upload and send enforce the same source\nrestriction; attached workspaces never accept uploaded images."
           },
           "blocked_reason": {
             "type": [
@@ -18531,7 +17736,7 @@
           },
           "manual_compact_supported": {
             "type": "boolean",
-            "description": "Whether the bound Planner backend implements manual context compaction. This is not\ncurrent admission: the compact POST still checks authorization, busy state and history.\nAnswered for dormant conversations too; managed ACP does not implement it."
+            "description": "Whether this credential and the bound backend support manual context compaction.\nAdvisory for dormant conversations too; POST rechecks live authorization,\nbusy state and history. Managed ACP has no implementation."
           },
           "model": {
             "type": [
@@ -20415,7 +19620,7 @@
             "properties": {
               "attachments_supported": {
                 "type": "boolean",
-                "description": "Whether this card can take image attachments at all: not when the track's workspace is an attached directory, since neige never writes into one. Answered by the same function the upload runs (`planner_attachments::attachment_root`)."
+                "description": "Whether this credential, backend and workspace support image input.\nGuest credentials accept text only. Upload and send enforce the same source\nrestriction; attached workspaces never accept uploaded images."
               },
               "blocked_reason": {
                 "type": [
@@ -20444,7 +19649,7 @@
               },
               "manual_compact_supported": {
                 "type": "boolean",
-                "description": "Whether the bound Planner backend implements manual context compaction. This is not\ncurrent admission: the compact POST still checks authorization, busy state and history.\nAnswered for dormant conversations too; managed ACP does not implement it."
+                "description": "Whether this credential and the bound backend support manual context compaction.\nAdvisory for dormant conversations too; POST rechecks live authorization,\nbusy state and history. Managed ACP has no implementation."
               },
               "model": {
                 "type": [
@@ -21991,6 +21196,52 @@
           }
         }
       },
+      "ShareAccessStatus": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "expiresAt",
+              "status"
+            ],
+            "properties": {
+              "expiresAt": {
+                "type": "integer",
+                "format": "int64"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "locked"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "scope",
+              "expiresAt",
+              "status"
+            ],
+            "properties": {
+              "expiresAt": {
+                "type": "integer",
+                "format": "int64"
+              },
+              "scope": {
+                "$ref": "#/components/schemas/ShareScope"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "unlocked"
+                ]
+              }
+            }
+          }
+        ]
+      },
       "ShareDelegation": {
         "type": "object",
         "required": [
@@ -22024,27 +21275,20 @@
         },
         "additionalProperties": false
       },
-      "ShareInputRequest": {
-        "type": "object",
-        "required": [
-          "text"
-        ],
-        "properties": {
-          "text": {
-            "type": "string"
-          }
-        },
-        "additionalProperties": false
-      },
       "ShareLink": {
         "type": "object",
-        "description": "Management projection deliberately contains no token or token hash.",
+        "description": "Owner-only management projection; guest endpoints never serialize this type.",
         "required": [
-          "delegation"
+          "delegation",
+          "expiresAt"
         ],
         "properties": {
           "delegation": {
             "$ref": "#/components/schemas/ShareDelegation"
+          },
+          "expiresAt": {
+            "type": "integer",
+            "format": "int64"
           },
           "revokedAt": {
             "type": [
@@ -22058,7 +21302,7 @@
       },
       "ShareLinkCreated": {
         "type": "object",
-        "description": "Secret returned only by creation. No endpoint can recover it later.",
+        "description": "Creation result; the secret is returned once and never persisted.",
         "required": [
           "link",
           "token"
@@ -22124,75 +21368,6 @@
             }
           }
         ]
-      },
-      "SharedRun": {
-        "type": "object",
-        "required": [
-          "card_id",
-          "phase",
-          "runtime_state"
-        ],
-        "properties": {
-          "card_id": {
-            "type": "string"
-          },
-          "phase": {
-            "oneOf": [
-              {
-                "type": "null"
-              },
-              {
-                "$ref": "#/components/schemas/HarnessPhaseTag"
-              }
-            ]
-          },
-          "runtime_state": {
-            "oneOf": [
-              {
-                "type": "null"
-              },
-              {
-                "$ref": "#/components/schemas/WorkerSessionState"
-              }
-            ]
-          }
-        },
-        "additionalProperties": false
-      },
-      "SharedTarget": {
-        "type": "object",
-        "required": [
-          "scope",
-          "tracks"
-        ],
-        "properties": {
-          "scope": {
-            "$ref": "#/components/schemas/ShareScope"
-          },
-          "tracks": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/SharedTrack"
-            }
-          }
-        },
-        "additionalProperties": false
-      },
-      "SharedTrack": {
-        "type": "object",
-        "required": [
-          "id",
-          "title"
-        ],
-        "properties": {
-          "id": {
-            "type": "string"
-          },
-          "title": {
-            "type": "string"
-          }
-        },
-        "additionalProperties": false
       },
       "SideConversation": {
         "type": "object",
@@ -24370,6 +23545,35 @@
             "description": "Upper bound (inclusive) in unix milliseconds. Track is included\nwhen `created_at <= until`. Omitting disables the upper-bound\nfilter."
           }
         }
+      },
+      "UnlockShareLinkRequest": {
+        "type": "object",
+        "required": [
+          "token"
+        ],
+        "properties": {
+          "token": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "UnlockedShareLink": {
+        "type": "object",
+        "required": [
+          "scope",
+          "expiresAt"
+        ],
+        "properties": {
+          "expiresAt": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "scope": {
+            "$ref": "#/components/schemas/ShareScope"
+          }
+        },
+        "additionalProperties": false
       },
       "UpdateRecipeBody": {
         "type": "object",

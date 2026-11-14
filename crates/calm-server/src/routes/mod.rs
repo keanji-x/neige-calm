@@ -50,7 +50,7 @@ pub mod read_receipts;
 pub mod settings;
 pub mod share_input;
 pub mod share_links;
-pub mod share_reads;
+pub mod share_unlock;
 pub mod task_recovery;
 pub mod terminal;
 pub mod terminal_cards;

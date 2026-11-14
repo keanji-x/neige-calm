@@ -547,3 +547,31 @@ it('uses the generic navigation header contract without an app host', async () =
     trackPage.style.removeProperty('--navigation-header-height');
   }
 });
+
+it('previews the compact share arrow, menu entry and inline owner links on desktop', async () => {
+  await browserPage.viewport(1280, 900);
+  const onShare = vi.fn();
+  renderPage({ onShareTrack: onShare, shareLinks: <section aria-label="分享链接">
+    <h2>分享链接 · 1</h2><span>报告链接 · …abcdef</span>
+  </section> });
+  const trigger = browserPage.getByRole('button', { name: '分享', exact: true });
+  await expect.element(trigger).toBeVisible();
+  expect(trigger.element().textContent).toBe('');
+  expect(trigger.element().querySelector('svg')).toBeTruthy();
+  await trigger.click();
+  expect(onShare).toHaveBeenCalledWith(expect.objectContaining({ kind: 'anchor' }));
+  await browserPage.getByRole('button', { name: /^Track actions for / }).click();
+  await browserPage.getByRole('menuitem', { name: 'Share track', exact: true }).click();
+  expect(onShare).toHaveBeenCalledTimes(2);
+  await expect.element(browserPage.getByText('报告链接 · …abcdef', { exact: true })).toBeVisible();
+});
+
+it('keeps owner sharing controls and the share-link group off the mobile surface', async () => {
+  await browserPage.viewport(390, 844);
+  renderPage({ onShareTrack: vi.fn(), shareLinks: <section aria-label="分享链接">Owner links</section> });
+  await expect.element(browserPage.getByRole('button', { name: 'Track actions', exact: true })).toBeVisible();
+  expect(document.querySelector('button[aria-label="分享"]')).toBeNull();
+  expect(document.querySelector('section[aria-label="分享链接"]')).toBeNull();
+  await browserPage.getByRole('button', { name: 'Track actions', exact: true }).click();
+  expect(document.querySelector('[role="menu"]')?.textContent).not.toContain('Share track');
+});

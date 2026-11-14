@@ -256,10 +256,11 @@ where
     Ok(())
 }
 
-fn cors_allowed_headers() -> [axum::http::HeaderName; 2] {
+fn cors_allowed_headers() -> [axum::http::HeaderName; 3] {
     [
         axum::http::header::CONTENT_TYPE,
         axum::http::HeaderName::from_static("idempotency-key"),
+        axum::http::HeaderName::from_static("x-calm-share-link"),
     ]
 }
 

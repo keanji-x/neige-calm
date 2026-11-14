@@ -206,6 +206,9 @@ pub trait RepoRead: Send + Sync + 'static {
     ) -> Result<Option<TrackAreaMembership>>;
     /// Active link, actual target parent and requested Track from one autocommit snapshot.
     /// The supplied issuer must currently have Delete access to the User Area.
+    /// Digest lookup by public link id. The application still verifies live access.
+    async fn share_track_tree_contains(&self, root: &str, track: &str) -> Result<bool>;
+    async fn share_link_hash(&self, id: &str) -> Result<Option<String>>;
     async fn share_link_read_facts(
         &self,
         token_hash: &str,
@@ -215,14 +218,6 @@ pub trait RepoRead: Send + Sync + 'static {
     async fn card_track_id(&self, card_id: &str) -> Result<Option<String>>;
     async fn conversation_read_frame(&self, card_id: &str) -> Result<ConversationReadFrame>;
     async fn conversation_presentation_page(
-        &self,
-        card_id: &str,
-        after: i64,
-        limit: i64,
-        descending: bool,
-    ) -> Result<calm_types::conversation_display::ConversationPage>;
-    /// Published conversation content only: unclaimed private revisions/observations stay private.
-    async fn conversation_published_page(
         &self,
         card_id: &str,
         after: i64,

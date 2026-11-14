@@ -1,0 +1,384 @@
+@layer features {
+    @layer components {
+
+  /* Injected panel modules own their existing inline inset. */
+  .panelContext { min-inline-size: 0; margin-inline: calc(var(--space-3) * -1); }
+
+  .workCard { flex-shrink: 0; }
+
+  .relatedContent { display: flex; flex-direction: column; gap: 0; margin-inline: calc(var(--space-1) * -1); }
+
+  .workspaceConversations {
+    position: relative;
+    padding-inline-end: var(--control-h-sm);
+  }
+
+  .conversationAction {
+    position: absolute;
+    inset-inline-end: 0;
+    inset-block-start: 0;
+    min-block-size: var(--row-h);
+    display: flex;
+    align-items: center;
+    opacity: 0;
+  }
+
+  .workspaceConversations:hover .conversationAction,
+  .workspaceConversations:focus-within .conversationAction { opacity: 1; }
+  @media (hover: none) { .conversationAction { opacity: 1; } }
+
+  .cards {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    margin-inline: calc(var(--space-1) * -1);
+    /* Flat tools own their scrollport; task groups keep their shared budget. */
+    max-block-size: calc(var(--row-h) * 8);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    scrollbar-width: thin;
+  }
+
+  /* Shared metadata measures keep both inventories on the same column lines. */
+  .cardItem,
+  .taskRow {
+    font-size: var(--font-step-1-size);
+  }
+
+  .cardRow {
+    display: grid;
+    grid-template-columns: var(--glyph-sm) minmax(0, 1fr);
+    align-items: start;
+    gap: var(--space-2);
+    inline-size: 100%;
+    min-block-size: var(--row-h);
+    padding-inline: var(--space-1);
+    border-radius: var(--radius-highlight);
+    color: inherit;
+    cursor: pointer;
+    text-align: start;
+  }
+
+  .cardRow:hover,
+  .cardRow:focus-visible {
+    background: var(--overlay-hover);
+  }
+
+  /* Delete uses reserved title space; the type stays at the trailing edge. */
+  .cardItem {
+    position: relative;
+  }
+
+  .cardRemove {
+    line-height: 1;
+    position: absolute;
+    inset-block-start: calc(var(--row-h) / 2);
+    inset-inline-end: var(--space-1);
+    display: grid;
+    place-items: center;
+    inline-size: var(--control-h-sm);
+    block-size: var(--control-h-sm);
+    padding: 0;
+    border-radius: var(--radius-highlight);
+    color: var(--text-3);
+    opacity: 0;
+    cursor: pointer;
+    translate: 0 -50%;
+    transition: opacity var(--motion-quick) var(--ease-feedback),
+      background-color var(--motion-quick) var(--ease-feedback);
+
+    /* Hidden by opacity, never by `visibility`: `visibility: hidden` drops the
+       button out of the focus order, and `:focus-within` below would then never
+       fire — the keyboard path would lose the delete entirely (§2.6). */
+    pointer-events: none;
+  }
+
+  /* Before the descendant rule below, which stylelint's
+     `no-descending-specificity` requires and which costs nothing here: the two
+     say the same thing about `opacity`, and only this one adds a background. */
+  .cardRemove:hover,
+  .cardRemove:focus-visible {
+    opacity: 1;
+    pointer-events: auto;
+    background: var(--overlay-hover-strong);
+    color: var(--text);
+  }
+
+  .cardItem:hover .cardRemove,
+  .cardItem:focus-within .cardRemove {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  .cardName {
+    grid-column: 2;
+    grid-row: 1;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    column-gap: var(--space-2);
+    align-items: center;
+    min-inline-size: 0;
+    min-block-size: var(--row-h);
+  }
+
+  .toolStatuses {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+  }
+
+  .toolStatus {
+    white-space: nowrap;
+    text-transform: capitalize;
+  }
+
+  .cardMeta {
+    grid-column: 1 / -1;
+    display: flex;
+    min-inline-size: 0;
+    padding-block-end: var(--space-1);
+    text-transform: capitalize;
+  }
+
+  .cardContext {
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    text-transform: none;
+  }
+
+  .cardNameRemovable {
+    padding-inline-end: calc(var(--control-h-sm) + var(--space-1));
+  }
+
+  .cardKind {
+    flex: 1 1 auto;
+    min-inline-size: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  /*
+   * A task row: the key, and a word only when the state is not the ordinary
+   * one. Same skeleton as `.cardRow` — same height, same bleed, same hover —
+   * because they are the same kind of row in the same card, and two shapes for
+   * one thing is how a panel starts looking assembled out of whatever was to
+   * hand.
+   */
+  .tasks {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    margin-inline: 0;
+  }
+
+  /*
+   * The row is the `<li>` now, not a button: it holds two controls (see
+   * `public.tsx`), and a button may not nest in a button. It keeps the box —
+   * height, bleed, radius — so CARDS and TASKS are still one shape, and the
+   * hover fill moves here so hovering *either* control lights the whole row,
+   * which is what tells the reader they are two parts of one thing.
+   *
+   * `position: relative` anchors the reveal control's full-row hit sheet.
+   */
+  .taskRow {
+    position: relative;
+    display: grid;
+    grid-template-columns: var(--glyph-sm) minmax(0, 1fr);
+    align-items: start;
+    /*
+     * `--space-4`, not `--space-2`, on the *trailing* cluster only.
+     *
+     * The key is `overflow: hidden` and truncates, so at a narrow panel this
+     * gap is the whole distance between an ellipsis and the next thing — at 4px
+     * the kind read as a suffix of the key rather than a separate column, which
+     * is what "挤" was. The leading pad stays `--space-2` so CARDS and TASKS
+     * still start on the same pixel (see `.cardRow`).
+     */
+    column-gap: var(--space-2);
+    row-gap: var(--space-0);
+    inline-size: 100%;
+    min-block-size: var(--row-h);
+    padding-inline: var(--space-1);
+    border-radius: var(--radius-highlight);
+  }
+
+  /*
+   * `:has(:focus-visible)`, not `:focus-within`.
+   *
+   * The row is an `<li>` and never takes focus itself, so `:focus-visible` on
+   * it (what `.cardRow` above uses, correctly, because that row *is* the
+   * button) can never match — which is how it became `:focus-within` and how
+   * the defect arrived with it. `:focus-within` fires on *pointer* focus, so a
+   * click left the row painted with `--overlay-hover` and the pointer long
+   * gone: a row that looked hovered until focus moved somewhere else. `:has()`
+   * lets the row ask for the thing `.cardRow` asks for — a descendant the
+   * browser decided deserves a visible ring — so the two row types in this one
+   * card behave the same way again.
+   */
+  .taskRow:hover,
+  .taskRow:has(:focus-visible) {
+    background: var(--overlay-hover);
+  }
+
+  /*
+   * The reveal control takes the whole row minus the kind, so "click the row"
+   * is true in the only sense a pointer knows: everything that is not the other
+   * control.
+   */
+  .taskReveal {
+    display: grid;
+    grid-column: 2;
+    grid-row: 1;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: var(--row-h);
+    align-items: center;
+    column-gap: var(--space-2);
+    row-gap: var(--space-0);
+    min-inline-size: 0;
+    color: inherit;
+    cursor: pointer;
+    text-align: start;
+  }
+
+  /* The invisible sheet makes every part of the row except the separately
+     positioned worker-kind button reveal the declaration. The status word is
+     inside this button and paints above the sheet so its native title remains
+     hoverable without creating another click target. */
+  .taskReveal::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+  }
+
+  /* Names share the primary text size and left edge of card rows. */
+  .taskKey {
+    grid-column: 1;
+    grid-row: 1;
+    min-inline-size: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  /* Both are the quiet rank: this column says "not the ordinary case", and the
+     panel is greyscale. A ready, undispatched task prints nothing at all, so
+     there is no pair of words here competing to be read.
+
+     `.taskNote` covers both halves of the column — the declaration words and
+     the runtime ones (`running · codex`, `pending`, `failed`).
+     Deliberately one rank rather than a status palette: colour here would put
+     four hues in a greyscale panel to restate a word that is already legible,
+     and `failed` would then be the loudest thing on a page whose actual subject
+     is the document. */
+  .taskNote,
+  .taskWithdrawn {
+    flex: none;
+  }
+
+  /* A compact roll-up belongs in the Tasks head, where a long-running Track
+     can be scanned without opening each worker card. It is intentionally
+     quiet and single-line; every row below still carries the full status and
+     server-provided reason. */
+  .taskSummary {
+    margin-inline-end: var(--control-h-sm);
+    font-variant-numeric: tabular-nums;
+    max-inline-size: 75%;
+    min-inline-size: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    text-align: end;
+  }
+
+  .taskWithdrawn {
+    text-decoration: line-through;
+  }
+
+  /*
+   * ── The worker kind ──────────────────────────────────────────────────────
+   *
+   * One word, two elements, and the difference between them is the whole point:
+   * a `<span>` when there is no worker card (a codex row today — the registry
+   * has no adapter, so `app/router` cleared the id), a `<button>` when there
+   * is. They share every typographic property, because the fact is the same
+   * fact; what a control adds is the things a control has — a pointer cursor,
+   * an underline offer on hover, a focus ring of its own.
+   *
+   * The quiet rank, like `.cardKindTag`: the kind is a fact about the row, not
+   * the row's subject, and making the only clickable word the loudest one would
+   * invert that.
+   */
+  .taskKind,
+  .taskKindButton {
+    grid-column: 1;
+    grid-row: 1;
+    inline-size: var(--control-h-sm);
+    min-block-size: var(--row-h);
+    align-self: start;
+    display: flex;
+    align-items: center;
+    justify-content: flex-start;
+    text-align: start;
+    overflow: hidden;
+    white-space: nowrap;
+  }
+
+  /* Full row height, so the target is a 28px band and not an 11px line of type
+     — the word is small because it is quiet, which is a typographic decision
+     and must not also be a pointing one. */
+  .taskKindButton {
+    /* Positioned so it paints above `.taskReveal::before`, which covers the
+       whole row — an unpositioned sibling would sit under that sheet and lose
+       its click. Nothing here depends on where `relative` puts it. */
+    position: relative;
+    display: flex;
+    align-items: center;
+    align-self: start;
+    border-radius: var(--radius-highlight);
+    color: var(--text-2);
+    cursor: pointer;
+  }
+
+  .taskKindButton:hover,
+  .taskKindButton:focus-visible {
+    color: var(--text);
+    text-decoration: underline;
+  }
+
+
+  .cardKindTag {
+    display: flex;
+    align-items: center;
+    justify-content: flex-start;
+    grid-column: 1;
+    grid-row: 1;
+    min-block-size: var(--row-h);
+    text-align: end;
+    overflow: hidden;
+    white-space: nowrap;
+  }
+
+  /* The inline empty state: one line of hint-toned text in a dashed row-height
+     box. Dashed is the difference between "a container with nothing in it" and
+     "something is here". */
+  .inlineEmpty {
+    font-size: var(--font-step-1-size);
+    font-weight: var(--weight-normal);
+    line-height: var(--font-step-1-line);
+    display: flex;
+    align-items: center;
+    min-block-size: var(--row-h);
+    padding-inline: var(--space-2);
+    border: 1px dashed var(--hairline);
+    border-radius: var(--radius-sm);
+    color: var(--text-3);
+  }
+  @media (width >= 60rem) {
+
+    .taskSummary {
+      margin-inline-end: 0;
+      text-align: end;
+    }
+  } } }

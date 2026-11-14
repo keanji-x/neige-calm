@@ -42,10 +42,13 @@ async fn upgrade(
     ws: WebSocketUpgrade,
     Path(id): Path<String>,
     State(s): State<AppState>,
+    scope: Option<axum::Extension<crate::share_access::scope::ShareAccessScope>>,
 ) -> impl IntoResponse {
     match resolve_live_renderer(&s, &id).await {
         Ok(LiveRenderer::Alive(entry)) => ws
-            .on_upgrade(move |socket| handle_renderer(socket, entry, id))
+            .on_upgrade(move |socket| {
+                handle_renderer_scoped(socket, entry, id, s, scope.map(|s| s.0))
+            })
             .into_response(),
         Ok(LiveRenderer::ChildExited { exit_code }) => ws
             .on_upgrade(move |socket| send_child_exited_close(socket, exit_code))
@@ -216,13 +219,63 @@ pub(crate) async fn resolve_live_renderer_under_track_fence(
     }
 }
 
-async fn handle_renderer(socket: WebSocket, entry: Arc<RendererEntry>, terminal_id: String) {
+async fn handle_renderer_scoped(
+    socket: WebSocket,
+    entry: Arc<RendererEntry>,
+    terminal_id: String,
+    state: AppState,
+    scope: Option<crate::share_access::scope::ShareAccessScope>,
+) {
+    let Some(scope) = scope else {
+        return handle_renderer(
+            socket,
+            entry,
+            terminal_id,
+            crate::terminal_renderer::ClientInputScope::InteractiveUser,
+        )
+        .await;
+    };
+    let mut wake = state.events.subscribe_access_changes();
+    let mut events = state.events.subscribe();
+    let mut session_changes = scope.subscribe_session_changes();
+    let input_scope = scope.terminal_input_scope(&state, &terminal_id);
+    if !input_scope.allowed().await {
+        return;
+    }
+    let remaining = (scope.read.link.expires_at - crate::model::now_ms()).max(0) as u64;
+    let revoked = async {
+        loop {
+            tokio::select! {
+                _ = wake.changed() => {},
+                _ = events.recv() => {},
+                _ = session_changes.changed() => {},
+            }
+            #[cfg(feature = "fixtures")]
+            crate::test_seams::pause_point("share-terminal-before-recheck", &terminal_id).await;
+            if !input_scope.allowed().await {
+                break;
+            }
+        }
+    };
+    tokio::select! {
+        _ = handle_renderer(socket, entry.clone(), terminal_id.clone(), input_scope.clone()) => {},
+        _ = revoked => {},
+        _ = tokio::time::sleep(Duration::from_millis(remaining)) => {},
+    }
+}
+
+async fn handle_renderer(
+    socket: WebSocket,
+    entry: Arc<RendererEntry>,
+    terminal_id: String,
+    input_scope: crate::terminal_renderer::ClientInputScope,
+) {
     let (incoming_tx, incoming_rx) = mpsc::channel::<ClientMsg>(64);
     let (outgoing_tx, mut outgoing_rx) = mpsc::channel::<DaemonMsg>(256);
     let event_rx = entry.subscribe();
     let ctx = ClientPumpContext {
         input_barrier: entry.handle.input_barrier.clone(),
-        input_scope: crate::terminal_renderer::ClientInputScope::InteractiveUser,
+        input_scope,
         event_rx,
         event_tx: entry.handle.event_tx.clone(),
         render_plane: entry.handle.render_plane.clone(),

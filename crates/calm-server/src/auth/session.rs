@@ -37,6 +37,7 @@ pub struct Session {
 pub enum SessionAuthority {
     PasswordLogin,
     PairedDevice,
+    ShareLink,
 }
 
 /// Optional credential backend owned by the feature that issues its sessions.
@@ -47,13 +48,28 @@ pub(crate) trait SessionBackend: std::fmt::Debug + Send + Sync {
 }
 
 /// Process-local sessions with an optional feature-owned credential backend.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct SessionStore {
     inner: Arc<Mutex<HashMap<String, Session>>>,
     backend: Arc<Mutex<Option<Arc<dyn SessionBackend>>>>,
+    changes: tokio::sync::watch::Sender<()>,
+}
+
+impl Default for SessionStore {
+    fn default() -> Self {
+        Self {
+            inner: Default::default(),
+            backend: Default::default(),
+            changes: tokio::sync::watch::channel(()).0,
+        }
+    }
 }
 
 impl SessionStore {
+    pub(crate) fn subscribe_changes(&self) -> tokio::sync::watch::Receiver<()> {
+        self.changes.subscribe()
+    }
+
     pub fn new() -> Self {
         Self::default()
     }
@@ -98,6 +114,7 @@ impl SessionStore {
             .lock()
             .map_err(|_| CalmError::Internal("Session lock poisoned".into()))?
             .remove(id);
+        self.changes.send_replace(());
         if let Some(backend) = self
             .backend
             .lock()

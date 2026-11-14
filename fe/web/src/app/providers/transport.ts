@@ -17,7 +17,7 @@ async function readBody(response: Response): Promise<unknown> {
   }
 }
 
-export function createFetchTransport(): ApiTransportPort {
+export function createFetchTransport({ shareLinkId }: Readonly<{ shareLinkId?: string }> = {}): ApiTransportPort {
   return {
     async send(request: ApiRequest): Promise<ApiTransportResponse> {
       const controller = new AbortController();
@@ -29,7 +29,9 @@ export function createFetchTransport(): ApiTransportPort {
         const response = await fetch(request.path, {
           method: request.method,
           credentials: request.credentials,
-          ...(request.headers === undefined ? {} : { headers: { ...request.headers } }),
+          ...(request.headers === undefined && shareLinkId === undefined ? {} : {
+            headers: { ...request.headers, ...(shareLinkId === undefined ? {} : { 'X-Calm-Share-Link': shareLinkId }) },
+          }),
           /* A `Uint8Array` body is the bytes themselves: `JSON.stringify` of a typed array is `{"0":137,…}`,
            * which no type would catch. `content-type` comes from the operation's own headers. */
           ...(request.body === undefined ? {} : {

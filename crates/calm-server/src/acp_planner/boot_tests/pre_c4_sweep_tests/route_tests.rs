@@ -107,6 +107,7 @@ async fn repoint(provider: AgentProvider, proven: bool) {
     let harness = install_harness(&state, &row, provider).await;
     let before = status(&repo, &row).await;
     let result = crate::routes::tracks::update_track(
+        None,
         State(RouteState::from_ref(&state)),
         State(WorkerState::from_ref(&state)),
         crate::actor::Actor::server_send(),

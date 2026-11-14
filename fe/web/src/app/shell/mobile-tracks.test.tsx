@@ -150,3 +150,15 @@ describe('MobileTracks', () => {
     expect(screen.getByRole('button', { name: 'Responsive mobile UI, closed' }).textContent).toContain('Closed');
   });
 });
+
+it('omits owner sharing from mobile navigation menus', async () => {
+  render(<MobileTracks view="tracks" areas={[area]} tracksByArea={new Map([['c1', [track]]])} areaId="c1" currentTrackId="w1"
+    onBack={vi.fn()} onNewTrack={vi.fn()} onOpenSettings={vi.fn()} onCreateArea={vi.fn()} onSelectArea={vi.fn()} onEditArea={vi.fn()} onOpenTrack={vi.fn()}
+    trackActions={() => ({ areaPinned: false, onSetPinned: vi.fn(), onSetAreaPinned: vi.fn(), onMarkUnread: vi.fn() })}
+    isUnread={() => false} readError={null} readLoading={false} onRetryRead={vi.fn()} />);
+  await userEvent.click(screen.getByRole('button', { name: 'Area actions' }));
+  expect(screen.queryByRole('menuitem', { name: 'Share area' })).toBeNull();
+  await userEvent.keyboard('{Escape}');
+  await userEvent.click(screen.getByRole('button', { name: 'Actions for track Responsive mobile UI' }));
+  expect(screen.queryByRole('menuitem', { name: 'Share track' })).toBeNull();
+});

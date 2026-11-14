@@ -1,5 +1,5 @@
 import type { ComponentType } from 'react';
-import { ChartColumn, Search, Star, ArrowLeft, ArrowRightLeft, ArrowUp, Bell, Bot, CalendarDays, ChevronLeft, ChevronRight, Circle, CircleCheck, CircleStop, CircleX, Clock3, Ellipsis, File, Folder, Link2, ListChecks, Maximize, Menu, MessageSquare, Minimize, PanelLeft, Paperclip, Pin, Plus, SquareTerminal, Settings, Wrench, Trash2, X, Icon as LucideIcon, type LucideProps } from 'lucide-react';
+import { Forward, Copy, Check, ChartColumn, Search, Star, ArrowLeft, ArrowRightLeft, ArrowUp, Bell, Bot, CalendarDays, ChevronLeft, ChevronRight, Circle, CircleCheck, CircleStop, CircleX, Clock3, Ellipsis, File, Folder, Link2, ListChecks, Maximize, Menu, MessageSquare, Minimize, PanelLeft, Paperclip, Pin, Plus, SquareTerminal, Settings, Wrench, Trash2, X, Icon as LucideIcon, type LucideProps } from 'lucide-react';
 import { PROVIDER_GLYPHS, type GlyphNode } from './provider-glyphs.ts';
 import styles from './icon.module.css';
 
@@ -25,6 +25,9 @@ const glyphs = Object.freeze({
   'chart': (props: LucideProps) => <ChartColumn {...props} />,
   'file': (props: LucideProps) => <File {...props} />,
   'calendar': (props: LucideProps) => <CalendarDays {...props} />,
+  'share': (props: LucideProps) => <Forward {...props} />,
+  'copy': (props: LucideProps) => <Copy {...props} />,
+  'check': (props: LucideProps) => <Check {...props} />,
   'link': (props: LucideProps) => <Link2 {...props} />,
   'agent': (props: LucideProps) => <Bot {...props} />,
   'terminal': (props: LucideProps) => <SquareTerminal {...props} />,

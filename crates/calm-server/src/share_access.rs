@@ -1,6 +1,8 @@
 //! Owning share management transactions. HTTP consumes these decisions, never
 //! interprets Actor/role headers or treats stored consent as runtime admission.
 mod execution;
+pub(crate) mod scope;
+pub(crate) mod sessions;
 use crate::auth::HumanInputSource;
 use crate::db::{RouteRepo, sqlite, write_in_tx_typed};
 use crate::error::{CalmError, Result};
@@ -61,6 +63,7 @@ pub(crate) async fn create(
             let mut bytes = [0u8; 32];
             OsRng.fill_bytes(&mut bytes);
             let token = hex::encode(bytes);
+            let token_hash = hex::encode(Sha256::digest(token.as_bytes()));
             let delegation = ShareDelegation {
                 id: crate::model::new_id(),
                 scope: scope.clone(),
@@ -69,12 +72,7 @@ pub(crate) async fn create(
                 resource_policy: ShareResourcePolicy::CurrentDeployment,
                 created_at: crate::model::now_ms(),
             };
-            let link = sqlite::share_links::create_tx(
-                tx,
-                &delegation,
-                &hex::encode(Sha256::digest(token.as_bytes())),
-            )
-            .await?;
+            let link = sqlite::share_links::create_tx(tx, &delegation, &token_hash).await?;
             validate(tx, &source, &scope, &link).await?;
             crate::organization_access::require_deployment_source(&source)?;
             Ok(ShareLinkCreated { link, token })
@@ -129,20 +127,14 @@ pub(crate) struct ShareRead {
     pub area: crate::ids::AreaId,
 }
 
-pub(crate) async fn resolve(
+pub(crate) async fn resolve_hash(
     repo: &dyn RouteRepo,
     config: &crate::auth::AuthConfig,
-    token: &str,
+    hash: &str,
     track_id: Option<&str>,
 ) -> Result<ShareRead> {
     let owner = crate::auth::current_deployment_owner(config)?;
-    let facts = repo
-        .share_link_read_facts(
-            &hex::encode(Sha256::digest(token.as_bytes())),
-            &owner,
-            track_id,
-        )
-        .await?;
+    let facts = repo.share_link_read_facts(hash, &owner, track_id).await?;
     let link = facts.link;
     if link.delegation.approver_user_id != owner
         || link.delegation.purpose != SharePurpose::Conversation
@@ -171,24 +163,30 @@ pub(crate) async fn resolve(
     Ok(ShareRead { link, area })
 }
 
-pub(crate) async fn require_publication(
-    repo: &dyn RouteRepo,
-    config: &crate::auth::AuthConfig,
-    token: &str,
-    track: Option<&str>,
-    expected: &ShareRead,
-) -> Result<()> {
-    if resolve(repo, config, token, track).await? != *expected {
-        return Err(CalmError::Forbidden(
-            "share scope changed while reading".into(),
-        ));
-    }
-    Ok(())
-}
-
 fn contains_track(scope: &ShareScope, track: &str, area: &str, purpose: Option<&str>) -> bool {
     match scope {
         ShareScope::Track(id) => id == track,
         ShareScope::Area(id) => id == area && purpose != Some(crate::AREA_CHAT_PURPOSE),
     }
+}
+
+/// Resolve the public identifier without ever retrieving a plaintext secret.
+pub(crate) async fn resolve_id(
+    repo: &dyn RouteRepo,
+    config: &crate::auth::AuthConfig,
+    id: &str,
+) -> Result<(ShareRead, String)> {
+    let hash = repo
+        .share_link_hash(id)
+        .await?
+        .ok_or_else(|| CalmError::NotFound("share link".into()))?;
+    let access = resolve_hash(repo, config, &hash, None)
+        .await
+        .map_err(|e| match e {
+            CalmError::Forbidden(_) | CalmError::Unauthorized => {
+                CalmError::NotFound("share link".into())
+            }
+            other => other,
+        })?;
+    Ok((access, hash))
 }

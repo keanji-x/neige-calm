@@ -9,8 +9,9 @@ import styles from './mobile-header.module.css';
 
 export function MobileWorkspaceHeader({
   areas, activeArea, navigationOpen, onOpenNavigation, onSelectArea, onCreateArea,
-  actionsHostRef, titleHostRef, onBack, historyTriggerRef,
+  actionsHostRef, titleHostRef, onBack, historyTriggerRef, shareMode = false,
 }: Readonly<{
+  shareMode?: boolean;
   onBack?: () => void;
   historyTriggerRef: Ref<HTMLButtonElement>;
   areas: readonly Area[];
@@ -27,7 +28,7 @@ export function MobileWorkspaceHeader({
       titleContent={<div className={styles.titleContent}>
         <div ref={titleHostRef} className={styles.trackTitleHost} />
         <div className={styles.areaTitle}>
-          <AreaSelector areas={areas} activeArea={activeArea} onSelectArea={onSelectArea} onCreateArea={onCreateArea} />
+          {!shareMode && <AreaSelector areas={areas} activeArea={activeArea} onSelectArea={onSelectArea} onCreateArea={onCreateArea} />}
         </div>
       </div>}
       onBack={onBack} backLabel="Tracks"

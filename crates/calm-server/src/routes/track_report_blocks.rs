@@ -1,7 +1,7 @@
 //! Human block-level track-report writes.
 
 use crate::actor::Actor;
-use crate::auth::Principal;
+use crate::auth::HumanInputSource;
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::extract::{Json, JsonBody, Path};
 use crate::state::{AppState, RouteState};
@@ -97,6 +97,13 @@ pub(crate) fn require_rest_user_actor(actor: &Actor) -> Result<()> {
     )
 }
 
+/// Manual Report writes need a live registered Human source as well as attribution.
+/// Scope containment and a request-controlled actor cannot supply that source.
+pub(crate) fn require_rest_human_actor(actor: &Actor, source: &HumanInputSource) -> Result<()> {
+    require_rest_user_actor(actor)?;
+    source.current_human_principal().map(drop)
+}
+
 fn block_content(kind: &str, markdown: Option<String>, payload: Option<Value>) -> Result<String> {
     if kind == report_blocks::KIND_PROSE {
         if payload.is_some() {
@@ -122,10 +129,11 @@ fn block_content(kind: &str, markdown: Option<String>, payload: Option<Value>) -
 async fn commit(
     state: &RouteState,
     actor: &Actor,
+    source: &HumanInputSource,
     track_id: &str,
     op: ReportDocOp,
 ) -> Result<ReportBlockWriteResponse> {
-    require_rest_user_actor(actor)?;
+    require_rest_human_actor(actor, source)?;
     let target = ReportEditTarget::resolve(state.repo.as_ref(), track_id).await?;
     let (card, block) = track_report::write::rest_user_block_op(
         state.repo.as_ref(),
@@ -153,9 +161,9 @@ async fn commit(
         (status = 401, body = ErrorBody), (status = 403, body = ErrorBody),
         (status = 404, body = ErrorBody), (status = 409, body = ErrorBody),
         (status = 500, body = ErrorBody)))]
-pub async fn create_block(
+pub(crate) async fn create_block(
     State(state): State<RouteState>,
-    _principal: Principal,
+    source: HumanInputSource,
     actor: Actor,
     Path(id): Path<String>,
     JsonBody(body): JsonBody<CreateReportBlockBody>,
@@ -164,6 +172,7 @@ pub async fn create_block(
     commit(
         &state,
         &actor,
+        &source,
         &id,
         ReportDocOp::UpsertBlock {
             id: None,
@@ -185,9 +194,9 @@ pub async fn create_block(
         (status = 401, body = ErrorBody), (status = 403, body = ErrorBody),
         (status = 404, body = ErrorBody), (status = 409, body = ErrorBody),
         (status = 500, body = ErrorBody)))]
-pub async fn update_block(
+pub(crate) async fn update_block(
     State(state): State<RouteState>,
-    _principal: Principal,
+    source: HumanInputSource,
     actor: Actor,
     Path((id, block_id)): Path<(String, String)>,
     JsonBody(body): JsonBody<UpdateReportBlockBody>,
@@ -196,6 +205,7 @@ pub async fn update_block(
     commit(
         &state,
         &actor,
+        &source,
         &id,
         ReportDocOp::UpsertBlock {
             id: Some(block_id),
@@ -217,9 +227,9 @@ pub async fn update_block(
         (status = 401, body = ErrorBody), (status = 403, body = ErrorBody),
         (status = 404, body = ErrorBody), (status = 409, body = ErrorBody),
         (status = 500, body = ErrorBody)))]
-pub async fn delete_block(
+pub(crate) async fn delete_block(
     State(state): State<RouteState>,
-    _principal: Principal,
+    source: HumanInputSource,
     actor: Actor,
     Path((id, block_id)): Path<(String, String)>,
     JsonBody(body): JsonBody<DeleteReportBlockBody>,
@@ -227,6 +237,7 @@ pub async fn delete_block(
     commit(
         &state,
         &actor,
+        &source,
         &id,
         ReportDocOp::DeleteBlock {
             id: block_id,
@@ -244,9 +255,9 @@ pub async fn delete_block(
         (status = 401, body = ErrorBody), (status = 403, body = ErrorBody),
         (status = 404, body = ErrorBody), (status = 409, body = ErrorBody),
         (status = 500, body = ErrorBody)))]
-pub async fn move_block(
+pub(crate) async fn move_block(
     State(state): State<RouteState>,
-    _principal: Principal,
+    source: HumanInputSource,
     actor: Actor,
     Path((id, block_id)): Path<(String, String)>,
     JsonBody(body): JsonBody<MoveReportBlockBody>,
@@ -254,6 +265,7 @@ pub async fn move_block(
     commit(
         &state,
         &actor,
+        &source,
         &id,
         ReportDocOp::MoveBlock {
             id: block_id,

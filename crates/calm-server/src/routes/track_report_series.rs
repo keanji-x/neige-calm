@@ -154,12 +154,5 @@ pub(crate) async fn get_report_series(
     Path((id, block_id)): Path<(String, String)>,
     Query(query): Query<ReportSeriesQuery>,
 ) -> Result<Response> {
-    crate::report_resource::get_report_series(
-        &state,
-        crate::read_access::Audience::Owner(&principal),
-        id,
-        block_id,
-        query,
-    )
-    .await
+    crate::report_resource::get_report_series(&state, &principal, id, block_id, query).await
 }

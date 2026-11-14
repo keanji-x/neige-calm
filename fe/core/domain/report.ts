@@ -311,7 +311,12 @@ export function trackReportCardIn(cards: readonly CardWire[]): CardWire | undefi
 export function readTrackReport(cards: readonly CardWire[]): TrackReport | null {
   const card = trackReportCardIn(cards);
   if (card === undefined) return null;
-  const parsed = trackReportPayloadSchema.safeParse(card.payload);
+  return readTrackReportPayload(card.payload);
+}
+
+/** Shared resource and owner cards consume the same block parser. */
+export function readTrackReportPayload(payload: unknown): TrackReport | null {
+  const parsed = trackReportPayloadSchema.safeParse(payload);
   if (!parsed.success) return null;
   const summary = parsed.data.summary.trim();
   const body = parsed.data.body.trim();

@@ -43,9 +43,13 @@ pub(crate) use calm_truth::area_folder_claim::{find_owner, is_descendant_of, nor
     ),
 )]
 pub(crate) async fn list_folders(
+    share: Option<axum::Extension<crate::share_access::scope::ShareAccessScope>>,
     State(s): State<RouteState>,
     Path(area_id): Path<String>,
 ) -> Result<Json<Vec<AreaFolder>>> {
+    if share.is_some() {
+        return Ok(Json(vec![]));
+    }
     let folders = s.repo.area_folders_by_area(&area_id).await?;
     Ok(Json(folders))
 }

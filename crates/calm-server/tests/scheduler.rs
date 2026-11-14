@@ -4117,26 +4117,11 @@ async fn deterministic_root_location_failures_do_not_freeze_or_index() {
                             .unwrap();
                         tx.commit().await.unwrap();
                     } else {
-                        use axum::extract::{FromRef, State};
-                        use calm_server::actor::Actor;
-                        use calm_server::auth::Principal;
-                        use calm_server::extract::{JsonBody, Path};
-                        use calm_server::routes::track_report_blocks::{
-                            CreateReportBlockBody, DeleteReportBlockBody, UpdateReportBlockBody,
-                            create_block, delete_block, update_block,
-                        };
-                        use calm_server::state::RouteState;
+                        use crate::support::authenticated_router::user_json;
 
                         // These edits deliberately invalidate the root. Use the human REST channel:
                         // agent writes refuse ready declarations with diagnostics such as duplicate_key.
                         let state = app_state_for_context_events(&boot);
-                        let state = RouteState::from_ref(&state);
-                        let principal = Principal {
-                            user_id: LEGACY_OWNER_USER_ID.into(),
-                            display_name: "owner".into(),
-                            role: "owner".into(),
-                            session_id: "test".into(),
-                        };
                         let (_, report, _) =
                             resolve_report_for_track(boot.repo.as_ref(), boot.track_id.as_str())
                                 .await
@@ -4150,71 +4135,37 @@ async fn deterministic_root_location_failures_do_not_freeze_or_index() {
                             .iter()
                             .find(|block| block.kind == "task")
                             .unwrap();
-                        let path = Path((boot.track_id.to_string(), root.id.clone()));
+                        let path = format!("/api/tracks/{}/report/blocks/{}", boot.track_id, root.id);
                         match case {
                             "duplicate" => {
                                 let mut duplicate = valid_root.clone();
                                 duplicate["declared_by"] = json!("user");
-                                create_block(
-                                    State(state),
-                                    principal,
-                                    Actor("user".into()),
-                                    Path(boot.track_id.to_string()),
-                                    JsonBody(CreateReportBlockBody {
-                                        kind: "task".into(),
-                                        markdown: None,
-                                        payload: Some(duplicate),
-                                        if_doc_rev: stored.doc_rev,
-                                        position: None,
-                                    }),
-                                )
-                                .await
-                                .expect("user creates duplicate root");
+                                user_json(
+                                    state,
+                                    "POST",
+                                    &format!("/api/tracks/{}/report/blocks", boot.track_id),
+                                    json!({"kind":"task","payload":duplicate,"ifDocRev":stored.doc_rev}),
+                                ).await;
                             }
                             "tombstoned" => {
                                 let mut tombstone = broken[0].2.clone();
                                 tombstone["tombstoned_by"] = json!("user");
-                                update_block(
-                                    State(state),
-                                    principal,
-                                    Actor("user".into()),
-                                    path,
-                                    JsonBody(UpdateReportBlockBody {
-                                        kind: "task".into(),
-                                        markdown: None,
-                                        payload: Some(tombstone),
-                                        if_block_rev: root.rev,
-                                    }),
-                                )
-                                .await
-                                .expect("user tombstones root");
+                                user_json(
+                                    state,
+                                    "PATCH",
+                                    &path,
+                                    json!({"kind":"task","payload":tombstone,"ifBlockRev":root.rev}),
+                                ).await;
                             }
                             "absent" => {
                                 // The first user delete makes a tombstone; delete that too so this
                                 // remains the absent-root case rather than a second tombstone case.
-                                let tombstone = delete_block(
-                                    State(state.clone()),
-                                    principal.clone(),
-                                    Actor("user".into()),
-                                    Path((boot.track_id.to_string(), root.id.clone())),
-                                    JsonBody(DeleteReportBlockBody {
-                                        if_block_rev: root.rev,
-                                    }),
-                                )
-                                .await
-                                .expect("user tombstones root before deletion")
-                                .0;
-                                delete_block(
-                                    State(state),
-                                    principal,
-                                    Actor("user".into()),
-                                    path,
-                                    JsonBody(DeleteReportBlockBody {
-                                        if_block_rev: tombstone.rev.unwrap(),
-                                    }),
-                                )
-                                .await
-                                .expect("user deletes root tombstone");
+                                let tombstone = user_json(
+                                    state.clone(), "DELETE", &path, json!({"ifBlockRev":root.rev}),
+                                ).await;
+                                user_json(
+                                    state, "DELETE", &path, json!({"ifBlockRev":tombstone["rev"]}),
+                                ).await;
                                 let monitor = TaskContextMonitor::new(
                                     boot.repo.clone(),
                                     boot.events.clone(),

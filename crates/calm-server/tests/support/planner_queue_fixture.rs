@@ -29,6 +29,7 @@ use tower::ServiceExt;
 pub const SEED_THREAD_ID: &str = "thread-pending-queue";
 
 pub struct Boot {
+    pub state: AppState,
     pub app: axum::Router,
     pub harness: PlannerHarness,
     /// The registry `harness` is installed in, the app's own.
@@ -295,9 +296,10 @@ async fn boot_inner(
                     .insert(worker_session_id.clone(), harness.clone());
                 let registry = state.harness.clone();
 
-                let app = super::authenticated_router::application(state).await;
+                let app = super::authenticated_router::application(state.clone()).await;
 
                 Boot {
+                    state,
                     app,
                     harness,
                     registry,

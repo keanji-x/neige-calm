@@ -9,7 +9,6 @@ use axum::Router;
 
 pub mod events;
 pub mod plugin_socket;
-pub mod share_events;
 pub mod terminal;
 
 pub fn router() -> Router<AppState> {

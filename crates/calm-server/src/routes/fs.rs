@@ -23,6 +23,8 @@ use utoipa::ToSchema;
 #[cfg(test)]
 pub(crate) mod host_access_tests;
 mod html_page;
+pub(crate) mod share_read;
+use share_read::ShareRead;
 mod track_workspace;
 use track_workspace::open_track_workspace_file;
 
@@ -31,6 +33,7 @@ const MAX_READFILE_RAW_BYTES: u64 = 100 * 1024 * 1024;
 
 pub fn router() -> Router<AppState> {
     Router::new()
+        .route("/api/fs/roots", get(roots))
         .route("/api/fs/listdir", get(listdir))
         .route("/api/fs/readfile", get(readfile))
         .route("/api/fs/readfile-raw", get(readfile_raw))
@@ -44,6 +47,29 @@ pub fn router() -> Router<AppState> {
         )
         .route("/api/fs/gitstatus", get(gitstatus))
         .route("/api/fs/gitdiff", get(gitdiff))
+}
+
+#[utoipa::path(get, path="/api/fs/roots", tag="fs", responses(
+    (status=200,description="Accessible filesystem roots",body=Vec<String>),
+    (status=403,description="Deployment owner or scoped share required",body=ErrorBody),
+    (status=500,description="Internal error",body=ErrorBody)))]
+pub(crate) async fn roots(
+    State(s): State<RouteState>,
+    principal: Principal,
+    share: Option<axum::Extension<crate::share_access::scope::ShareAccessScope>>,
+) -> Result<Json<Vec<String>>> {
+    if let Some(axum::Extension(share)) = share {
+        return Ok(Json(
+            share
+                .roots(s.repo.as_ref())
+                .await?
+                .into_iter()
+                .map(|p| p.to_string_lossy().into_owned())
+                .collect(),
+        ));
+    }
+    crate::organization_access::require_deployment_owner(&principal)?;
+    Ok(Json(vec![default_start().to_string_lossy().into_owned()]))
 }
 
 #[derive(Debug, Deserialize)]
@@ -143,6 +169,7 @@ pub struct GitDiffResponse {
 pub(crate) async fn listdir(
     State(_s): State<RouteState>,
     principal: Principal,
+    share: Option<axum::Extension<std::sync::Arc<ShareRead>>>,
     Query(q): Query<ListdirQuery>,
 ) -> Result<Json<ListdirResponse>> {
     crate::organization_access::require_deployment_owner(&principal)?;
@@ -151,22 +178,31 @@ pub(crate) async fn listdir(
         None => default_start(),
     };
 
-    let canon = match tokio::fs::canonicalize(&raw).await {
-        Ok(p) => p,
-        Err(e) => return Err(map_io_err(&raw, e)),
+    let canon = match share.as_ref() {
+        Some(axum::Extension(access)) => access.resolve(&raw).await?,
+        None => tokio::fs::canonicalize(&raw)
+            .await
+            .map_err(|e| map_io_err(&raw, e))?,
     };
 
-    let meta = tokio::fs::metadata(&canon)
-        .await
-        .map_err(|e| map_io_err(&canon, e))?;
-    if !meta.is_dir() {
-        return Err(CalmError::BadRequest(format!(
-            "path {} is not a directory",
-            canon.display()
-        )));
+    if share.is_none() {
+        let meta = tokio::fs::metadata(&canon)
+            .await
+            .map_err(|e| map_io_err(&canon, e))?;
+        if !meta.is_dir() {
+            return Err(CalmError::BadRequest(format!(
+                "path {} is not a directory",
+                canon.display()
+            )));
+        }
     }
 
-    let entries = list_directory_entries(&canon).await?;
+    let entries = if let Some(axum::Extension(access)) = share {
+        let directory = access.directory(&canon).await?;
+        list_directory_entries_with_access(&directory.path(), Some(access.as_ref())).await?
+    } else {
+        list_directory_entries(&canon).await?
+    };
 
     let parent = canon
         .parent()
@@ -181,6 +217,13 @@ pub(crate) async fn listdir(
 }
 
 async fn list_directory_entries(path: &Path) -> Result<Vec<DirEntry>> {
+    list_directory_entries_with_access(path, None).await
+}
+
+async fn list_directory_entries_with_access(
+    path: &Path,
+    access: Option<&ShareRead>,
+) -> Result<Vec<DirEntry>> {
     let mut rd = tokio::fs::read_dir(path)
         .await
         .map_err(|e| map_io_err(path, e))?;
@@ -198,10 +241,19 @@ async fn list_directory_entries(path: &Path) -> Result<Vec<DirEntry>> {
                 let is_dir = match entry.file_type().await {
                     Ok(ft) => {
                         if ft.is_symlink() {
-                            tokio::fs::metadata(entry.path())
-                                .await
-                                .map(|m| m.is_dir())
-                                .unwrap_or(false)
+                            if let Some(access) = access {
+                                // Classify aliases through the same bound roots as
+                                // the directory read; never stat an outside target.
+                                match access.resolve(&entry.path()).await {
+                                    Ok(path) => access.directory(&path).await.is_ok(),
+                                    Err(_) => false,
+                                }
+                            } else {
+                                tokio::fs::metadata(entry.path())
+                                    .await
+                                    .map(|m| m.is_dir())
+                                    .unwrap_or(false)
+                            }
                         } else {
                             ft.is_dir()
                         }
@@ -248,10 +300,17 @@ fn directory_entry_visible(name: &str) -> bool {
 pub(crate) async fn readfile(
     State(_s): State<RouteState>,
     principal: Principal,
+    share: Option<axum::Extension<std::sync::Arc<ShareRead>>>,
     Query(q): Query<PathQuery>,
 ) -> Result<Json<ReadFileResponse>> {
     crate::organization_access::require_deployment_owner(&principal)?;
     let raw = request_path(&q.path)?;
+    if let Some(axum::Extension(access)) = share {
+        let canon = access.resolve(&raw).await?;
+        return Ok(Json(
+            read_workspace_file_response(access.file(&canon).await?).await?,
+        ));
+    }
     Ok(Json(read_file_response(&raw).await?))
 }
 
@@ -271,10 +330,23 @@ pub(crate) async fn readfile(
 pub(crate) async fn readfile_raw(
     State(_s): State<RouteState>,
     principal: Principal,
+    share: Option<axum::Extension<std::sync::Arc<ShareRead>>>,
     Query(q): Query<PathQuery>,
 ) -> Result<Response> {
     crate::organization_access::require_deployment_owner(&principal)?;
     let raw = request_path(&q.path)?;
+    if let Some(axum::Extension(access)) = share {
+        let canon = access.resolve(&raw).await?;
+        let opened = access.file(&canon).await?;
+        let content_type = image_content_type(&opened.display_path)?;
+        return read_file_raw_response_from_handle(
+            opened.file,
+            opened.size,
+            &opened.display_path,
+            content_type,
+        )
+        .await;
+    }
     read_file_raw_response(&raw).await
 }
 
@@ -354,11 +426,14 @@ pub(crate) async fn read_track_workspace_file_raw(
 pub(crate) async fn gitstatus(
     State(_s): State<RouteState>,
     principal: Principal,
+    share: Option<axum::Extension<std::sync::Arc<ShareRead>>>,
     Query(q): Query<PathQuery>,
 ) -> Result<Json<GitStatusResponse>> {
     crate::organization_access::require_deployment_owner(&principal)?;
     let raw = request_path(&q.path)?;
-    Ok(Json(git_status_response(&raw).await?))
+    let access = share.map(|axum::Extension(access)| access);
+    let status = git_status_response_with_access(&raw, access.as_deref()).await?;
+    Ok(Json(status))
 }
 
 #[utoipa::path(
@@ -380,6 +455,7 @@ pub(crate) async fn gitstatus(
 pub(crate) async fn gitdiff(
     State(_s): State<RouteState>,
     principal: Principal,
+    share: Option<axum::Extension<std::sync::Arc<ShareRead>>>,
     Query(q): Query<GitDiffQuery>,
 ) -> Result<Json<GitDiffResponse>> {
     crate::organization_access::require_deployment_owner(&principal)?;
@@ -387,7 +463,10 @@ pub(crate) async fn gitdiff(
     if let Some(old_path) = q.old_path.as_deref() {
         request_path(old_path)?;
     }
-    Ok(Json(git_diff_response(&raw, q.old_path.as_deref()).await?))
+    let access = share.map(|axum::Extension(access)| access);
+    Ok(Json(
+        git_diff_response_with_access(&raw, q.old_path.as_deref(), access.as_deref()).await?,
+    ))
 }
 
 async fn canonicalize_regular_file(raw: &Path) -> Result<(PathBuf, Metadata)> {
@@ -856,40 +935,95 @@ fn image_content_type(path: &Path) -> Result<&'static str> {
     }
 }
 
+#[cfg(test)]
 async fn git_status_response(raw: &Path) -> Result<GitStatusResponse> {
-    let dir = match tokio::fs::canonicalize(raw).await {
-        Ok(p) => p,
-        Err(e) => return Err(map_io_err(raw, e)),
+    git_status_response_with_access(raw, None).await
+}
+
+async fn git_status_response_with_access(
+    raw: &Path,
+    access: Option<&ShareRead>,
+) -> Result<GitStatusResponse> {
+    let dir = match access {
+        Some(access) => access.resolve(raw).await?,
+        None => tokio::fs::canonicalize(raw)
+            .await
+            .map_err(|e| map_io_err(raw, e))?,
     };
-    let meta = tokio::fs::metadata(&dir)
-        .await
-        .map_err(|e| map_io_err(&dir, e))?;
-    if !meta.is_dir() {
-        return Err(CalmError::BadRequest(format!(
-            "path {} is not a directory",
-            dir.display()
-        )));
+    if access.is_none() {
+        let meta = tokio::fs::metadata(&dir)
+            .await
+            .map_err(|e| map_io_err(&dir, e))?;
+        if !meta.is_dir() {
+            return Err(CalmError::BadRequest(format!(
+                "path {} is not a directory",
+                dir.display()
+            )));
+        }
     }
 
-    let root = git_root(&dir).await?;
+    let bound = match access {
+        Some(access) => Some(access.repository(&dir).await?),
+        None => None,
+    };
+    let root = match &bound {
+        Some(repo) => repo.root.clone(),
+        None => git_root(&dir).await?,
+    };
+    let execution = bound
+        .as_ref()
+        .map(|repo| repo.path())
+        .unwrap_or_else(|| root.clone());
     let out = git_output(
-        &root,
+        &execution,
         &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
     )
     .await?;
-    let files = parse_porcelain_status(&out.stdout);
+    let mut files = parse_porcelain_status(&out.stdout);
+    if let Some(access) = access {
+        files.retain(|file| {
+            access.contains(&root.join(&file.path))
+                && file
+                    .old_path
+                    .as_ref()
+                    .is_none_or(|old| access.contains(&root.join(old)))
+        });
+    }
     Ok(GitStatusResponse {
         repo_root: root.to_string_lossy().to_string(),
         files,
     })
 }
 
+#[cfg(test)]
 async fn git_diff_response(raw: &Path, old_path: Option<&str>) -> Result<GitDiffResponse> {
-    let canon = canonicalize_file_or_parent(raw).await?;
+    git_diff_response_with_access(raw, old_path, None).await
+}
+
+async fn git_diff_response_with_access(
+    raw: &Path,
+    old_path: Option<&str>,
+    access: Option<&ShareRead>,
+) -> Result<GitDiffResponse> {
+    let canon = match access {
+        Some(access) => access.resolve(raw).await?,
+        None => canonicalize_file_or_parent(raw).await?,
+    };
     let dir = canon.parent().ok_or_else(|| {
         CalmError::BadRequest(format!("path {} has no parent directory", canon.display()))
     })?;
-    let root = git_root(dir).await?;
+    let bound = match access {
+        Some(access) => Some(access.repository(dir).await?),
+        None => None,
+    };
+    let root = match &bound {
+        Some(repo) => repo.root.clone(),
+        None => git_root(dir).await?,
+    };
+    let execution = bound
+        .as_ref()
+        .map(|repo| repo.path())
+        .unwrap_or_else(|| root.clone());
     let rel = canon.strip_prefix(&root).map_err(|_| {
         CalmError::BadRequest(format!(
             "path {} is outside git repository",
@@ -899,25 +1033,55 @@ async fn git_diff_response(raw: &Path, old_path: Option<&str>) -> Result<GitDiff
     let rel_str = rel.to_string_lossy().replace('\\', "/");
     let old_path = old_path.map(str::trim).filter(|s| !s.is_empty());
     let head_rel = match old_path {
-        Some(old_path) => repo_relative_path(&root, old_path)?,
+        Some(old_path) => repo_relative_path(&root, old_path).map_err(|error| {
+            if access.is_some() {
+                CalmError::Forbidden("outside share scope".into())
+            } else {
+                error
+            }
+        })?,
         None => rel_str.clone(),
     };
 
-    let (head_text, head_truncated) = git_show_head(&root, &head_rel).await?;
-    let (working_text, working_truncated) = match tokio::fs::metadata(&canon).await {
-        Ok(meta) if meta.is_file() => {
-            let (text, truncated) =
-                read_text_capped(&canon, "binary file diff unsupported").await?;
-            (Some(text), truncated)
+    // HEAD:{head_rel} names a historical object, never the target of a current
+    // worktree symlink. Check the exact normalized repo-relative identity.
+    if let Some(access) = access
+        && (!access.contains(&root.join(&head_rel)) || !access.contains(&canon))
+    {
+        return Err(CalmError::Forbidden("outside share scope".into()));
+    }
+    let (head_text, head_truncated) = git_show_head(&execution, &head_rel).await?;
+    let (working_text, working_truncated) = if let Some(access) = access {
+        match access.file(&canon).await {
+            Ok(opened) => {
+                let (text, truncated) = read_text_file_capped(
+                    opened.file,
+                    opened.size,
+                    "binary file diff unsupported",
+                    &canon,
+                )
+                .await?;
+                (Some(text), truncated)
+            }
+            Err(CalmError::PathNotFound(_)) => (None, false),
+            Err(e) => return Err(e),
         }
-        Ok(_) => {
-            return Err(CalmError::BadRequest(format!(
-                "path {} is not a regular file",
-                canon.display()
-            )));
+    } else {
+        match tokio::fs::metadata(&canon).await {
+            Ok(meta) if meta.is_file() => {
+                let (text, truncated) =
+                    read_text_capped(&canon, "binary file diff unsupported").await?;
+                (Some(text), truncated)
+            }
+            Ok(_) => {
+                return Err(CalmError::BadRequest(format!(
+                    "path {} is not a regular file",
+                    canon.display()
+                )));
+            }
+            Err(e) if e.kind() == ErrorKind::NotFound => (None, false),
+            Err(e) => return Err(map_io_err(&canon, e)),
         }
-        Err(e) if e.kind() == ErrorKind::NotFound => (None, false),
-        Err(e) => return Err(map_io_err(&canon, e)),
     };
 
     let status = if old_path.is_some() {
@@ -980,7 +1144,7 @@ fn normalize_repo_relative_path(path: &Path, original: &str) -> Result<String> {
     Ok(parts.join("/"))
 }
 
-async fn canonicalize_file_or_parent(raw: &Path) -> Result<PathBuf> {
+pub(crate) async fn canonicalize_file_or_parent(raw: &Path) -> Result<PathBuf> {
     match tokio::fs::canonicalize(raw).await {
         Ok(p) => Ok(p),
         Err(e) if e.kind() == ErrorKind::NotFound => {
@@ -1427,6 +1591,7 @@ mod tests {
                 let Err(e) = listdir(
                     State(state.clone()),
                     host_access_tests::owner_principal().await,
+                    None,
                     Query(ListdirQuery {
                         path: Some(absolute.clone()),
                     }),
@@ -1439,6 +1604,7 @@ mod tests {
                 let Err(e) = readfile(
                     State(state.clone()),
                     host_access_tests::owner_principal().await,
+                    None,
                     path(),
                 )
                 .await
@@ -1449,6 +1615,7 @@ mod tests {
                 let e = readfile_raw(
                     State(state.clone()),
                     host_access_tests::owner_principal().await,
+                    None,
                     path(),
                 )
                 .await
@@ -1484,6 +1651,7 @@ mod tests {
             let Err(e) = gitstatus(
                 State(state.clone()),
                 host_access_tests::owner_principal().await,
+                None,
                 Query(PathQuery {
                     path: root.join(&name).to_string_lossy().into_owned(),
                 }),
@@ -1501,6 +1669,7 @@ mod tests {
                 let Err(e) = gitdiff(
                     State(state.clone()),
                     host_access_tests::owner_principal().await,
+                    None,
                     Query(GitDiffQuery {
                         path: path.to_string_lossy().into_owned(),
                         old_path,
@@ -1844,6 +2013,7 @@ mod tests {
         let Err(text) = readfile(
             State(state.clone()),
             host_access_tests::owner_principal().await,
+            None,
             query(),
         )
         .await
@@ -1854,6 +2024,7 @@ mod tests {
         let raw = readfile_raw(
             State(state.clone()),
             host_access_tests::owner_principal().await,
+            None,
             query(),
         )
         .await
@@ -1862,6 +2033,7 @@ mod tests {
         let Err(listing) = listdir(
             State(state),
             host_access_tests::owner_principal().await,
+            None,
             Query(ListdirQuery {
                 path: Some(absolute.to_string_lossy().into_owned()),
             }),

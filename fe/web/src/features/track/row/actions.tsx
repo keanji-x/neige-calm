@@ -7,17 +7,18 @@ import { Icon } from '../../../ui/icon/public.tsx';
 import { useState } from '../../../ui/state/public.ts';
 
 export type TrackActionsProps = Readonly<{
-  track: Track;
+  track: Pick<Track, 'id' | 'title' | 'closedAt' | 'pinnedAt' | 'updatedAt' | 'working' | 'attention'>;
   areaPinned: boolean;
   onSetPinned: (id: string, pinned: boolean) => void;
   onSetAreaPinned: (id: string, pinned: boolean) => void;
   onMarkUnread: (id: string) => void;
+  onShare?: (id: string, origin: DialogOrigin) => void;
   onDelete?: (id: string, origin: DialogOrigin) => void;
   className?: string;
 
 }>;
 
-export function TrackActions({ track, areaPinned, onSetPinned, onSetAreaPinned, onMarkUnread, onDelete, className }: TrackActionsProps) {
+export function TrackActions({ track, areaPinned, onSetPinned, onSetAreaPinned, onMarkUnread, onShare, onDelete, className }: TrackActionsProps) {
   const sourceRef = useRef<HTMLSpanElement | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   return <span ref={sourceRef} style={{ display: 'inline-flex' }}><DropdownMenu isMenuOpen={menuOpen} onOpenChange={setMenuOpen} placement="below" alignment="end" button={{
@@ -28,6 +29,7 @@ export function TrackActions({ track, areaPinned, onSetPinned, onSetAreaPinned, 
       <DropdownMenuItem label={track.pinnedAt === null ? 'Pin globally' : 'Unpin globally'} onClick={() => onSetPinned(track.id, track.pinnedAt === null)} />
     <DropdownMenuItem label={areaPinned ? 'Unpin within area' : 'Pin within area'} onClick={() => onSetAreaPinned(track.id, !areaPinned)} />
     <DropdownMenuItem label="Mark as unread" onClick={() => onMarkUnread(track.id)} />
+    {onShare !== undefined && <DropdownMenuItem label="Share track" onClick={() => onShare(track.id, { kind: 'anchor', anchor: { ref: sourceRef }, unavailable: 'surface-center' })} />}
     {onDelete !== undefined && <><DropdownMenuDivider /><DropdownMenuItem label="Delete track" onClick={() => onDelete(track.id, { kind: 'anchor', anchor: { ref: sourceRef }, unavailable: 'surface-center' })} /></>}
     </>}
   </DropdownMenu></span>;

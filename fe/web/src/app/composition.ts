@@ -18,6 +18,7 @@ export type EventDriverFactory = (options: ConstructorParameters<typeof WebSocke
 export function createBrowserEventComposition(options: Readonly<{
   storage: Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
   transport: ApiTransportPort;
+  url?: string;
   unauthorizedChannel?: Pick<UnauthorizedChannel, 'notify'>;
   probeUnauthorized?: UnauthorizedProbe;
   cursorStore?: SyncCursorPort;
@@ -27,6 +28,7 @@ export function createBrowserEventComposition(options: Readonly<{
     { report: console.error },
   );
   return createEventComposition({
+    url: options.url,
     storage: options.storage,
     transport: options.transport,
     onUnauthorized: () => unauthorized.notify(),

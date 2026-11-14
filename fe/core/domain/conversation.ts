@@ -753,7 +753,7 @@ export const CONVERSATION_TEXT_MAX = 32768;
 /* Track conversations: written out rather than aliased to the area schema, and living here
    rather than in `core/api/schemas.ts` because `kind: 'track-assistant'` is not in the event vocabulary. */
 
-const trackConversationSummarySchema: z.ZodType<TrackConversationSummary> = z.object({
+export const trackConversationSummarySchema: z.ZodType<TrackConversationSummary> = z.object({
   archivedAt: z.number().nullable(),
   provider: agentProviderSchema,
   id: z.string(),

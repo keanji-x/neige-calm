@@ -49,10 +49,11 @@ function elapsedText(ms: number): string {
 }
 
 /** One native metadata row; clocks are evidence, never inferred from transcript gaps. */
-export function ThreadStatusNotice({ historical = false, heading, leading, children, clock, sending = false, tone = 'neutral', outcome, copyAction = null, editAction = null, regenerateAction = null, detailsExpanded, onDetailsExpandedChange }: {
+export function ThreadStatusNotice({ historical = false, messageActions = 'all', heading, leading, children, clock, sending = false, tone = 'neutral', outcome, copyAction = null, editAction = null, regenerateAction = null, detailsExpanded, onDetailsExpandedChange }: {
   detailsExpanded?: boolean;
   onDetailsExpandedChange?: (expanded: boolean) => void;
   historical?: boolean;
+  messageActions?: 'all' | 'copy-only';
   heading: ReactNode;
   leading?: ReactNode;
   children?: ReactNode;
@@ -111,13 +112,13 @@ export function ThreadStatusNotice({ historical = false, heading, leading, child
             : feedback.kind === 'done' ? 'Copied response' : 'Could not copy response',
           disabled: copyAction === null || feedback?.kind === 'pending',
           run: () => { if (copyAction !== null) void copy.perform(copyAction.run); } },
-        { id: 'edit', kind: 'edit', label: editAction === null ? 'Edit message (not available now)' : 'Edit message',
+        ...(messageActions === 'copy-only' ? [] : [{ id: 'edit', kind: 'edit' as const, label: editAction === null ? 'Edit message (not available now)' : 'Edit message',
           tooltip: 'Edit this message. Files are not reverted.', disabled: editAction === null,
           run: () => { editAction?.run(); } },
-        { id: 'regenerate', kind: 'regenerate', label: regenerateAction === null ? 'Regenerate response (not available now)' : 'Regenerate response',
+        { id: 'regenerate', kind: 'regenerate' as const, label: regenerateAction === null ? 'Regenerate response (not available now)' : 'Regenerate response',
           tooltip: 'Send the original prompt again in this conversation; keep existing history.',
           disabled: regenerateAction === null || regenerate.feedback?.kind === 'pending',
-          run: () => { if (regenerateAction !== null) void regenerate.perform(regenerateAction.run); } },
+          run: () => { if (regenerateAction !== null) void regenerate.perform(regenerateAction.run); } }]),
       ]} />}
     </div>
   </div>;

@@ -1,6 +1,7 @@
 //! `GET /api/cards/{id}/harness/live`: the reply text the running turn has streamed and not stored
 //! yet (#1923 S2). Mounted by the cards router, which owns `/api/cards/{id}/**`.
 
+use crate::auth::Principal;
 use crate::error::CalmError;
 use crate::extract::{Json, Path, Query};
 use axum::extract::State;
@@ -41,23 +42,16 @@ pub(crate) async fn get_harness_live(
     Path(id): Path<String>,
     Query(query): Query<super::conversation_run::RunReadQuery>,
 ) -> Result<Response> {
-    read(
-        &s,
-        crate::read_access::Audience::Owner(&principal),
-        id,
-        query,
-    )
-    .await
+    read(&s, &principal, id, query).await
 }
 
 pub(crate) async fn read(
     s: &RouteState,
-    audience: crate::read_access::Audience<'_>,
+    principal: &Principal,
     id: String,
     query: super::conversation_run::RunReadQuery,
 ) -> Result<Response> {
-    let scope =
-        super::conversation_read::ReadScope::check_audience(s.repo.as_ref(), &id, audience).await?;
+    let scope = super::conversation_read::ReadScope::check(s.repo.as_ref(), &id, principal).await?;
     let card = harness_card(s, &id).await?;
     let frame = super::conversation_read::current_frame(s.repo.as_ref(), &id).await?;
     let replies = if query.contract.is_some() {
@@ -80,6 +74,6 @@ pub(crate) async fn read(
         }
         HarnessLiveReadResponse::Historical(s.harness.live_replies().read(&card.id))
     };
-    scope.publish_audience(s.repo.as_ref(), audience).await?;
+    scope.publish(s.repo.as_ref(), principal).await?;
     Ok(Json(replies).into_response())
 }

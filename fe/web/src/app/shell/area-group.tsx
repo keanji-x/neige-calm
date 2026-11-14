@@ -12,7 +12,7 @@ import { useUiPreferences } from '../providers/ui-preferences.tsx';
 
 export function AreaGroup({
   readReady, area, areaTracks, activeTrackId, expanded, onToggle, showClosed, onSetShowClosed, disclosureRef, onEdit,
-  onRequestDelete, onNewTrack, management, ...rowProps
+  onShare, onRequestDelete, onNewTrack, management, ...rowProps
 }: RowProps & {
   readReady: boolean;
   management: GroupManagement;
@@ -24,6 +24,7 @@ export function AreaGroup({
   showClosed: boolean;
   onSetShowClosed: (showClosed: boolean) => void;
   disclosureRef: (element: HTMLButtonElement | null) => void;
+  onShare?: (origin: DialogOrigin) => void;
   onEdit: (origin: DialogOrigin) => void;
   onRequestDelete: (areaId: string, origin: DialogOrigin) => void;
   onNewTrack: (areaId: string) => void;
@@ -43,6 +44,8 @@ export function AreaGroup({
     disclosureRef={disclosureRef}
     management={management}
     extraMenuItems={(origin) => <>
+      {area.kind === 'user' && onShare !== undefined && <DropdownMenuItem label="Share area"
+        onClick={() => onShare(origin)} />}
       <DropdownMenuItem label="Edit area" onClick={() => onEdit(origin)} />
       <DropdownMenuItem label={showClosed ? 'Hide closed' : 'Show closed'} onClick={() => onSetShowClosed(!showClosed)} />
       <DropdownMenuItem label="Delete area" onClick={() => onRequestDelete(area.id, origin)} />

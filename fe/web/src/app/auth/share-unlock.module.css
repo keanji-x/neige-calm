@@ -1,0 +1,12 @@
+@layer features {
+  .page { min-height: 100dvh; display: grid; place-items: center; padding: var(--space-2); background: var(--bg); color: var(--text); }
+  .card { width: min(100%, 22rem); display: grid; gap: var(--space-1); padding: var(--space-3); border: 1px solid var(--hairline); border-radius: var(--radius-md); background: var(--paper); }
+  .card h1 { margin-block-end: var(--space-1); }
+  .card p { margin: 0; }
+  .description { color: var(--text-2); }
+  .form { display: grid; gap: var(--space-1); }
+  .form label { display: grid; gap: var(--space-1); }
+  .form input { font: var(--type-code); width: 100%; min-inline-size: 0; padding-block: var(--space-1); }
+  .card button { font: inherit; margin-block-start: var(--space-1); padding: var(--space-1) var(--space-2); }
+  .error { color: var(--warn-text); }
+}

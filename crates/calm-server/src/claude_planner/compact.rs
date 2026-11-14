@@ -65,7 +65,13 @@ impl ClaudePlannerSession {
         let fence =
             crate::harness::run_loop::issuance::track_fence_for_test(self.track_for_test()).await;
         let handoff = crate::provider_execution::TrackFenceHandoff::new(fence);
-        self.compact_start(thread, selection, &handoff).await
+        self.compact_start(
+            thread,
+            selection,
+            &super::session::historical_admission(),
+            &handoff,
+        )
+        .await
     }
 
     /// Start a compaction of `thread`'s session and report its submission. `selection` is the card's
@@ -76,6 +82,7 @@ impl ClaudePlannerSession {
         &self,
         thread: &str,
         selection: &TurnModelSelection,
+        admission: &crate::harness::native_admission::NativePromptAdmission<'_>,
         track_fence: &crate::provider_execution::TrackFenceHandoff,
     ) -> CompactSubmission<CalmError> {
         submission_result(
@@ -84,7 +91,7 @@ impl ClaudePlannerSession {
                 SpawnInput::Compaction,
                 selection,
                 PlannerPermissionMode::Never,
-                &super::session::historical_admission(),
+                admission,
                 track_fence,
             )
             .await,

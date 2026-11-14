@@ -33,6 +33,37 @@ vi.mock('../providers/queries.ts', async (importOriginal) => {
 afterEach(() => { cleanup(); vi.clearAllMocks(); mocks.cursorClear.mockReset(); });
 
 describe('production app mount', () => {
+  it('assembles the production card host and defers the share router until access is resolved', () => {
+    window.history.replaceState(null, '', '/next/share/guest-token/track/guest-track#intro');
+    const storage = { length: 0, clear: vi.fn(), getItem: vi.fn(() => null), key: vi.fn(() => null),
+      removeItem: vi.fn(), setItem: vi.fn() } satisfies Storage;
+    try {
+      mountProductionApp(document.createElement('div'), { storage, reload: vi.fn(), deleteDatabase: vi.fn() });
+      expect(window.location.hash).toBe('');
+      expect(mocks.render).toHaveBeenCalledTimes(1);
+      expect(createAppRouter).not.toHaveBeenCalled();
+      expect(bootCards).toHaveBeenCalledOnce();
+      const rendered = mocks.render.mock.calls[0]?.[0] as ReactElement<Parameters<typeof ProductionApp>[0]>;
+      expect(rendered.props.shareLinkId).toBe('guest-token');
+      expect(typeof rendered.props.router).toBe('function');
+      expect(rendered.props.runtime.idbDatabaseName).toBe(`${IDB_DB_NAME}-share-guest-token`);
+      expect(runOperation).not.toHaveBeenCalled();
+    } finally { window.history.replaceState(null, '', '/next/'); }
+  });
+
+  it('keeps malformed share URLs out of owner session initialization', () => {
+    window.history.replaceState(null, '', '/next/share/%GG');
+    const storage = { length: 0, clear: vi.fn(), getItem: vi.fn(() => null), key: vi.fn(() => null),
+      removeItem: vi.fn(), setItem: vi.fn() } satisfies Storage;
+    try {
+      mountProductionApp(document.createElement('div'), { storage, reload: vi.fn(), deleteDatabase: vi.fn() });
+      expect(mocks.render).toHaveBeenCalledTimes(1);
+      expect(createAppRouter).not.toHaveBeenCalled();
+      expect(bootCards).not.toHaveBeenCalled();
+      expect(runOperation).not.toHaveBeenCalled();
+    } finally { window.history.replaceState(null, '', '/next/'); }
+  });
+
   it('clears every session artifact after logout completion and then reloads the browser', async () => {
     let finishLogout!: () => void;
     vi.mocked(runOperation).mockReturnValue(new Promise<void>((resolve) => { finishLogout = resolve; }));

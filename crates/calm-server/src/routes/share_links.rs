@@ -29,6 +29,7 @@ pub fn router() -> Router<AppState> {
     request_body = CreateShareLink,
     responses(
         (status = 200, description = "Share management result", body = ShareLinkCreated),
+        (status = 400, description = "Invalid creation request", body = ErrorBody),
         (status = 403, description = "Current deployment and Area owner required", body = ErrorBody),
         (status = 404, description = "Target not found", body = ErrorBody),
         (status = 500, description = "Internal error", body = ErrorBody),
@@ -71,6 +72,7 @@ pub(crate) async fn list_track_share_links(
     request_body = CreateShareLink,
     responses(
         (status = 200, description = "Share management result", body = ShareLinkCreated),
+        (status = 400, description = "Invalid creation request", body = ErrorBody),
         (status = 403, description = "Current deployment and Area owner required", body = ErrorBody),
         (status = 404, description = "Target not found", body = ErrorBody),
         (status = 500, description = "Internal error", body = ErrorBody),
@@ -119,10 +121,12 @@ pub(crate) async fn list_area_share_links(
 )]
 pub(crate) async fn revoke_share_link(
     State(s): State<RouteState>,
+    axum::Extension(auth): axum::Extension<crate::auth::AuthState>,
     source: HumanInputSource,
     Path(id): Path<String>,
 ) -> Result<Json<ShareLink>> {
     let link = crate::share_access::revoke(s.repo.as_ref(), source, id).await?;
+    auth.shares.revoke(&auth.sessions, &link.delegation.id)?;
     s.events.wake_access_readers();
     Ok(Json(link))
 }

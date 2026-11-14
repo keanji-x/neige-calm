@@ -38,9 +38,15 @@ pub struct SettingsPutBody {
     ),
 )]
 pub(crate) async fn get_settings(
+    share: Option<axum::Extension<crate::share_access::scope::ShareAccessScope>>,
     principal: Principal,
     State(s): State<RouteState>,
 ) -> Result<Json<SettingsBag>> {
+    if share.is_some() {
+        return Ok(Json(SettingsBag {
+            settings: BTreeMap::new(),
+        }));
+    }
     crate::organization_access::require_deployment_owner(&principal)?;
     let rows = s.repo.settings_get_all().await?;
     Ok(Json(SettingsBag {

@@ -47,24 +47,67 @@ impl PlannerHarness {
 }
 
 pub(super) enum Source {
+    #[cfg(any(test, feature = "fixtures"))]
     Historical,
+    HistoricalRequest(crate::auth::HumanInputSource),
     Canonical(crate::auth::HumanInputSource),
 }
 
 pub(super) async fn handle_compact(inner: &Arc<Inner>, source: Source) -> Result<()> {
-    match source {
+    let origin = match source {
         Source::Canonical(source) => return canonical::start(inner, source).await,
-        Source::Historical => {
-            inner.historical_queue()?;
-        }
-    }
+        Source::HistoricalRequest(source) => Origin::Human(source),
+        #[cfg(any(test, feature = "fixtures"))]
+        Source::Historical => Origin::Internal,
+    };
     let admitted = admit_historical(inner).await?;
-    start(inner, admitted, Origin::Human).await
+    start(inner, admitted, origin).await
 }
 
 pub(super) enum Origin {
-    Human,
+    Human(crate::auth::HumanInputSource),
+    #[cfg(any(test, feature = "fixtures"))]
+    Internal,
     PlannerRequest,
+}
+
+impl Origin {
+    fn check_current(&self, inner: &Inner) -> Result<()> {
+        inner.historical_queue()?;
+        if let Self::Human(source) = self {
+            source.current_human_principal()?;
+        }
+        Ok(())
+    }
+    async fn authorize(&self, inner: &Inner) -> Result<()> {
+        if let Self::Human(source) = self {
+            crate::conversation_inputs::HistoricalHumanSource::new(source.clone())
+                .require_card(inner.repo.as_ref(), inner.card_id.as_str())
+                .await?;
+        }
+        self.check_current(inner)
+    }
+}
+
+/// Keep the live request source through model reads and the native send gate.
+/// Internal historical maintenance keeps its existing kernel semantics.
+struct HistoricalCompactSource<'a> {
+    inner: &'a Inner,
+    origin: &'a Origin,
+}
+impl SelectionSource for HistoricalCompactSource<'_> {
+    fn check_current(&self) -> Result<()> {
+        self.origin.check_current(self.inner)
+    }
+    fn admit_native_read(&self) -> futures_util::future::BoxFuture<'_, Result<()>> {
+        Box::pin(self.origin.authorize(self.inner))
+    }
+    async fn card_payload(&self) -> std::result::Result<serde_json::Value, IssuanceRefusal> {
+        self.inner.card_payload().await
+    }
+    async fn installation_cwd(&self) -> std::result::Result<String, IssuanceRefusal> {
+        self.inner.installation_cwd().await
+    }
 }
 
 /// Holds both existing fences from admission through the Start write.
@@ -153,6 +196,14 @@ pub(super) async fn start(
         track_guard,
         _issuance,
     } = admitted;
+    use crate::harness::native_admission::NativePromptAdmission;
+    let owner = HistoricalCompactSource {
+        inner,
+        origin: &origin,
+    };
+    let admission =
+        NativePromptAdmission::new(|| owner.check_current(), || owner.admit_native_read());
+    admission.check_local().await?;
     use crate::harness::compact_outcome::{CompactOutcome, CompactStatus};
     let previous_outcome = inner.compact_outcome.lock().await.clone();
     *inner.compact_outcome.lock().await = Some(CompactOutcome {
@@ -195,11 +246,11 @@ pub(super) async fn start(
         }
     }
     let track_fence = crate::provider_execution::TrackFenceHandoff::new(track_guard);
-    let submission = match inner.backend.compact_request(inner.as_ref()).await {
+    let submission = match inner.backend.compact_request(&owner).await {
         Ok(request) => {
             IssueTurnHandle::from_reconciliation(inner)
                 .await
-                .compact_start(request, &track_fence)
+                .compact_start_admitted(request, &admission, &track_fence)
                 .await
         }
         Err(error) => Err(error),

@@ -1,3 +1,4 @@
+import inventoryStyles from './inventory.module.css';
 import { EmptyState } from '../../../ui/empty-state/public.tsx';
 import { inventoryEmptyContent } from './empty-content.tsx';
 import { useRef } from 'react';
@@ -21,7 +22,6 @@ import { executionActivityLabelOf, progressStatusLabel } from '../../../../../co
 import { activityLabelOf } from '../../../../../core/domain/activity.ts';
 import { PanelModule } from '../../../ui/panel-card/public.tsx';
 import { InventoryIcon, InventoryKind } from './inventory-kind.tsx';
-import styles from './page.module.css';
 
 /** A row or an empty line, painted as far as it can be here; `paint` is called from `module()` and nowhere else. */
 type PendingLeaf = Readonly<{
@@ -98,7 +98,7 @@ function rowMetadata(row: PanelRow, moduleKey: RowModuleView['key'], activityTex
       {row.status.token}
     </span>}
     {row.badges.filter(badge => moduleKey !== 'cards' || badge.id !== 'task').map(badge => <ListText tone="secondary" key={badge.id}
-      className={badge.struck ? styles.taskWithdrawn : undefined} aria-hidden={moduleKey === 'cards' ? true : undefined}
+      className={badge.struck ? inventoryStyles.taskWithdrawn : undefined} aria-hidden={moduleKey === 'cards' ? true : undefined}
       {...mark(MARKER.badge, badge.id)}>{badge.text}</ListText>)}
   </VisuallyHidden>;
 }
@@ -110,23 +110,23 @@ function taskRow(row: PanelRow, deps: DesktopPainterDeps): ReactNode {
   const revealControl = (
     <button
       type="button"
-      className={styles.taskReveal}
+      className={inventoryStyles.taskReveal}
       {...(reveal === null ? {} : { ...mark(MARKER.action, 'reveal-block'), ...wording(reveal) })}
       onClick={reveal === null ? undefined : () => deps.onOpenTask?.(reveal.id)}
     >
-      <ListText tone="primary" className={styles.taskKey} {...mark(MARKER.field, FIELD.title)}>{row.title}</ListText>
+      <ListText tone="primary" className={inventoryStyles.taskKey} {...mark(MARKER.field, FIELD.title)}>{row.title}</ListText>
       {rowMetadata(row, 'tasks', row.activity === null ? null : activityLabelOf(row.activity))}
     </button>
   );
   return (
-    <li key={row.id} className={styles.taskRow} {...mark(MARKER.row, row.id)}>
+    <li key={row.id} className={inventoryStyles.taskRow} {...mark(MARKER.row, row.id)}>
       {revealControl}
       {/* `title` describes the destination without touching the accessible name, which stays the visible word (WCAG 2.5.3). */}
       {row.kind !== null && (open === null
-        ? <ListText tone="secondary" className={styles.taskKind} title={row.kind} {...mark(MARKER.field, FIELD.kind)}><InventoryKind kind={row.kind} /></ListText>
+        ? <ListText tone="secondary" className={inventoryStyles.taskKind} title={row.kind} {...mark(MARKER.field, FIELD.kind)}><InventoryKind kind={row.kind} /></ListText>
         : (
           <ListText as="button" tone="secondary"
-            className={styles.taskKindButton}
+            className={inventoryStyles.taskKindButton}
             {...mark(MARKER.field, FIELD.kind)}
             {...mark(MARKER.action, 'open-card')}
             {...wording(open)}
@@ -152,7 +152,7 @@ function ContextRow({ row, deps }: { row: PanelRow; deps: DesktopPainterDeps }) 
   const attention = !isTask && (row.activity === 'attention' || row.activity === 'failed') ? activityLabelOf(row.activity) : null;
   const detail = [row.title, row.kind, row.status?.phrase, executionActivityLabelOf(row.activity)].filter(Boolean).join(' · ');
   return <li ref={sourceRef} key={row.id} title={detail} {...mark(MARKER.row, row.id)}>
-    <ContextItem icon={icon} label={<span className={row.badges.some(badge => badge.struck) ? styles.taskWithdrawn : undefined}
+    <ContextItem icon={icon} label={<span className={row.badges.some(badge => badge.struck) ? inventoryStyles.taskWithdrawn : undefined}
         {...mark(MARKER.field, FIELD.title)}>{row.title}</span>}
       trailing={statusLabel === null && attention === null ? undefined : <ListText tone="secondary">
         {statusLabel}{statusLabel !== null && attention !== null ? ' · ' : null}{attention !== null && <span>{attention}</span>}
@@ -233,7 +233,7 @@ export function makeDesktopPainter(deps: DesktopPainterDeps): RowPainter<Desktop
           title={parts.title}
           revealActions
           action={deps.taskSummary
-              ? <ListText tone="count" className={styles.taskSummary} title={deps.taskSummary}>{deps.taskSummary}</ListText>
+              ? <ListText tone="count" className={inventoryStyles.taskSummary} title={deps.taskSummary}>{deps.taskSummary}</ListText>
               : undefined}
           moduleMarker={parts.key}
           titleFieldMarker={FIELD.moduleTitle}
@@ -245,7 +245,7 @@ export function makeDesktopPainter(deps: DesktopPainterDeps): RowPainter<Desktop
               return leaf.group(parts.key);
             }, leaf => leaf.slot !== 'module' && leaf.needsAttention(parts.key))}
             noun="task"
-            renderRows={leaves => <ul className={styles.tasks}>{leaves.map(leaf => finish(leaf, parts.key))}</ul>}
+            renderRows={leaves => <ul className={inventoryStyles.tasks}>{leaves.map(leaf => finish(leaf, parts.key))}</ul>}
           />}
           </div>
         </PanelModule>

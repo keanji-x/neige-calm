@@ -30,7 +30,7 @@ pub(crate) async fn mutate(
     } = mutation;
     write_in_tx_typed(repo, move |tx| {
         Box::pin(async move {
-            let principal = source.current_principal()?;
+            let principal = source.current_human_principal()?;
             let area = authorize_human_tx(tx, &principal, &card).await?;
             let mut carrier = conversation::current_input_content_carrier_tx(tx, &card).await?;
             if carrier.worker_session_id() != worker {
@@ -48,7 +48,7 @@ pub(crate) async fn mutate(
                 change,
             )
             .await?;
-            source.current_principal()?;
+            source.current_human_principal()?;
             let envelope = if matches!(&result, PendingHumanWrite::Applied { .. }) {
                 let event = crate::event::Event::HarnessQueueChanged {
                     worker_session_id: worker,

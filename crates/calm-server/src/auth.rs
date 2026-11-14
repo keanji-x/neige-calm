@@ -128,6 +128,7 @@ impl AuthConfig {
 pub struct AuthState {
     pub config: Arc<AuthConfig>,
     pub sessions: SessionStore,
+    pub(crate) shares: crate::share_access::sessions::ShareSessions,
     pub mobile: crate::mobile_access::MobileAccess,
     /// `CALM_ALLOWED_ORIGIN`: the one foreign origin (dev frontend) trusted beside calm's own.
     pub allowed_origin: Option<String>,
@@ -144,6 +145,7 @@ impl AuthState {
         );
         Self {
             config: Arc::new(config),
+            shares: Default::default(),
             mobile,
             sessions,
             allowed_origin: None,
@@ -265,7 +267,7 @@ pub(crate) fn resolve_principal(state: &AuthState, headers: &HeaderMap) -> Optio
 /// #1780: `SameSite=Strict` still attaches the cookie to pages on another port of the same host,
 /// so a write or WS upgrade that carries `Origin` must come from one of calm's own origins.
 /// No `Origin` means a non-browser client (CLI, shim); browsers always send it on these requests.
-fn check_origin(state: &AuthState, headers: &HeaderMap) -> Result<()> {
+pub(crate) fn check_origin(state: &AuthState, headers: &HeaderMap) -> Result<()> {
     let Some(origin) = headers.get(header::ORIGIN) else {
         return Ok(());
     };
@@ -324,13 +326,23 @@ pub(crate) fn checks_origin(method: &Method) -> bool {
     !matches!(*method, Method::GET | Method::HEAD | Method::OPTIONS)
 }
 
+fn select_share(headers: &mut HeaderMap, uri: &axum::http::Uri) {
+    if let Some(id) = crate::share_access::sessions::selector(headers, uri) {
+        headers.insert(
+            "x-calm-share-link",
+            HeaderValue::from_str(&id).expect("validated share selector"),
+        );
+    }
+}
+
 /// Axum middleware: gate every protected endpoint. Login, whoami, logout, version and openapi.json must NOT have this layer applied.
 pub async fn require_session(
     State(auth): State<AuthState>,
-    headers: HeaderMap,
+    mut headers: HeaderMap,
     mut request: Request<Body>,
     next: Next,
 ) -> Result<Response> {
+    select_share(&mut headers, request.uri());
     let Some(authenticated) = input_source::resolve(&auth, &headers) else {
         return Err(CalmError::Unauthorized);
     };
@@ -345,10 +357,11 @@ pub async fn require_session(
 /// Same as [`require_session`] but for the WS upgrade routes: every upgrade is origin-checked (WS has no CORS).
 pub async fn require_session_ws(
     State(auth): State<AuthState>,
-    headers: HeaderMap,
+    mut headers: HeaderMap,
     mut request: Request<Body>,
     next: Next,
 ) -> Result<Response> {
+    select_share(&mut headers, request.uri());
     let Some(authenticated) = input_source::resolve(&auth, &headers) else {
         return Err(CalmError::Unauthorized);
     };
@@ -537,7 +550,12 @@ pub async fn login_handler(
 }
 
 /// GET /api/auth/whoami — NOT behind the session middleware (the frontend hits it before it knows whether it is logged in), so it checks inline.
-async fn whoami_handler(State(auth): State<AuthState>, headers: HeaderMap) -> Result<Response> {
+async fn whoami_handler(
+    State(auth): State<AuthState>,
+    uri: axum::http::Uri,
+    mut headers: HeaderMap,
+) -> Result<Response> {
+    select_share(&mut headers, &uri);
     let Some(principal) = resolve_principal(&auth, &headers) else {
         return Err(CalmError::Unauthorized);
     };
@@ -545,11 +563,41 @@ async fn whoami_handler(State(auth): State<AuthState>, headers: HeaderMap) -> Re
 }
 
 /// POST /api/auth/logout — idempotent; storage errors refuse successful logout.
-async fn logout_handler(State(auth): State<AuthState>, headers: HeaderMap) -> Result<Response> {
-    for id in session_cookies(&headers) {
+async fn logout_handler(
+    State(auth): State<AuthState>,
+    uri: axum::http::Uri,
+    mut headers: HeaderMap,
+) -> Result<Response> {
+    select_share(&mut headers, &uri);
+    let name = headers
+        .get("x-calm-share-link")
+        .map(|h| crate::share_access::sessions::cookie_name(h.to_str().unwrap_or("")));
+    for id in
+        crate::share_access::sessions::cookies(&headers, name.as_deref().unwrap_or(SESSION_COOKIE))
+    {
+        if let Some(name) = &name {
+            if auth
+                .shares
+                .get(id)
+                .is_none_or(|c| crate::share_access::sessions::cookie_name(&c.link_id) != *name)
+            {
+                continue;
+            }
+            auth.shares.remove(&auth.sessions, id)?;
+            continue;
+        } else if auth
+            .sessions
+            .get(id)
+            .is_some_and(|s| s.authority == SessionAuthority::ShareLink)
+        {
+            continue;
+        }
         auth.sessions.remove(id)?;
     }
-    let cookie = build_logout_cookie();
+    let mut cookie = build_logout_cookie();
+    if let Some(name) = name {
+        cookie.set_name(name);
+    }
     let mut resp = Json(serde_json::json!({"ok": true})).into_response();
     resp.headers_mut().append(
         header::SET_COOKIE,

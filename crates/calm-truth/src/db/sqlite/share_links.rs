@@ -17,6 +17,7 @@ struct LinkRow {
     resource_policy: String,
     created_at: i64,
     revoked_at: Option<i64>,
+    expires_at: i64,
 }
 
 impl LinkRow {
@@ -39,12 +40,13 @@ impl LinkRow {
                 created_at: self.created_at,
             },
             revoked_at: self.revoked_at,
+            expires_at: self.expires_at,
         })
     }
 }
 
 const COLUMNS: &str =
-    "id,track_id,area_id,approver_user_id,purpose,resource_policy,created_at,revoked_at";
+    "id,track_id,area_id,approver_user_id,purpose,resource_policy,created_at,revoked_at,expires_at";
 
 fn target(scope: &ShareScope) -> (Option<&str>, Option<&str>) {
     match scope {
@@ -89,8 +91,8 @@ pub async fn create_tx(
     let ShareResourcePolicy::CurrentDeployment = delegation.resource_policy;
     sqlx::query(concat!(
         "INSERT INTO share_links(id,track_id,area_id,approver_user_id,",
-        "purpose,resource_policy,created_at,token_hash) ",
-        "VALUES(?1,?2,?3,?4,'conversation','current_deployment',?5,?6)",
+        "purpose,resource_policy,created_at,token_hash,expires_at) ",
+        "VALUES(?1,?2,?3,?4,'conversation','current_deployment',?5,?6,?7)",
     ))
     .bind(&delegation.id)
     .bind(track)
@@ -98,6 +100,7 @@ pub async fn create_tx(
     .bind(&delegation.approver_user_id)
     .bind(delegation.created_at)
     .bind(token_hash)
+    .bind(delegation.created_at + 86_400_000)
     .execute(&mut **tx)
     .await?;
     get_tx(tx, &delegation.id).await
@@ -151,11 +154,12 @@ pub(super) async fn read_facts(
          JOIN areas a ON a.id=COALESCE(sl.area_id,target.area_id)
          LEFT JOIN area_members m ON m.area_id=a.id AND m.user_id=?2
          LEFT JOIN tracks requested ON requested.id=?3
-         WHERE sl.token_hash=?1 AND sl.revoked_at IS NULL"
+         WHERE sl.token_hash=?1 AND sl.revoked_at IS NULL AND sl.expires_at > ?4"
     ))
     .bind(hash)
     .bind(owner)
     .bind(requested)
+    .bind(crate::model::now_ms())
     .fetch_optional(pool)
     .await?
     .ok_or_else(|| CalmError::NotFound("share link"))?;
@@ -180,4 +184,20 @@ pub(super) async fn read_facts(
         area: row.target_area.into(),
         requested_track,
     })
+}
+
+/// Use the owning bounded tree query, including its cycle/depth limit.
+pub async fn track_tree_contains(
+    conn: &mut sqlx::SqliteConnection,
+    root: &str,
+    track: &str,
+) -> Result<bool> {
+    let members: Vec<(String, i64)> = sqlx::query_as(super::track_tree::TRACK_TREE_MEMBERS_SQL)
+        .bind(root)
+        .bind(super::track_tree::MAX_TRACK_TREE_DEPTH)
+        .fetch_all(conn)
+        .await?;
+    Ok(members
+        .iter()
+        .any(|(id, depth)| id == track && *depth <= super::track_tree::MAX_TRACK_TREE_DEPTH))
 }

@@ -1,3 +1,5 @@
+import inventoryStyles from './inventory.module.css';
+import notificationStyles from './notification.module.css';
 import { LayerDismissal } from '../../../ui/dialog/public.tsx';
 import { LayerDepthProvider } from '@astryxdesign/core/Layer';
 import type { TrackClosedControl } from './closed-control.ts';
@@ -94,7 +96,7 @@ function notificationGist(text: string): string {
 }
 
 export type TrackPageProps = Readonly<{
-  track: Track;
+  track: Pick<Track, 'id' | 'title' | 'closedAt' | 'working' | 'attention' | 'cards'> & Partial<Pick<Track, 'isolation'>>;
   /** Fill the reading column with an app-owned interactive surface. */
   fillReading?: boolean;
   /** Visit-scoped choice supplied by the route owner, independently for each Track. */
@@ -138,6 +140,8 @@ export type TrackPageProps = Readonly<{
   onStartConversation?: () => void;
   /** Hide the redundant header action when the conversation is already in the reading column. */
   showConversationAction?: boolean;
+  shareLinks?: ReactNode;
+  onShareTrack?: (origin: DialogOrigin) => void;
   /** The Cards module head's `+`, composed by `app/router`. */
   cardsAction?: ReactNode;
   /** Browser-local file history, composed by the report feature through app. */
@@ -168,11 +172,11 @@ export type TrackPageProps = Readonly<{
   canCloseTrack: boolean;
   /** The server's `admin_granted_at`: the Admin badge. The role is changed in the Planner conversation's composer. */
   adminGrantedAt: number | null;
-  onRenameTrack: (title: string) => void | Promise<void>;
-  closedControl: TrackClosedControl;
-  onDeleteTrack: (signal: AbortSignal) => void | Promise<void>;
+  onRenameTrack?: (title: string) => void | Promise<void>;
+  closedControl?: TrackClosedControl;
+  onDeleteTrack?: (signal: AbortSignal) => void | Promise<void>;
   /** After a delete that holds, the server's answer or a 404 to a retry alike. */
-  onTrackDeleted: () => void;
+  onTrackDeleted?: () => void;
 }>;
 
 /** The view model's module under `key`, by key rather than by index. Missing is an error rather than an empty page. */
@@ -184,7 +188,7 @@ function rowModule(view: TrackPageView, key: RowModuleView['key']): RowModuleVie
 
 export function TrackPage({ fillReading = false, mobileReportIntro, mobileChatComposer,
   panelContent, progressDisclosure, track, cards, tasks, openableCards, outlineItems = [], report, backlinks, conversationList, conversationContextList,
-  onStartConversation, showConversationAction = true, conversationOpen = false, mobilePanelObscured, inputNotifications = [], onReply, onDismiss, nowMs,
+  shareLinks, onShareTrack, onStartConversation, showConversationAction = true, conversationOpen = false, mobilePanelObscured, inputNotifications = [], onReply, onDismiss, nowMs,
   cardsAction, recentFiles, onOpenCard, onDeleteCard, onSetWorkbench, onOpenTask, onOpenOutline, board, onCloseBoard,
   panel = null, onOpenPanel, onClosePanel,
   mobileBackLabel = 'Pages', onMobileBack, mobileHeaderActionsHost = null, mobileHeaderTitleHost = null, mobileTitleReadView,
@@ -228,13 +232,13 @@ export function TrackPage({ fillReading = false, mobileReportIntro, mobileChatCo
     }
   }, [mobileHeaderTitleHost, titleContainer, titleInHeader]);
 
-  const deletion = useDeleteConfirm((_id, signal) => onDeleteTrack(signal), writeFailureText(DELETE_FAILURES, DELETE_TEXT), onTrackDeleted);
+  const deletion = useDeleteConfirm((_id, signal) => onDeleteTrack?.(signal), writeFailureText(DELETE_FAILURES, DELETE_TEXT), onTrackDeleted);
   const dismissFeedback = useOperationFeedback();
   const notificationSignature = inputNotifications.map(({ key }) => key).join('|');
   const hasTurnTimeout = inputNotifications.some(({ kind }) => kind === 'planner-turn-timeout');
   const [noticeExpanded, setNoticeExpanded] = useState(inputNotifications.length > 0 && !conversationOpen);
   const [notificationAnnouncement, setNotificationAnnouncement] = useState('');
-  const offeredClosedAction = canReopenTrack ? 'reopen' : (canCloseTrack ? 'close' : null);
+  const offeredClosedAction = closedControl === undefined ? null : canReopenTrack ? 'reopen' : (canCloseTrack ? 'close' : null);
   const previousNotificationSignatureRef = useRef('');
   const previousNotificationCountRef = useRef(0);
   const previousConversationOpenRef = useRef(conversationOpen);
@@ -258,18 +262,19 @@ export function TrackPage({ fillReading = false, mobileReportIntro, mobileChatCo
   const mobilePanelKind: MobilePanelKind = panel ?? 'cards';
   const trackWorkActions = [
     ...(offeredClosedAction === 'reopen' ? [
-      { label: 'Reopen', isDisabled: closedControl.pending, onClick: () => closedControl.setClosed('reopen').catch(() => false) },
+      { label: 'Reopen', isDisabled: closedControl?.pending, onClick: () => closedControl?.setClosed('reopen').catch(() => false) },
     ] : []),
     ...(offeredClosedAction === 'close' ? [
-      { label: 'Close', isDisabled: closedControl.pending, onClick: () => closedControl.setClosed('close').catch(() => false) },
+      { label: 'Close', isDisabled: closedControl?.pending, onClick: () => closedControl?.setClosed('close').catch(() => false) },
     ] : []),
   ];
   const desktopSourceRef = useRef<HTMLSpanElement | null>(null);
   const deleteTrackAction = (origin: DialogOrigin) => ({ label: 'Delete track', onClick: () => deletion.request(track.id, origin) });
   const trackMutationActions = [
     ...trackWorkActions,
-    ...(offeredClosedAction !== null ? [{ type: 'divider' as const }] : []),
-    deleteTrackAction({ kind: 'anchor', anchor: { ref: desktopSourceRef }, unavailable: 'surface-center' }),
+    ...(!compactViewport && onShareTrack !== undefined ? [{ label: 'Share track', onClick: () => onShareTrack({ kind: 'anchor', anchor: { ref: desktopSourceRef }, unavailable: 'surface-center' }) }] : []),
+    ...(trackWorkActions.length > 0 && onDeleteTrack !== undefined ? [{ type: 'divider' as const }] : []),
+    ...(onDeleteTrack === undefined ? [] : [deleteTrackAction({ kind: 'anchor', anchor: { ref: desktopSourceRef }, unavailable: 'surface-center' })]),
   ];
   /* The desktop panel goes through `core/view`: one derivation, one traversal, one painter. This file may not spell a projection marker; `desktop-projection.test.tsx` scans for that. */
   /* `activity` is the track itself: `Track` carries the overlay-derived
@@ -283,6 +288,7 @@ export function TrackPage({ fillReading = false, mobileReportIntro, mobileChatCo
   const [desktopActionsOpen, setDesktopActionsOpen] = useState(false);
   const desktopActionsRef = useRef<HTMLButtonElement | null>(null);
   const mobilePanelRef = useRef<HTMLElement | null>(null);
+  const shareTriggerRef = useRef<HTMLButtonElement | null>(null);
   const mobileActionsRef = useRef<HTMLSpanElement | null>(null);
   const previousPanel = useRef<MobilePanelKind | null>(null);
 
@@ -335,16 +341,16 @@ export function TrackPage({ fillReading = false, mobileReportIntro, mobileChatCo
             ? [{ label: 'Outline', onClick: () => openMobilePanel('outline') }]
             : []),
           /* The module sequence is this menu: derived from `rowModules`, so a module the view model gains, loses or reorders moves the menu with it. `Outline` and `Conversations` are not row modules. */
-          ...panelView.rowModules.map((module) => ({
+          ...panelView.rowModules.filter(module => onDeleteTrack !== undefined || module.rows.length > 0).map((module) => ({
             label: module.title,
             onClick: () => openMobilePanel(module.key),
           })),
           { label: 'Conversations', onClick: () => openMobilePanel('conversations') },
-          { type: 'divider' },
+          ...(trackWorkActions.length > 0 || canEditMobileTitle || onDeleteTrack !== undefined ? [{ type: 'divider' as const }] : []),
           ...trackWorkActions,
-          ...(trackWorkActions.length > 0 ? [{ type: 'divider' as const }] : []),
+          ...(trackWorkActions.length > 0 && (canEditMobileTitle || onDeleteTrack !== undefined) ? [{ type: 'divider' as const }] : []),
           ...(canEditMobileTitle ? [{ label: 'Edit track', onClick: () => { requestAnimationFrame(() => mobileTitleEditRef.current?.()); } }] : []),
-          deleteTrackAction({ kind: 'anchor', anchor: { ref: mobileActionsRef }, unavailable: 'surface-center' }),
+          ...(onDeleteTrack === undefined ? [] : [deleteTrackAction({ kind: 'anchor', anchor: { ref: mobileActionsRef }, unavailable: 'surface-center' })]),
         ]}
       />
     </span>
@@ -357,7 +363,7 @@ export function TrackPage({ fillReading = false, mobileReportIntro, mobileChatCo
     >
       {dismissalLayer}
       <PageHeader
-        className={styles.workHeader}
+        className={`${styles.workHeader} ${conversationOpen ? styles.workHeaderBesideDrawer : ''}`}
         title={
           <>
             {onCloseBoard !== undefined && (
@@ -376,6 +382,9 @@ export function TrackPage({ fillReading = false, mobileReportIntro, mobileChatCo
             <div className={styles.titleSlot} ref={desktopTitleSlotRef} />
           </>
         }
+        meta={!compactViewport && !boardOpen && onShareTrack !== undefined && <AstryxButton ref={shareTriggerRef}
+          isIconOnly label="分享" tooltip="分享" variant="ghost" size="sm" icon={<Icon name="share" size="sm" />} className={styles.shareTrigger}
+          onClick={() => onShareTrack({ kind: 'anchor', anchor: { ref: shareTriggerRef }, unavailable: 'surface-center' })} />}
         actions={(
           <span className={styles.headerActions}>
             {showConversationAction && !boardOpen && !conversationOpen && (onReply !== undefined || onStartConversation !== undefined) && (
@@ -389,7 +398,7 @@ export function TrackPage({ fillReading = false, mobileReportIntro, mobileChatCo
                 onClick={onReply ?? onStartConversation}
               />
             )}
-            <span ref={desktopSourceRef} className={styles.trackActions}>
+            {trackMutationActions.length > 0 && <span ref={desktopSourceRef} className={styles.trackActions}>
               <AstryxDropdownMenu
                 alignment="end"
                 button={{
@@ -412,7 +421,7 @@ export function TrackPage({ fillReading = false, mobileReportIntro, mobileChatCo
                   }
                 }}
               />
-            </span>
+            </span>}
           </span>
         )}
       />
@@ -423,12 +432,12 @@ export function TrackPage({ fillReading = false, mobileReportIntro, mobileChatCo
           if (relocatingTitleRef.current) event.stopPropagation();
           else if (!titleContainer.contains(event.relatedTarget)) lastFocusedTitleRef.current = null;
         }}>
-        <h1 className={styles.titleHeading}><EditableTitle value={track.title} placeholder={UNTITLED_TRACK_LABEL}
+        <h1 className={styles.titleHeading}>{onRenameTrack === undefined ? <span className={styles.title} data-nc-page-title=""><TrackTitle track={track} /></span> : <EditableTitle value={track.title} placeholder={UNTITLED_TRACK_LABEL}
           displayContent={<TrackTitle track={track} />} emptyCommit="clear" onCommit={onRenameTrack}
           readCommitFailure={writeFailureText(TRACK_PATCH_FAILURES, TRACK_PATCH_TEXT.rename)} editLabel="Rename track" inputLabel="Track title"
           className={styles.title} isPageTitle titleRef={titleReadControlRef}
           readView={titleInHeader && mobileTitleReadView !== undefined ? (controls) => <MobileTitleReadView
-            controls={controls} host={mobileTitleReadHost} view={mobileTitleReadView} register={registerMobileTitleEdit} /> : undefined} /></h1>
+            controls={controls} host={mobileTitleReadHost} view={mobileTitleReadView} register={registerMobileTitleEdit} /> : undefined} />}</h1>
         <div className={styles.mobileTitleReadHost} hidden={!titleInHeader}
           ref={(node) => { if (node !== null && mobileTitleReadHost.parentNode !== node) node.appendChild(mobileTitleReadHost); }} />
         {track.isolation === 'none' && <ExplanationBadge label={NO_ISOLATION_LABEL}>{NO_ISOLATION_EXPLANATION}</ExplanationBadge>}
@@ -533,17 +542,18 @@ export function TrackPage({ fillReading = false, mobileReportIntro, mobileChatCo
             aria-hidden={mobilePanelOpen ? true : undefined}
             inert={mobilePanelOpen}
           >
-          <PanelCard className={styles.workCard}>
+          <PanelCard className={inventoryStyles.workCard}>
             <ContextFrame>
               {hasDesktopConversations && <ContextGroup title="Conversations"
                 actionVisibility="always" action={onStartConversation === undefined ? undefined : <ContextAction
                   label="New conversation" icon="plus" onClick={onStartConversation} />}>
                 {desktopConversations}
               </ContextGroup>}
-              {!compactViewport && panelContent !== undefined && <div className={styles.panelContext}>{panelContent}</div>}
+              {!compactViewport && panelContent !== undefined && <div className={inventoryStyles.panelContext}>{panelContent}</div>}
               {paintDesktopPanel(desktopPainter, panelView.desktop)}
+              {!compactViewport && shareLinks}
               {(recentFiles !== undefined || backlinks !== undefined) && <ContextGroup title="Related" collapsible>
-                <div className={styles.relatedContent}>{recentFiles}{backlinks}</div>
+                <div className={inventoryStyles.relatedContent}>{recentFiles}{backlinks}</div>
               </ContextGroup>}
             </ContextFrame>
           </PanelCard>
@@ -578,10 +588,10 @@ export function TrackPage({ fillReading = false, mobileReportIntro, mobileChatCo
 
       {inputNotifications.length > 0 && (
         <aside
-          className={`${styles.needsInputNotice} ${noticePanelOpen
-            ? styles.needsInputNoticeExpanded
-            : styles.needsInputNoticeCompact} ${conversationOpen ? styles.needsInputNoticeBesideDrawer : ''}
-            ${hasTurnTimeout && !conversationOpen && !mobilePanelObscured ? styles.timeoutNotice : ''}`}
+          className={`${notificationStyles.needsInputNotice} ${noticePanelOpen
+            ? notificationStyles.needsInputNoticeExpanded
+            : notificationStyles.needsInputNoticeCompact} ${conversationOpen ? notificationStyles.needsInputNoticeBesideDrawer : ''}
+            ${hasTurnTimeout && !conversationOpen && !mobilePanelObscured ? notificationStyles.timeoutNotice : ''}`}
           data-nc-needs-input-notice=""
           data-nc-notification-mode={noticePanelOpen ? 'expanded' : 'compact'}
           role="region"
@@ -589,23 +599,23 @@ export function TrackPage({ fillReading = false, mobileReportIntro, mobileChatCo
         >
           {noticePanelOpen ? (
             <>
-              <span className={styles.needsInputNoticeHeader}>
-                <span className={styles.needsInputNoticeIcon}><Icon name="notification" size="sm" /></span>
-                <strong className={styles.needsInputNoticeTitle}>{hasTurnTimeout ? 'Notifications' : 'Waiting on you'}</strong>
-                <span className={styles.needsInputCount}>{inputNotifications.length}</span>
+              <span className={notificationStyles.needsInputNoticeHeader}>
+                <span className={notificationStyles.needsInputNoticeIcon}><Icon name="notification" size="sm" /></span>
+                <strong className={notificationStyles.needsInputNoticeTitle}>{hasTurnTimeout ? 'Notifications' : 'Waiting on you'}</strong>
+                <span className={notificationStyles.needsInputCount}>{inputNotifications.length}</span>
                 <button
                   type="button"
-                  className={styles.needsInputCollapse}
+                  className={notificationStyles.needsInputCollapse}
                   aria-label="Collapse notifications"
                   title="Collapse notifications"
                   onClick={() => setNoticeExpanded(false)}
                 ><Icon name="chevron-right" size="sm" /></button>
               </span>
-              <ul className={styles.needsInputNoticeList}>
+              <ul className={notificationStyles.needsInputNoticeList}>
                 {inputNotifications.map((notification) => (
                   <li
                     key={notification.key}
-                    className={`${styles.notice} ${onReply === undefined ? '' : styles.noticeActionable}`}
+                    className={`${notificationStyles.notice} ${onReply === undefined ? '' : notificationStyles.noticeActionable}`}
                     data-nc-notification-state={notification.kind}
                   >
                     {/* The whole row is the reply: a button stretched over it, so nothing interactive nests
@@ -613,41 +623,41 @@ export function TrackPage({ fillReading = false, mobileReportIntro, mobileChatCo
                     {onReply !== undefined && (
                       <button
                         type="button"
-                        className={styles.noticeOpen}
+                        className={notificationStyles.noticeOpen}
                         aria-label={`${notificationAction(notification.kind).name}: ${notificationGist(notification.text)}`}
                         onClick={onReply}
                       />
                     )}
-                    <span className={styles.noticeMeta}>
+                    <span className={notificationStyles.noticeMeta}>
                       <span
-                        className={`${styles.noticeDot} ${notification.kind === 'planner-down' ? styles.noticeDotDown
-                          : notification.kind === 'planner-turn-timeout' ? styles.noticeDotTimeout : styles.noticeDotAsk}`}
+                        className={`${notificationStyles.noticeDot} ${notification.kind === 'planner-down' ? notificationStyles.noticeDotDown
+                          : notification.kind === 'planner-turn-timeout' ? notificationStyles.noticeDotTimeout : notificationStyles.noticeDotAsk}`}
                         aria-hidden="true"
                       />
                       {/* One slot, two spans: the label, and the row's action in its place while the row is hovered
                           or focused. Stacked in one grid cell, so the swap does not move the time. */}
-                      <span className={styles.noticeLabel}>
-                        <span className={styles.noticeLabelText}>{NOTIFICATION_LABEL[notification.kind]}</span>
+                      <span className={notificationStyles.noticeLabel}>
+                        <span className={notificationStyles.noticeLabelText}>{NOTIFICATION_LABEL[notification.kind]}</span>
                         {onReply !== undefined && (
-                          <span className={styles.noticeAction} aria-hidden="true">{notificationAction(notification.kind).hint}</span>
+                          <span className={notificationStyles.noticeAction} aria-hidden="true">{notificationAction(notification.kind).hint}</span>
                         )}
                       </span>
-                      <time className={styles.noticeTime} dateTime={new Date(notification.atMs).toISOString()}>
+                      <time className={notificationStyles.noticeTime} dateTime={new Date(notification.atMs).toISOString()}>
                         {relativeTime(notification.atMs, nowMs ?? Date.now())}
                       </time>
                     </span>
                     {/* The kernel's words are markdown, rendered as the chat renders a reply. An ask is read whole;
                         a failure is clamped, its full text is in the Planner conversation. */}
-                    <div className={`${styles.noticeBody} ${notification.kind === 'planner-down' ? styles.noticeBodyClamped : ''}`}>
+                    <div className={`${notificationStyles.noticeBody} ${notification.kind === 'planner-down' ? notificationStyles.noticeBodyClamped : ''}`}>
                       <Markdown density="compact" headingLevelStart={3}>{notification.text}</Markdown>
-                      {notification.kind === 'planner-turn-timeout' && <p className={styles.noticeTimestamp}>
+                      {notification.kind === 'planner-turn-timeout' && <p className={notificationStyles.noticeTimestamp}>
                         Recorded at <time dateTime={new Date(notification.atMs).toISOString()}>{new Date(notification.atMs).toISOString()}</time>
                       </p>}
                     </div>
                     {onDismiss !== undefined && notification.action === undefined && NOTIFICATION_DISMISSABLE[notification.kind] && (
                       <button
                         type="button"
-                        className={styles.noticeDismiss}
+                        className={notificationStyles.noticeDismiss}
                         aria-label={`Dismiss: ${NOTIFICATION_LABEL[notification.kind]}: ${notificationGist(notification.text)}`}
                         title="Dismiss"
                         onClick={() => {
@@ -662,21 +672,21 @@ export function TrackPage({ fillReading = false, mobileReportIntro, mobileChatCo
           ) : (
             <button
               type="button"
-              className={styles.needsInputLauncher}
+              className={notificationStyles.needsInputLauncher}
               data-nc-notification-launcher=""
               aria-label={`Open ${inputNotifications.length} ${inputNotifications.length === 1 ? 'notification' : 'notifications'}`}
               title="Open notifications"
               onClick={() => setNoticeExpanded(true)}
             >
               <Icon name="notification" />
-              <span className={styles.needsInputIndicator} aria-hidden="true">{inputNotifications.length}</span>
+              <span className={notificationStyles.needsInputIndicator} aria-hidden="true">{inputNotifications.length}</span>
             </button>
           )}
         </aside>
       )}
 
       <DeleteConfirmDialog confirm={deletion} copy={DELETE_TRACK_COPY} />
-      <OperationFeedback feedback={closedControl.feedback} />
+      {closedControl !== undefined && <OperationFeedback feedback={closedControl.feedback} />}
       <OperationFeedback feedback={dismissFeedback} />
     </section>
   );

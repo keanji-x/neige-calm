@@ -13,7 +13,7 @@ use calm_types::conversation_receipt::{
 pub(super) async fn accept(
     state: &RouteState,
     worker: &WorkerState,
-    source: crate::auth::HumanInputSource,
+    source: crate::conversation_inputs::CreationInputSource,
     binding: crate::harness::profile::PlannerBinding,
     payload: &PlannerHarnessStartOperationPayload,
     request_sha256: String,
@@ -32,13 +32,10 @@ pub(super) async fn accept(
         state.repo.as_ref(), None, &state.events, &state.write, move |tx| {
             Box::pin(async move {
                 let track = crate::db::sqlite::track_get_tx(tx, &payload.track_id.clone().into()).await?;
-                let principal = source.current_principal()?;
-                let area = crate::organization_access::require_area_access_tx(
-                    tx, track.area_id.as_str(), &principal,
-                    calm_types::organization::AreaAccess::Collaborate,
-                ).await?;
+                let area = source.authorize_tx(tx, track.area_id.as_str(), Some(track.id.as_str())).await?;
+                let source_id = source.source_id()?;
                 if let Some(original) = conversation::assistant_creation_get_tx(tx, payload.planner_card_id.as_str()).await? {
-                    if original.request_sha256 != request_sha256 || original.source_user_id != principal.user_id {
+                    if original.request_sha256 != request_sha256 || original.source_user_id != source_id {
                         return Err(CalmError::IdempotencyKeyReused("this key names another original Assistant request".into()));
                     }
                     let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM cards WHERE id=?1 AND track_id=?2)")
@@ -46,6 +43,7 @@ pub(super) async fn accept(
                     if !exists {
                         return Err(CalmError::IdempotencyKeyExhausted("the original Assistant no longer exists".into()));
                     }
+                    source.require_author_tx(tx, &original.receipt.entry_id).await?;
                     let _ = replay_tx.send(original.receipt);
                     return Err(CalmError::Conflict("Assistant acceptance already committed".into()));
                 }
@@ -58,6 +56,7 @@ pub(super) async fn accept(
                 // Permanent historical journals are factual replay evidence, never
                 // authority to adopt the key as a new canonical acceptance or retry it.
                 if super::super::conversations_shared::lookup_start_operation(&legacy_state, &derived.operation_key).await?.is_some() {
+                    source.require_historical()?;
                     let (_, original) = super::super::conversations_shared::retryable_operation(&legacy_state, &derived.operation_key).await?;
                     let original = original.ok_or_else(|| CalmError::Conflict("historical_result_unprovable: Assistant creation incomplete".into()))?;
                     if original.payload_hash != request_sha256 {
@@ -99,7 +98,7 @@ pub(super) async fn accept(
                     ),
                 ).await?;
                 let mut carrier = conversation::current_input_carrier_tx(tx, card.id.as_str(), &worker).await?;
-                let accepted = crate::conversation_inputs::accept_human_tx(tx, &source.current_principal()?, &mut carrier,
+                let accepted = source.accept_tx(tx, &mut carrier,
                     HumanPayload { text:payload.first_message.clone().ok_or_else(|| CalmError::Internal("first input missing".into()))?,bound_attachments:vec![] },
                 ).await?;
                 let AcceptedInputRef::Human { message } = accepted.input_ref else { return Err(CalmError::Internal("unexpected acceptance class".into())); };
@@ -111,10 +110,10 @@ pub(super) async fn accept(
                 };
                 conversation::assistant_creation_insert_tx(tx, &AssistantCreationRecord {
                     card_id:card.id.to_string(),track_id:track.id.to_string(),request_sha256,
-                    source_user_id:principal.user_id,presentation_sequence:accepted.presentation_sequence,
+                    source_user_id:source_id,presentation_sequence:accepted.presentation_sequence,
                     receipt:receipt.clone(),
                 }).await?;
-                source.current_principal()?;
+                source.authorize_tx(tx, track.area_id.as_str(), Some(track.id.as_str())).await?;
                 let scope = EventScope::Card {card:card.id.clone(),track:track.id.clone(),area:area.id};
                 Ok(((receipt, true), vec![(ActorId::User,scope.clone(),Event::CardAdded(card.clone())),
                     (ActorId::User,scope,Event::HarnessPresentationChanged {
@@ -136,12 +135,7 @@ pub(super) async fn accept(
     };
     // Only fresh acceptance schedules activation. Replaying a receipt has no execution effect.
     if fresh {
-        crate::operation::planner_start_fence::wake_canonical_human(
-            state.clone(),
-            card_id,
-            for_wake,
-        )
-        .await;
+        for_wake.wake(state.clone(), card_id).await?;
     }
     Ok(ConversationInitialInputReceiptResult::Known { receipt })
 }

@@ -505,6 +505,8 @@ pub async fn run_client_pump_with_commands(
                         closed = true;
                         break;
                     }
+                    #[cfg(feature = "fixtures")]
+                    crate::test_seams::pause_point("terminal-input-enqueued", &terminal_id).await;
                 }
                 Effect::KillChild => {
                     tracing::info!("client requested Kill; signaling child");

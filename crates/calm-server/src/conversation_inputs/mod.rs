@@ -2,7 +2,9 @@
 //! real session issuer/middleware; Actor labels and profile roles are audit data.
 //! Canonical ingress checks this owner in its protected transaction. Key replay
 //! must check it before retrieving a stored result. Storage retains factual rules.
+mod creation;
 mod execution;
+pub(crate) use creation::CreationInputSource;
 mod share;
 pub(crate) use share::ShareInputSource;
 pub(crate) mod pending_controls;

@@ -6,7 +6,8 @@ use axum::http::{Request, StatusCode, header};
 use axum::middleware::Next;
 use calm_server::auth::{AuthConfig, AuthState};
 use calm_server::state::AppState;
-use serde_json::json;
+use http_body_util::BodyExt;
+use serde_json::{Value, json};
 use tower::ServiceExt;
 
 pub async fn application(state: AppState) -> axum::Router {
@@ -61,4 +62,27 @@ pub async fn application_with_auth(state: AppState, auth: AuthState) -> axum::Ro
             }
         },
     ))
+}
+
+/// A human write through the production router and an actually issued login cookie.
+#[allow(dead_code)] // Shared fixture module is also compiled by targets without Report writes.
+pub async fn user_json(state: AppState, method: &str, path: &str, body: Value) -> Value {
+    let response = application(state)
+        .await
+        .oneshot(
+            Request::builder()
+                .method(method)
+                .uri(path)
+                .header(header::CONTENT_TYPE, "application/json")
+                .header("X-Calm-Actor", "user")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = response.status();
+    let body =
+        serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(status, StatusCode::OK, "{body}");
+    body
 }

@@ -178,13 +178,12 @@ pub struct TodayLaunchpadReportReset {
 )]
 pub(crate) async fn reset_today_launchpad_report(
     State(s): State<RouteState>,
-    // Extraction asserts the session middleware ran; nothing is read off it.
-    _principal: crate::auth::Principal,
+    source: crate::auth::HumanInputSource,
     actor: Actor,
 ) -> Result<Json<TodayLaunchpadReportReset>> {
     // The same raw-string gate the wholesale replace uses: `Actor::to_actor_id`'s fallback
     // maps unknown `ai:*` values to `User`, right for attribution and wrong for gating.
-    crate::routes::track_report_blocks::require_rest_user_actor(&actor)?;
+    crate::routes::track_report_blocks::require_rest_human_actor(&actor, &source)?;
 
     let track = s
         .repo

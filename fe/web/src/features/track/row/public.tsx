@@ -17,7 +17,7 @@ import { TrackActions } from './actions.tsx';
 export type TrackRowVariant = 'default' | 'compact' | 'panel' | 'rail';
 
 export type TrackRowProps = Readonly<{
-  track: Track;
+  track: Pick<Track, 'id' | 'title' | 'closedAt' | 'pinnedAt' | 'updatedAt' | 'working' | 'attention'>;
   /** Area name, when the surface does not already group by area. */
   areaName?: string;
   /** Agenda rows only: the hour bucket of a `ScheduledEvent`. */
@@ -37,6 +37,7 @@ export type TrackRowProps = Readonly<{
     onSetPinned: (id: string, pinned: boolean) => void;
     onSetAreaPinned: (id: string, pinned: boolean) => void;
     onMarkUnread: (id: string) => void;
+    onShare?: (id: string, origin: DialogOrigin) => void;
   }>;
   rowRef?: Ref<HTMLButtonElement>;
 } & ({ variant: 'rail'; presentation: NavigationEntrySpec } | { variant?: Exclude<TrackRowVariant, 'rail'>; presentation?: never })>;

@@ -5,6 +5,7 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { NEUTRAL_ACTIVITY, type Track } from '../../../../../core/domain/track.ts';
+import { TrackActions } from './actions.tsx';
 import { TrackRow, relativeTime } from './public.tsx';
 
 afterEach(cleanup);
@@ -189,4 +190,23 @@ it('dispatches menu actions and toggles without opening the row', async () => {
   expect(onSetAreaPinned).toHaveBeenCalledWith('w1', false);
   expect(onMarkUnread).toHaveBeenCalledWith('w1');
   expect(onOpen).not.toHaveBeenCalled();
+});
+
+it('omits sharing from track actions', async () => {
+  const props = { track: track(), areaPinned: false, onSetPinned: vi.fn(), onSetAreaPinned: vi.fn(), onMarkUnread: vi.fn() };
+  render(<TrackActions {...props} />);
+  await userEvent.click(screen.getByRole('button', { name: 'Actions for track Open track' }));
+  expect(screen.queryByRole('menuitem', { name: 'Share track' })).toBeNull();
+});
+
+it('offers Share track after Mark as unread while Pin globally remains first', async () => {
+  const onShare = vi.fn();
+  render(<TrackActions track={track()} areaPinned={false} onSetPinned={vi.fn()}
+    onSetAreaPinned={vi.fn()} onMarkUnread={vi.fn()} onShare={onShare} />);
+  await userEvent.click(screen.getByRole('button', { name: 'Actions for track Open track' }));
+  expect(screen.getAllByRole('menuitem').map(item => item.textContent)).toEqual([
+    'Pin globally', 'Pin within area', 'Mark as unread', 'Share track',
+  ]);
+  await userEvent.click(screen.getByRole('menuitem', { name: 'Share track' }));
+  expect(onShare).toHaveBeenCalledWith('w1', expect.objectContaining({ kind: 'anchor' }));
 });

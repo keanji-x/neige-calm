@@ -36,12 +36,7 @@ pub(crate) async fn list_track_sources(
     principal: Principal,
     Path(id): Path<String>,
 ) -> Result<Response> {
-    crate::report_resource::list_track_sources(
-        &state,
-        crate::read_access::Audience::Owner(&principal),
-        id,
-    )
-    .await
+    crate::report_resource::list_track_sources(&state, &principal, id).await
 }
 
 #[utoipa::path(
@@ -65,11 +60,5 @@ pub(crate) async fn get_track_source(
     principal: Principal,
     Path((id, source_id)): Path<(String, String)>,
 ) -> Result<Response> {
-    crate::report_resource::get_track_source(
-        &state,
-        crate::read_access::Audience::Owner(&principal),
-        id,
-        source_id,
-    )
-    .await
+    crate::report_resource::get_track_source(&state, &principal, id, source_id).await
 }

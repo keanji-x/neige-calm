@@ -43,6 +43,8 @@
     overflow: clip;
   }
 
+  .shellTrackOnly { grid-template-columns: minmax(0, 1fr); }
+
   /* The manual collapse. Without this rule the toggle only swapped the rail's
      contents and left a 200px column of empty ground beside them. */
   .shellCollapsed {

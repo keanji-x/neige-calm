@@ -931,14 +931,14 @@ impl PlannerHarness {
 
     pub(crate) async fn compact_from_request(
         &self,
-        source: Option<crate::auth::HumanInputSource>,
+        source: crate::auth::HumanInputSource,
     ) -> Result<()> {
         match &self.inner.inputs {
-            RuntimeInputs::Canonical(_) => {
-                self.compact_canonical(source.ok_or(CalmError::Unauthorized)?)
+            RuntimeInputs::Canonical(_) => self.compact_canonical(source).await,
+            RuntimeInputs::Historical(_) => {
+                self.submit_compact(compact_command::Source::HistoricalRequest(source))
                     .await
             }
-            RuntimeInputs::Historical(_) => self.compact().await,
         }
     }
 
@@ -950,6 +950,7 @@ impl PlannerHarness {
             .await
     }
 
+    #[cfg(any(test, feature = "fixtures"))]
     pub async fn compact(&self) -> Result<()> {
         self.inner.historical_queue()?;
         self.submit_compact(compact_command::Source::Historical)

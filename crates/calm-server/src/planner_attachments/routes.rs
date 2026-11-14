@@ -102,6 +102,7 @@ pub(crate) async fn upload_planner_attachment(
         "planner attachment upload",
         "An agent already reads this workspace directly and has no upload channel.",
     )?;
+    super::require_image_input_source(&source)?;
     let context = attachment_context(&s, &id).await?;
     let binding =
         crate::harness::profile::checked_card_binding(s.repo.as_ref(), &context.card, context.role)
@@ -136,6 +137,7 @@ pub(crate) async fn upload_planner_attachment(
         let expected_binding = expected_binding.clone();
         let card = card.clone();
         async move {
+            super::require_image_input_source(&source)?;
             crate::workspace_service::selected_track(state.repo.as_ref(), &selected).await?;
             let current = attachment_context(&state, &card).await?;
             if current.card.track_id != selected.id {

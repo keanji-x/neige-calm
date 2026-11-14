@@ -115,10 +115,19 @@ fn validate_and_normalize_default_cwd(default_cwd: &mut Option<String>) -> Resul
     ),
 )]
 pub(crate) async fn list_areas(
+    scope: Option<axum::Extension<crate::share_access::scope::ShareAccessScope>>,
     State(s): State<RouteState>,
     principal: Principal,
     Query(q): Query<ListAreasQuery>,
 ) -> Result<Json<Vec<Area>>> {
+    if let Some(axum::Extension(scope)) = scope {
+        let area = s
+            .repo
+            .area_get(scope.area())
+            .await?
+            .ok_or(CalmError::Unauthorized)?;
+        return Ok(Json(vec![area]));
+    }
     if q.include_system {
         require_deployment_owner(&principal)?;
     }

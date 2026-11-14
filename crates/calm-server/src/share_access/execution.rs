@@ -23,7 +23,19 @@ pub(crate) async fn authorize_accepted_tx(
             "SELECT t.id,t.area_id,t.purpose FROM cards c JOIN tracks t ON t.id=c.track_id WHERE c.id=?1")
             .bind(card).fetch_optional(&mut **tx).await?
             .ok_or_else(|| CalmError::NotFound("shared conversation".into()))?;
-    let contained = contains_track(&delegation.scope, &track, &area, purpose.as_deref());
+    let contained = purpose.as_deref() != Some(crate::AREA_CHAT_PURPOSE)
+        && match &delegation.scope {
+            ShareScope::Track(root) => {
+                let root_area: String =
+                    sqlx::query_scalar("SELECT area_id FROM tracks WHERE id=?1")
+                        .bind(root)
+                        .fetch_one(&mut **tx)
+                        .await?;
+                root_area == area
+                    && sqlite::share_links::track_tree_contains(tx, root, &track).await?
+            }
+            ShareScope::Area(id) => id == &area,
+        };
     if !contained {
         return Err(CalmError::Forbidden(
             "share scope no longer contains conversation".into(),

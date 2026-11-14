@@ -126,8 +126,8 @@ async fn get_version_returns_all_fields_with_expected_sources() {
     assert_eq!(v["apiVersion"].as_str().unwrap(), API_VERSION);
     assert_eq!(
         v["apiVersion"].as_str().unwrap(),
-        "45",
-        "Antigravity adds a managed ACP provider identity"
+        "46",
+        "Share links add public share access and owner management routes"
     );
     assert_eq!(
         v["syncEventVersion"].as_u64().unwrap(),

@@ -919,7 +919,7 @@
       "oracle:INV-APP-112"
     ],
     "target": "web/src/app/composition.ts",
-    "patch": "diff --git a/web/src/app/composition.ts b/web/src/app/composition.ts\n--- a/web/src/app/composition.ts\n+++ b/web/src/app/composition.ts\n@@ -29,7 +29,7 @@\n   return createEventComposition({\n     storage: options.storage,\n     transport: options.transport,\n-    onUnauthorized: () => unauthorized.notify(),\n+    onUnauthorized: () => undefined,\n     probeUnauthorized: options.probeUnauthorized,\n     cursorStore: options.cursorStore,\n   });\n",
+    "patch": "diff --git a/web/src/app/composition.ts b/web/src/app/composition.ts\n--- a/web/src/app/composition.ts\n+++ b/web/src/app/composition.ts\n@@ -31,7 +31,7 @@\n     url: options.url,\n     storage: options.storage,\n     transport: options.transport,\n-    onUnauthorized: () => unauthorized.notify(),\n+    onUnauthorized: () => undefined,\n     probeUnauthorized: options.probeUnauthorized,\n     cursorStore: options.cursorStore,\n   });\n",
     "expected_red": [
       "event composition T-A3 publishes driver unauthorized transitions through the browser channel"
     ],
@@ -1160,16 +1160,18 @@
       "dark Astryx filled actions destructive text clears 4.5:1 on its actual fill",
       "dark Astryx filled actions primary text clears 4.5:1 on its actual fill",
       "light Astryx filled actions destructive text clears 4.5:1 on its actual fill",
-      "light Astryx filled actions primary text clears 4.5:1 on its actual fill"
+      "light Astryx filled actions primary text clears 4.5:1 on its actual fill",
+      "keeps the clickable Area quieter and uses the same cadence as its Track rows"
     ],
     "selection_paths": [
       "tools/styles/styles.test.ts",
       "web/src/app/theme/theme.browser.test.tsx",
       "web/src/styles/contrast-matrix.browser.test.ts",
       "web/src/features/chat/thread/thread.browser.test.tsx",
-      "web/src/features/track/page/header-status.browser.test.tsx"
+      "web/src/features/track/page/header-status.browser.test.tsx",
+      "web/src/app/shell/sidebar.hover.browser.test.tsx"
     ],
-    "why_more_than_one": "Swapping the two grounds is a cross-theme edit, and every per-theme floor is tuned against its own ground: light's foregrounds land on dark's 24.5% ground and dark's land on light's 96%, so the AA body / non-text floors, both 3.0-L rungs that straddle `--bg`, the ground-vs-card chroma gap and the shared ladder direction all fail by construction — there is no ground inversion that leaves the contrast matrix green. The two entries listed first are the ones this mutation exists for: they are the only assertions that read the two grounds *against each other*, and they are what would stay red if every contrast floor were relaxed. The 27 that follow are the same edit noticed from inside each theme: 25 in the contrast matrix, plus the rail dot and the closed status, whose per-theme colours are measured against the rendered page ground and therefore fail on an inverted ground for exactly the reason every matrix rung does. Anything red beyond this set would mean the ground direction leaked somewhere that does not model a ground at all. The generated stylesheet keeps this same production mutation; refreshed hunk context follows the central theme migration. The new derived navigation surface adds twenty independently predicted floor failures (six text and four non-text per mode) because it retains 28% of its rail and mixes 72% of the inverted ground. Decorative navigation floors, the opaque census and surface uniqueness stay green. S1 adds four Astryx filled-action witnesses (primary and destructive in both themes): both foregrounds resolve through `--color-on-accent` / `--color-on-error` to `--text-on-accent`, which aliases `--bg`. Swapping the grounds therefore swaps their text colours while leaving the accent and error fills unchanged, so all four actual-fill contrast checks fall below 4.5:1. The Chat-entry contrast witness measures its own opaque card fill, so swapping the page ground no longer makes that witness red; its 4.5:1 floor is unchanged. No witness or assertion is removed."
+    "why_more_than_one": "Swapping the two grounds is a cross-theme edit, and every per-theme floor is tuned against its own ground: light's foregrounds land on dark's 24.5% ground and dark's land on light's 96%, so the AA body / non-text floors, both 3.0-L rungs that straddle `--bg`, the ground-vs-card chroma gap and the shared ladder direction all fail by construction — there is no ground inversion that leaves the contrast matrix green. The two entries listed first are the ones this mutation exists for: they are the only assertions that read the two grounds *against each other*, and they are what would stay red if every contrast floor were relaxed. The 27 that follow are the same edit noticed from inside each theme: 25 in the contrast matrix, plus the rail dot and the closed status, whose per-theme colours are measured against the rendered page ground and therefore fail on an inverted ground for exactly the reason every matrix rung does. Anything red beyond this set would mean the ground direction leaked somewhere that does not model a ground at all. The generated stylesheet keeps this same production mutation; refreshed hunk context follows the central theme migration. The new derived navigation surface adds twenty independently predicted floor failures (six text and four non-text per mode) because it retains 28% of its rail and mixes 72% of the inverted ground. Decorative navigation floors, the opaque census and surface uniqueness stay green. S1 adds four Astryx filled-action witnesses (primary and destructive in both themes): both foregrounds resolve through `--color-on-accent` / `--color-on-error` to `--text-on-accent`, which aliases `--bg`. Swapping the grounds therefore swaps their text colours while leaving the accent and error fills unchanged, so all four actual-fill contrast checks fall below 4.5:1. The Chat-entry contrast witness measures its own opaque card fill, so swapping the page ground no longer makes that witness red; its 4.5:1 floor is unchanged. No witness or assertion is removed. The sidebar Area-label contrast contract observes the same swapped page ground."
   },
   {
     "mutation_id": "events-harness-item-plan-becomes-empty",
@@ -1221,15 +1223,17 @@
       "session gate contracts renders login on 401, error with retry on transport failure, and clears on broadcast 401",
       "session gate contracts CAP-APP-064 clears query data, the sync cursor, and IndexedDB in order before rendering login",
       "session gate contracts clears session artifacts before rendering login for an initial unauthenticated verdict",
-      "production app mount clears every session artifact after logout completion and then reloads the browser"
+      "production app mount clears every session artifact after logout completion and then reloads the browser",
+      "projects actual whoami UID/name and clears old artifacts on a verified UID switch"
     ],
     "selection_paths": [
       "web/src/app/auth/session-gate.contract.test.tsx",
       "web/src/app/auth/production-app.contract.test.tsx",
       "web/src/app/auth/production-app.tsx",
-      "web/src/app/router/test-card-runtime.ts"
+      "web/src/app/router/test-card-runtime.ts",
+      "web/src/app/auth/current-user.contract.test.tsx"
     ],
-    "why_more_than_one": "The original global-401 assertion observes the missing cache clear directly; the CAP-APP-064 test, the initial unauthenticated verdict, and the successful sign-out path independently observe that their ordered cleanup lost its first step. Cursor clearing, IndexedDB deletion, and login or reload remain functional."
+    "why_more_than_one": "The original global-401 assertion observes the missing cache clear directly; the CAP-APP-064 test, the initial unauthenticated verdict, and the successful sign-out path independently observe that their ordered cleanup lost its first step. Cursor clearing, IndexedDB deletion, and login or reload remain functional. The current-user production contract independently observes the cache reset on a verified UID switch."
   },
   {
     "mutation_id": "session-gate-drop-sync-cursor-clear",
@@ -1279,19 +1283,75 @@
       "oracle:INV-APP-118"
     ],
     "target": "core/domain/track.ts",
-    "patch": "diff --git a/core/domain/track.ts b/core/domain/track.ts\n--- a/core/domain/track.ts\n+++ b/core/domain/track.ts\n@@ -811,7 +811,7 @@\n \n /** The one indicator state for a track on every surface; `unread` is the reader's receipt, the rest is the overlay's. */\n export function trackActivityState(track: Track, unread: boolean): ActivityState {\n-  return activityStateOf({ working: isWorking(track), attention: track.attention, unread });\n+  return activityStateOf({ working: !isClosed(track), attention: track.attention, unread });\n }\n \n /** A closed track schedules no new work; only the user reopens it. */\n",
+    "patch": "diff --git a/core/domain/track.ts b/core/domain/track.ts\n--- a/core/domain/track.ts\n+++ b/core/domain/track.ts\n@@ -819,7 +819,7 @@\n \n /** The one indicator state for a track on every surface; `unread` is the reader's receipt, the rest is the overlay's. */\n export function trackActivityState(track: Pick<Track, 'working' | 'attention'>, unread: boolean): ActivityState {\n-  return activityStateOf({ working: isWorking(track), attention: track.attention, unread });\n+  return activityStateOf({ working: !isClosed(track as Track), attention: track.attention, unread });\n }\n \n /** A closed track schedules no new work; only the user reopens it. */\n",
     "expected_red": [
       "TrackPage header paints one activity indicator beside the title, from the overlay rather than the open/closed state",
       "activity predicates read only the kernel activity overlay (INV-APP-118) does not derive working from an open track",
       "activity predicates read only the kernel activity overlay (INV-APP-118) reads attention and failure from the overlay verdict",
-      "navigation activity markers derives the marker and the name from the activity overlay, not the open/closed state"
+      "navigation activity markers derives the marker and the name from the activity overlay, not the open/closed state",
+      "MobileTracks has one Area header, a More edit action, and grouped actions above the selected Track",
+      "MobileTracks track rows carry the activity indicator and name bit from the overlay, never the open/closed state",
+      "Track mobile presentation keeps Report as the root and pushes Cards in as a full-width page",
+      "Unified mobile headers measures the same header frame across the composed mobile pages at 320px",
+      "Unified mobile headers measures the same header frame across the composed mobile pages at 390px",
+      "Unified mobile headers switches Tracks from the title and reserves renaming for the independent Edit button",
+      "Unified mobile headers switches complete Area pages directly and gives Tracks matching file icons",
+      "Unified mobile headers uses clean Area rows and a separate Tracks page with the same actions",
+      "acknowledges a repeated desktop selection only in the rendered Track view",
+      "clears manual unread when reopening the current Track through mobile navigation",
+      "compact navigation interaction contracts hands the Track list the rail’s read receipt, so a newer completion is unread until it is read",
+      "fades only overflowing rail titles and keeps the action menu distinct",
+      "keeps a long title truncated and its switch visible at 320px",
+      "keeps a long title truncated and its switch visible at 390px",
+      "keeps a manual unread after a page refresh",
+      "keeps a visited track read after a page refresh, with nothing kept in browser storage",
+      "keeps manually unread until the selected Track view acknowledges it",
+      "keeps mobile navigation labels and pointer targets usable at 320px",
+      "keeps mobile navigation labels and pointer targets usable at 390px",
+      "keeps unchanged Track title observers and measurements out of a real row selection",
+      "keeps workspace navigation as Area and Track lists with no filters",
+      "offers personal Track actions without navigation and pins before the Area limit",
+      "opens a pinned current report by closing its existing chat without sending its draft",
+      "opens the existing Track page from the title and returns directly to the report",
+      "reads the track receipt against the activity high-water mark, not updatedAt",
+      "reserves room for menu actions and metadata in Today compact rows",
+      "retains unread when a selected Track detail cannot be loaded",
+      "returns from mobile track creation to its workspace without writes from /area/project-area/new",
+      "returns from mobile track creation to its workspace without writes from /track/project",
+      "returns to the latest report opener and releases Track selection before paint finishes",
+      "reveals Track controls on hover or focus and lets the title use idle space",
+      "shared Track title in production hosts strikes only closed title text in the compact row and restores it on reopen",
+      "shared Track title in production hosts strikes only closed title text in the default row and restores it on reopen",
+      "shared Track title in production hosts strikes only closed title text in the panel row and restores it on reopen",
+      "shared Track title in production hosts strikes only closed title text in the rail row and restores it on reopen",
+      "shows a second browser profile the same state once it is focused again",
+      "switches four sidebar views using current history and real workspace groups at 320px",
+      "switches four sidebar views using current history and real workspace groups at 390px",
+      "uses the highlight contour for selected and hovered mobile Tracks in dark",
+      "uses the highlight contour for selected and hovered mobile Tracks in light",
+      "uses the three-dot Track menu with keyboard and keeps actions separate from navigation",
+      "workspace header navigation writes ?from= when navigation opens the track"
     ],
     "selection_paths": [
       "core/domain/track.test.ts",
       "web/src/features/track/page/public.test.tsx",
-      "web/src/features/track/row/public.test.tsx"
+      "web/src/features/track/row/public.test.tsx",
+      "web/src/app/providers/read-state-refresh.browser.test.tsx",
+      "web/src/app/router/daily-planner.browser.test.tsx",
+      "web/src/app/router/mobile-chat.browser.test.tsx",
+      "web/src/app/router/mobile-history.browser.test.tsx",
+      "web/src/app/router/mobile-report-navigation.test.tsx",
+      "web/src/app/shell/list-overflow.browser.test.tsx",
+      "web/src/app/shell/mobile-highlight.browser.test.tsx",
+      "web/src/app/shell/mobile-tracks.test.tsx",
+      "web/src/app/shell/mobile.browser.test.tsx",
+      "web/src/app/shell/responsive.contract.test.tsx",
+      "web/src/app/shell/sidebar.groups.browser.test.tsx",
+      "web/src/app/shell/sidebar.test.tsx",
+      "web/src/app/shell/track-title.browser.test.tsx",
+      "web/src/app/shell/unified-mobile-header.browser.test.tsx"
     ],
-    "why_more_than_one": "Kernel predicate tests, navigation markers and the shared TrackPage header independently reject deriving activity from the open/closed state."
+    "why_more_than_one": "The kernel predicate, TrackPage header, desktop Track rows and mobile Track list all consume the same activity-state owner. Deriving working from open/closed state invents working on quiet or unread open tracks and hides working on closed tracks. The exact red set therefore includes marker and receipt assertions plus production hosts that address those rows by their declared accessible names: sidebar actions, title hosts, overflow, mobile navigation, header switching and report return. The narrowed production input remains unchanged; the mutation casts only its intentionally invalid closed-state read."
   },
   {
     "mutation_id": "s2a-activity-overlay-plugin-gate-dropped",
@@ -1302,12 +1362,14 @@
     "patch": "diff --git a/core/domain/track.ts b/core/domain/track.ts\nindex b3fb6b9b3..13e7ab44f 100644\n--- a/core/domain/track.ts\n+++ b/core/domain/track.ts\n@@ -223,7 +223,7 @@ export function trackActivityFrom(trackId: string, overlays: readonly OverlayWir\n     if (overlay.kind === 'progress' && typeof value === 'number') activity = { ...activity, progress: value };\n     else if (overlay.kind === 'eta' && typeof text === 'string') activity = { ...activity, eta: text };\n     else if (overlay.kind === 'now' && typeof text === 'string') activity = { ...activity, now: text };\n-    else if (overlay.kind === 'activity' && overlay.plugin_id === KERNEL_OVERLAY_PLUGIN_ID) {\n+    else if (overlay.kind === 'activity') {\n       const recentAt = newerFinite(activity.recentAt, overlay.updated_at);\n       const fields = activityOverlayFields(overlay.payload);\n       activity = fields === null ? { ...activity, recentAt } : {\n",
     "expected_red": [
       "trackActivityFrom: the kernel activity overlay applies only the kernel-owned activity row; a plugin-owned one leaves the track quiet",
-      "trackActivityFrom: the kernel activity overlay bulk-folds interleaved entities in original order without weakening activity authority"
+      "trackActivityFrom: the kernel activity overlay bulk-folds interleaved entities in original order without weakening activity authority",
+      "track conversations ignores a retired kernel/card/status row and a plugin-authored activity row"
     ],
     "selection_paths": [
-      "core/domain/track.test.ts"
+      "core/domain/track.test.ts",
+      "web/src/app/router/track-conversation.test.tsx"
     ],
-    "why_more_than_one": "Both the direct plugin-owned row case and the bulk interleaved-entity fold independently reject a non-kernel activity row; both call the same canonical fold whose plugin_id gate is removed."
+    "why_more_than_one": "Both the direct plugin-owned row case and the bulk interleaved-entity fold independently reject a non-kernel activity row; both call the same canonical fold whose plugin_id gate is removed. The route contract also rejects plugin-authored activity when deriving its notification surface."
   },
   {
     "mutation_id": "s2a-track-row-name-from-open-state",
@@ -1320,12 +1382,35 @@
       "accessible name names the area only when the surface supplies one",
       "accessible name names the attention state when there is one, and nothing for an open track",
       "navigation activity markers derives the marker and the name from the activity overlay, not the open/closed state",
-      "navigation activity markers describes an unread track only in the folded state, never beside a working name"
+      "navigation activity markers describes an unread track only in the folded state, never beside a working name",
+      "acknowledges a repeated desktop selection only in the rendered Track view",
+      "fades only overflowing rail titles and keeps the action menu distinct",
+      "keeps a manual unread after a page refresh",
+      "keeps a visited track read after a page refresh, with nothing kept in browser storage",
+      "keeps manually unread until the selected Track view acknowledges it",
+      "keeps unchanged Track title observers and measurements out of a real row selection",
+      "offers personal Track actions without navigation and pins before the Area limit",
+      "reserves room for menu actions and metadata in Today compact rows",
+      "retains unread when a selected Track detail cannot be loaded",
+      "reveals Track controls on hover or focus and lets the title use idle space",
+      "shared Track title in production hosts strikes only closed title text in the compact row and restores it on reopen",
+      "shared Track title in production hosts strikes only closed title text in the default row and restores it on reopen",
+      "shared Track title in production hosts strikes only closed title text in the panel row and restores it on reopen",
+      "shared Track title in production hosts strikes only closed title text in the rail row and restores it on reopen",
+      "shared sidebar groups orders Focus by failed, waiting, then running while excluding pinned tracks",
+      "shows a second browser profile the same state once it is focused again",
+      "uses the three-dot Track menu with keyboard and keeps actions separate from navigation"
     ],
     "selection_paths": [
-      "web/src/features/track/row/public.test.tsx"
+      "web/src/features/track/row/public.test.tsx",
+      "web/src/app/providers/read-state-refresh.browser.test.tsx",
+      "web/src/app/shell/list-overflow.browser.test.tsx",
+      "web/src/app/shell/mobile.browser.test.tsx",
+      "web/src/app/shell/sidebar.groups.browser.test.tsx",
+      "web/src/app/shell/sidebar.test.tsx",
+      "web/src/app/shell/track-title.browser.test.tsx"
     ],
-    "why_more_than_one": "The accessible name is derived from the same state as the dot: every open-track fixture now gains \", running\" in place of its overlay bit (the attention, working and area-name cases), and the fixture that disagrees with the open/closed state in both directions reddens."
+    "why_more_than_one": "The accessible name is derived from the same state as the dot: every open-track fixture now gains \", running\" in place of its overlay bit (the attention, working and area-name cases), and the fixture that disagrees with the open/closed state in both directions reddens. Production sidebar, read-receipt, title and overflow hosts address the same accessible row name, so they also reject deriving its activity bit from open/closed state."
   },
   {
     "mutation_id": "s2a-needs-attention-closed-or",
@@ -1337,13 +1422,21 @@
     "expected_red": [
       "collapse toggle shows the waiting count as the strip's only figure, with no dot beside it",
       "activity predicates read only the kernel activity overlay (INV-APP-118) does not derive attention or failure from the open/closed state",
-      "activity predicates read only the kernel activity overlay (INV-APP-118) reads attention and failure from the overlay verdict"
+      "activity predicates read only the kernel activity overlay (INV-APP-118) reads attention and failure from the overlay verdict",
+      "Closed tracks in the rail Show N more never counts a hidden closed track",
+      "Closed tracks in the rail Show closed brings every closed track back, Hide closed hides them again, and the choice persists",
+      "Closed tracks in the rail hides a closed track that is read and not open",
+      "Closed tracks in the rail keeps the Area row when every track in it is hidden",
+      "Closed tracks in the rail keeps the choice per Area",
+      "Closed tracks in the rail shows a closed unread track",
+      "Closed tracks in the rail shows the closed track open in the view"
     ],
     "selection_paths": [
       "core/domain/track.test.ts",
-      "web/src/app/shell/sidebar.test.tsx"
+      "web/src/app/shell/sidebar.test.tsx",
+      "web/src/app/shell/area-group.test.tsx"
     ],
-    "why_more_than_one": "Kernel attention predicates and the sidebar waiting strip independently reject deriving attention from the open/closed state."
+    "why_more_than_one": "Kernel attention predicates and the sidebar waiting strip independently reject deriving attention from the open/closed state. The rail retention contracts also consume attention: treating closed tracks as attention incorrectly retains or duplicates them across Show closed and per-Area choices."
   },
   {
     "mutation_id": "s2a-activity-precedence-working-first",
@@ -1360,15 +1453,20 @@
       "activityStateOf working=true attention=failed unread=true → failed",
       "activityStateOf ranks a person-needed state above motion when both hold at once",
       "activity predicates read only the kernel activity overlay (INV-APP-118) reads attention and failure from the overlay verdict",
-      "planner conversation regressions phase wedged applies stalled policy to markers, composer state and subsequent sends"
+      "planner conversation regressions phase wedged applies stalled policy to markers, composer state and subsequent sends",
+      "conversation rows read activity.cards, not session state keeps only the open row’s declared local echoes: the sender’s send and the drawer’s wedge",
+      "uses explicit pending-question ownership without changing other conversations or failure precedence",
+      "uses the active drawer echo and the same failure precedence as the ordinary list"
     ],
     "selection_paths": [
       "core/domain/activity.test.ts",
       "core/domain/track.test.ts",
       "web/src/app/router/planner-conversation.test.tsx",
-      "web/src/features/track/row/public.test.tsx"
+      "web/src/features/track/row/public.test.tsx",
+      "core/view/conversation-list.test.ts",
+      "web/src/features/chat/list/public.test.tsx"
     ],
-    "why_more_than_one": "The exhaustive 2x3x2 table names each row the reordered chain gets wrong; the row-level precedence test and the core predicate test are the two consumers that see the same swap. Since S2b r1 the router wedge case seeds the kernel's working verdict for the wedged planner beside its local failed, so the swapped chain reads that row as working instead of failed."
+    "why_more_than_one": "The exhaustive 2x3x2 table names each row the reordered chain gets wrong; the row-level precedence test and the core predicate test are the two consumers that see the same swap. Since S2b r1 the router wedge case seeds the kernel's working verdict for the wedged planner beside its local failed, so the swapped chain reads that row as working instead of failed. The ordinary conversation list, active drawer echo and pending-question ownership consume the same precedence and must retain attention and failure ahead of working."
   },
   {
     "mutation_id": "n2596-receipt-write-stays-local",
@@ -1529,13 +1627,23 @@
     "patch": "diff --git a/web/src/features/chat/thread/public.tsx b/web/src/features/chat/thread/public.tsx\n--- a/web/src/features/chat/thread/public.tsx\n+++ b/web/src/features/chat/thread/public.tsx\n@@ -105,9 +105,11 @@\n   const localReading = useThreadReadingView(conversation.id);\n   const reading = readingView ?? localReading;\n   /* Only run/activity evidence claims execution. A local outgoing message has its own sending feedback.\n      Never use `conversation.state`, which can stay at `turn_pending`/`running` after a turn ended. */\n-  const live = !statusUnconfirmed && !stalled && (pending || cardActivityOf({ cards }, conversation.id) === 'working');\n+  const live = !statusUnconfirmed && !stalled && (pending || cardActivityOf({ cards }, conversation.id) === 'working'\n+    // MUT-1722-S2B-3: the drawer's live mark reads the session state again\n+    || conversation.state === 'starting' || conversation.state === 'running' || conversation.state === 'turn_pending');\n   const heldInputs = heldConversationInputs(activeInput, live);\n   const lastTurn = turns[turns.length - 1];\n   const currentOutcome = lastTurn?.author === 'turn' && lastTurn.imported !== true ? lastTurn : null;\n   const copyTarget = currentResponseMessage(turns, currentOutcome !== null && !statusUnconfirmed && !live && !stalled && stopFeedback === null);\n",
     "expected_red": [
       "ChatThread thread live mark follows activity.cards",
-      "tool activity groups does not spin for a call left running by a conversation that is no longer live"
+      "tool activity groups does not spin for a call left running by a conversation that is no longer live",
+      "hands the live mark between the status row and an executing tool without duplication",
+      "keeps the streaming indicator beside Running for paragraphs, code and tables (192px, 16px text)",
+      "keeps the streaming indicator beside Running for paragraphs, code and tables (232px, 32px text)",
+      "keeps the streaming indicator beside Running for paragraphs, code and tables (320px, 16px text)",
+      "replaces the running animation with a visible completion icon",
+      "shows a static, truthful status for unfinished calls after interruption (grouped: false)",
+      "shows a static, truthful status for unfinished calls after interruption (grouped: true)",
+      "uses the execution mark in a collapsed and expanded tool group and removes it when the turn ends"
     ],
     "selection_paths": [
       "web/src/features/chat/thread/activity-groups.browser.test.tsx",
-      "web/src/features/chat/thread/public.test.tsx"
+      "web/src/features/chat/thread/public.test.tsx",
+      "web/src/features/chat/thread/motion.browser.test.tsx",
+      "web/src/features/chat/thread/running-status-layout.browser.test.tsx"
     ],
-    "why_more_than_one": "The drawer's live mark is read from one place, so a session-state OR relights every thread case that renders a running/turn_pending conversation without a verdict: the jsdom live-mark case and the browser cases that rerender a finished call under a still-running session reading."
+    "why_more_than_one": "The drawer's live mark is read from one place, so a session-state OR relights every thread case that renders a running/turn_pending conversation without a verdict: the jsdom live-mark case and the browser cases that rerender a finished call under a still-running session reading. The real tool-group and running-status browser contracts also require the execution mark to disappear when a turn ends or is interrupted."
   },
   {
     "mutation_id": "s2b-thread-live-ignores-stalled",
@@ -1726,7 +1834,7 @@
       "oracle:INV-APP-118"
     ],
     "target": "web/src/features/track/page/public.tsx",
-    "patch": "diff --git a/web/src/features/track/page/public.tsx b/web/src/features/track/page/public.tsx\n--- a/web/src/features/track/page/public.tsx\n+++ b/web/src/features/track/page/public.tsx\n@@ -651,5 +651,6 @@\n                         a failure is clamped, its full text is in the Planner conversation. */}\n                     <div className={`${styles.noticeBody} ${notification.kind === 'planner-down' ? styles.noticeBodyClamped : ''}`}>\n-                      <Markdown density=\"compact\" headingLevelStart={3}>{notification.text}</Markdown>\n+                      {/* MUT-1829-S3-2: the row shows a fixed placeholder instead of the kernel's words */}\n+                      <Markdown density=\"compact\" headingLevelStart={3}>{'The Planner needs you.'}</Markdown>\n                       {notification.kind === 'planner-turn-timeout' && <p className={styles.noticeTimestamp}>\n                         Recorded at <time dateTime={new Date(notification.atMs).toISOString()}>{new Date(notification.atMs).toISOString()}</time>\n",
+    "patch": "diff --git a/web/src/features/track/page/public.tsx b/web/src/features/track/page/public.tsx\n--- a/web/src/features/track/page/public.tsx\n+++ b/web/src/features/track/page/public.tsx\n@@ -649,7 +649,7 @@\n                     {/* The kernel's words are markdown, rendered as the chat renders a reply. An ask is read whole;\n                         a failure is clamped, its full text is in the Planner conversation. */}\n                     <div className={`${notificationStyles.noticeBody} ${notification.kind === 'planner-down' ? notificationStyles.noticeBodyClamped : ''}`}>\n-                      <Markdown density=\"compact\" headingLevelStart={3}>{notification.text}</Markdown>\n+                      <Markdown density=\"compact\" headingLevelStart={3}>{'The Planner needs you.'}</Markdown>\n                       {notification.kind === 'planner-turn-timeout' && <p className={notificationStyles.noticeTimestamp}>\n                         Recorded at <time dateTime={new Date(notification.atMs).toISOString()}>{new Date(notification.atMs).toISOString()}</time>\n                       </p>}\n",
     "expected_red": [
       "TrackPage header turns a Planner ask into a bottom-right notification whose whole row answers it",
       "TrackPage header names a row by the first 80 characters of its text",
@@ -1737,14 +1845,16 @@
       "the track closed status in the page header keeps three type steps: the title largest, the body at body size, the meta line smallest",
       "track conversations opens and dismisses a timeout while attention is none and the Planner is idle",
       "keeps timeout text and open/dismiss controls visible with none attention at 1200px",
-      "keeps timeout text and open/dismiss controls visible with none attention at 390px"
+      "keeps timeout text and open/dismiss controls visible with none attention at 390px",
+      "keeps timeout text and open/dismiss controls visible with none attention at 390px under a coarse pointer"
     ],
     "selection_paths": [
       "web/src/features/track/page/public.test.tsx",
       "web/src/features/track/page/header-status.browser.test.tsx",
-      "web/src/app/router/track-conversation.test.tsx"
+      "web/src/app/router/track-conversation.test.tsx",
+      "web/src/features/track/page/header-status.coarse.browser.test.tsx"
     ],
-    "why_more_than_one": "Every case that reads a row's body reddens: the page cases read its text, its markdown and a link in it; the route's two-kinds case reads the kernel's words; the browser cases hit-test a link in the body, measure an ask body longer than three lines, and size the body's heading and code. Cases that only count rows, click the × or read the header stay green. The timeout route case requires its exact kernel body, and both 1200px and 390px browser cases require /Turn stopped at/ in the body, so all three additionally redden. Their labels, timestamp and controls are unchanged. The separate coarse-browser file is not in this mutation’s registered witness selection; the runner and project selection remain unchanged."
+    "why_more_than_one": "Every case that reads a row's body reddens: the page cases read its text, its markdown and a link in it; the route's two-kinds case reads the kernel's words; the browser cases hit-test a link in the body, measure an ask body longer than three lines, and size the body's heading and code. Cases that only count rows, click the × or read the header stay green. The timeout route case requires its exact kernel body, and both 1200px and 390px browser cases require /Turn stopped at/ in the body, so all three additionally redden. Their labels, timestamp and controls are unchanged. The coarse-pointer timeout contract has a distinct test ID and independently requires the exact kernel body at 390px."
   },
   {
     "mutation_id": "n1829-dismiss-not-posted",
@@ -1752,7 +1862,7 @@
       "oracle:INV-APP-118"
     ],
     "target": "web/src/app/router/public.tsx",
-    "patch": "diff --git a/web/src/app/router/public.tsx b/web/src/app/router/public.tsx\n--- a/web/src/app/router/public.tsx\n+++ b/web/src/app/router/public.tsx\n@@ -1668,7 +1668,8 @@\n         center?.onOpenAssistant();\n         registry.requestOpen(plannerCard.id, { focusComposer: true });\n       }}\n-      onDismiss={(key) => trackMutations.dismissActivityItem(track.id, key)}\n+      /* MUT-1829-S3-1: Dismiss resolves without posting the key */\n+      onDismiss={() => Promise.resolve()}\n       onRenameTrack={(title) => trackMutations.patch(track.id, track.areaId, { title }).then(() => undefined)}\n       closedControl={closedControl}\n       onDeleteTrack={(signal) => trackMutations.remove(track.id, track.areaId, signal)}\n",
+    "patch": "diff --git a/web/src/app/router/public.tsx b/web/src/app/router/public.tsx\n--- a/web/src/app/router/public.tsx\n+++ b/web/src/app/router/public.tsx\n@@ -1687,7 +1687,7 @@\n         center?.onOpenAssistant();\n         registry.requestOpen(plannerCard.id, { focusComposer: true });\n       }}\n-      onDismiss={(key) => trackMutations.dismissActivityItem(track.id, key)}\n+      onDismiss={() => Promise.resolve()}\n       onRenameTrack={(title) => trackMutations.patch(track.id, track.areaId, { title }).then(() => undefined)}\n       closedControl={closedControl}\n       onDeleteTrack={shareAccess === null ? (signal) => trackMutations.remove(track.id, track.areaId, signal) : undefined}\n",
     "expected_red": [
       "track conversations Dismiss posts the item key",
       "track conversations opens and dismisses a timeout while attention is none and the Planner is idle"
@@ -1794,15 +1904,24 @@
       "Unified mobile headers switches complete Area pages directly and gives Tracks matching file icons",
       "Unified mobile headers uses clean Area rows and a separate Tracks page with the same actions",
       "compact navigation interaction contracts hands the Track list the rail’s read receipt, so a newer completion is unread until it is read",
-      "workspace header navigation writes ?from= when navigation opens the track"
+      "workspace header navigation writes ?from= when navigation opens the track",
+      "Track mobile presentation keeps Report as the root and pushes Cards in as a full-width page",
+      "clears manual unread when reopening the current Track through mobile navigation",
+      "returns to the latest report opener and releases Track selection before paint finishes",
+      "uses the highlight contour for selected and hovered mobile Tracks in dark",
+      "uses the highlight contour for selected and hovered mobile Tracks in light"
     ],
     "selection_paths": [
       "web/src/app/router/mobile-report-navigation.test.tsx",
       "web/src/app/shell/mobile-tracks.test.tsx",
       "web/src/app/shell/responsive.contract.test.tsx",
-      "web/src/app/shell/unified-mobile-header.browser.test.tsx"
+      "web/src/app/shell/unified-mobile-header.browser.test.tsx",
+      "web/src/app/shell/mobile-highlight.browser.test.tsx",
+      "web/src/app/shell/mobile.browser.test.tsx",
+      "web/src/app/shell/sidebar.groups.browser.test.tsx",
+      "web/src/app/shell/sidebar.test.tsx"
     ],
-    "why_more_than_one": "The phone row's dot and its name bit come from one value, so an open-state-driven state changes both: the row case sees a spinner on an idle open track and no spinner on a closed track with work in flight, the shell case sees `working` where the receipt says `unread`, and every case that finds an open row by its exact name — the MobileTracks header case, the router's `?from=` case and the two unified-header browser cases, all of which mount an open track with no overlay — misses it because the name now ends in `, working`. The Track title switch now reuses this same navigation page: its exact-name row selection and both composed-header geometry cases also lose the idle open row when its name becomes ', working'. These three callers therefore join the complete red set; the mutation does not alter header geometry or renaming policy."
+    "why_more_than_one": "The phone row's dot and its name bit come from one value, so an open-state-driven state changes both: the row case sees a spinner on an idle open track and no spinner on a closed track with work in flight, the shell case sees `working` where the receipt says `unread`, and every case that finds an open row by its exact name — the MobileTracks header case, the router's `?from=` case and the two unified-header browser cases, all of which mount an open track with no overlay — misses it because the name now ends in `, working`. The Track title switch now reuses this same navigation page: its exact-name row selection and both composed-header geometry cases also lose the idle open row when its name becomes ', working'. These three callers therefore join the complete red set; the mutation does not alter header geometry or renaming policy. Mobile report navigation, read acknowledgement and selection-paint contracts also observe the same row activity and accessible names."
   },
   {
     "mutation_id": "ownership-squash-skip-source-path-binding",
@@ -1904,12 +2023,14 @@
     "target": "core/domain/track.ts",
     "patch": "diff --git a/core/domain/track.ts b/core/domain/track.ts\n--- a/core/domain/track.ts\n+++ b/core/domain/track.ts\n@@ -758,7 +758,6 @@ export function createCardOperation(trackId: string, body: NewCardBody, idempote\n export const CARD_CREATE_FAILURES: FailureTable<KeyedCreateClass> = Object.freeze({\n   rules: Object.freeze([\n     Object.freeze({ code: 'idempotency_key_reused', is: 'refused' as const }),\n-    Object.freeze({ code: 'operation_failed', is: 'refused' as const }),\n     Object.freeze({ code: 'operation_stuck', is: 'stuck' as const }),\n     Object.freeze({ status: Object.freeze([409]), code: 'conflict', is: 'refused' as const }),\n     Object.freeze({ status: Object.freeze([400, 403, 404, 422]), is: 'refused' as const }),\n",
     "expected_red": [
-      "a keyed card create reads a create that failed for good under its key as a final refusal with the server’s reason: no Try again, and the next press mints a new key"
+      "a keyed card create reads a create that failed for good under its key as a final refusal with the server’s reason: no Try again, and the next press mints a new key",
+      "classifying a failed POST a card reads { kind: 'http', status: 500, code: 'operation_failed', message: 'answered', body: { error: 'answered', code: 'operation_failed' } } as refused"
     ],
     "selection_paths": [
-      "web/src/app/router/new-card.test.tsx"
+      "web/src/app/router/new-card.test.tsx",
+      "core/domain/failure-class.test.ts"
     ],
-    "why_more_than_one": "Measured in the exclusive worktree: reading `operation_failed` as unknown reddens only the case that answers a create with it, which then shows the fixed unknown state and a Try again under the spent key instead of the server's reason; every other card-create answer is matched by another rule and stays green."
+    "why_more_than_one": "Removing the operation_failed rule makes both the keyed-create route contract and the shared failure-class table read a final refusal as unknown, exposing Try again under a spent key. Other answers still match their own rules."
   },
   {
     "mutation_id": "k1b-stuck-create-read-as-unknown",
@@ -1919,12 +2040,14 @@
     "target": "core/domain/track.ts",
     "patch": "diff --git a/core/domain/track.ts b/core/domain/track.ts\n--- a/core/domain/track.ts\n+++ b/core/domain/track.ts\n@@ -759,7 +759,6 @@ export const CARD_CREATE_FAILURES: FailureTable<KeyedCreateClass> = Object.freez\n   rules: Object.freeze([\n     Object.freeze({ code: 'idempotency_key_reused', is: 'refused' as const }),\n     Object.freeze({ code: 'operation_failed', is: 'refused' as const }),\n-    Object.freeze({ code: 'operation_stuck', is: 'stuck' as const }),\n     Object.freeze({ status: Object.freeze([409]), code: 'conflict', is: 'refused' as const }),\n     Object.freeze({ status: Object.freeze([400, 403, 404, 422]), is: 'refused' as const }),\n   ]),\n",
     "expected_red": [
-      "a keyed card create reads a create that stopped part way as final: the card may exist, no Try again, and the next press mints a new key"
+      "a keyed card create reads a create that stopped part way as final: the card may exist, no Try again, and the next press mints a new key",
+      "classifying a failed POST a card reads { kind: 'http', status: 500, code: 'operation_stuck', message: 'answered', body: { error: 'answered', code: 'operation_stuck' } } as stuck"
     ],
     "selection_paths": [
-      "web/src/app/router/new-card.test.tsx"
+      "web/src/app/router/new-card.test.tsx",
+      "core/domain/failure-class.test.ts"
     ],
-    "why_more_than_one": "Reading `operation_stuck` as unknown reddens only the case that answers a create with it, which then shows the fixed unknown sentence and a Try again under a key that only replays the stuck answer; every other card-create answer is matched by another rule and stays green."
+    "why_more_than_one": "Removing the operation_stuck rule makes both the keyed-create route contract and the shared failure-class table read the final stuck outcome as unknown, exposing Try again under a key that only replays that outcome. Other answers still match their own rules."
   },
   {
     "mutation_id": "s2131-s7-create-retry-shows-raw-text",

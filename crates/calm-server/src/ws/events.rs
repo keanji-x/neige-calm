@@ -29,8 +29,13 @@ pub fn router() -> Router<AppState> {
     Router::new().route("/api/events", get(upgrade))
 }
 
-async fn upgrade(ws: WebSocketUpgrade, State(s): State<AppState>) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| handle(socket, s))
+async fn upgrade(
+    ws: WebSocketUpgrade,
+    State(s): State<AppState>,
+    scope: Option<axum::Extension<crate::share_access::scope::ShareAccessScope>>,
+) -> impl IntoResponse {
+    let access_wake = s.events.subscribe_access_changes();
+    ws.on_upgrade(move |socket| handle(socket, s, scope.map(|s| s.0), access_wake))
 }
 
 /// Wire shape of a client → server subscription message; a parse replaces the subscription set, `since` triggers replay.
@@ -41,17 +46,59 @@ struct SubMessage {
     since: Option<i64>,
 }
 
-async fn handle(socket: WebSocket, state: AppState) {
+async fn handle(
+    socket: WebSocket,
+    state: AppState,
+    scope: Option<crate::share_access::scope::ShareAccessScope>,
+    mut access_wake: tokio::sync::watch::Receiver<()>,
+) {
     let (mut tx, mut rx) = socket.split();
     // Subscribe first, synchronously, with no awaited work before the select loop: the broadcast buffer is the
     // only thing preventing drops at the replay→live boundary, and for live-only clients the only delivery vehicle.
     let mut bus = state.events.subscribe();
+    let mut session_changes = scope.as_ref().map(|s| s.subscribe_session_changes());
     let mut subs: HashSet<String> = HashSet::new();
     // Largest replayed id while a replay is in flight; live events at or below it are duplicates. `0` = no replay.
     let mut last_replayed_id: i64 = 0;
 
+    let expiry = scope.as_ref().map(|s| s.read.link.expires_at);
+    let expires = async move {
+        match expiry {
+            Some(at) => {
+                tokio::time::sleep(std::time::Duration::from_millis(
+                    (at - crate::model::now_ms()).max(0) as u64,
+                ))
+                .await
+            }
+            None => std::future::pending::<()>().await,
+        }
+    };
+    tokio::pin!(expires);
     loop {
+        if let Some(scope) = &scope
+            && scope.validate(state.repo.as_ref()).await.is_err()
+        {
+            break;
+        }
+        #[cfg(feature = "fixtures")]
+        if let Some(scope) = &scope {
+            crate::test_seams::pause_point(
+                "share-events-before-wait",
+                scope.read.link.delegation.id.as_str(),
+            )
+            .await;
+        }
         tokio::select! {
+            _ = &mut expires => break,
+            _ = async {
+                match &mut session_changes {
+                    Some(changes) => { let _ = changes.changed().await; },
+                    None => std::future::pending::<()>().await,
+                }
+            } => {},
+            change = access_wake.changed(), if scope.is_some() => {
+                if change.is_err() || scope.as_ref().expect("share scope").validate(state.repo.as_ref()).await.is_err() { break; }
+            },
             client = rx.next() => match client {
                 Some(Ok(Message::Text(t))) => {
                     match serde_json::from_str::<SubMessage>(t.as_str()) {
@@ -66,6 +113,7 @@ async fn handle(socket: WebSocket, state: AppState) {
                                     &subs,
                                     since,
                                     state.ws_replay_cap,
+                                    scope.as_ref(),
                                 ).await {
                                     ReplayOutcome::Streamed(tip) => {
                                         last_replayed_id = tip;
@@ -95,6 +143,11 @@ async fn handle(socket: WebSocket, state: AppState) {
 
             env = bus.recv() => match env {
                 Ok(env) => {
+                    if let Some(scope) = &scope {
+                        match scope.event(state.repo.as_ref(), &env.scope).await {
+                            Ok(true) => {}, Ok(false) => continue, Err(_) => break,
+                        }
+                    }
                     if env.id != 0 && env.id <= last_replayed_id {
                         continue;
                     }
@@ -122,6 +175,7 @@ async fn handle(socket: WebSocket, state: AppState) {
                                 continue;
                             }
                         };
+                        if let Some(scope) = &scope && scope.validate(state.repo.as_ref()).await.is_err() { break; }
                         if tx.send(Message::Text(payload.into())).await.is_err() {
                             break;
                         }
@@ -135,6 +189,7 @@ async fn handle(socket: WebSocket, state: AppState) {
             }
         }
     }
+    let _ = tx.send(Message::Close(None)).await;
 }
 
 enum ReplayOutcome {
@@ -167,6 +222,7 @@ async fn run_replay<S>(
     subs: &HashSet<String>,
     since: i64,
     cap: i64,
+    share: Option<&crate::share_access::scope::ShareAccessScope>,
 ) -> ReplayOutcome
 where
     S: futures_util::Sink<Message, Error = axum::Error> + Unpin,
@@ -289,6 +345,16 @@ where
 
     let mut last_id = anchor;
     for (id, event_version, scope, ev) in rows {
+        if let Some(share) = share {
+            match share.event(repo, &scope).await {
+                Ok(true) => {}
+                Ok(false) => {
+                    last_id = id;
+                    continue;
+                }
+                Err(_) => return ReplayOutcome::ClientClosed,
+            }
+        }
         // Drop overlay rows whose `schemaVersion` exceeds this binary, but still advance the cursor so the next
         // reconnect resumes past them.
         if should_skip_event_for_overlay_version(&ev) {
@@ -328,6 +394,11 @@ where
                 continue;
             }
         };
+        if let Some(share) = share
+            && share.validate(repo).await.is_err()
+        {
+            return ReplayOutcome::ClientClosed;
+        }
         if tx.send(Message::Text(payload.into())).await.is_err() {
             return ReplayOutcome::ClientClosed;
         }

@@ -12,20 +12,14 @@ use crate::mcp_track_report::{
 };
 use axum::Extension;
 use axum::body::Body;
-use axum::extract::{FromRef, State};
 use axum::http::Request;
-use calm_server::actor::Actor;
 use calm_server::auth::Principal;
 use calm_server::db::sqlite::{project_tasks_tx, task_claim_pending_tx};
 use calm_server::event::{EditAuthor, Event, EventBus};
-use calm_server::extract::{JsonBody, Path};
 use calm_server::ids::ActorId;
 use calm_server::mcp_server::tools::track_report::TOOL_REPORT_READ;
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
-use calm_server::routes::track_report_blocks::{
-    DeleteReportBlockBody, UpdateReportBlockBody, delete_block, update_block,
-};
-use calm_server::state::{AppState, CodexClient, DaemonClient, RouteState};
+use calm_server::state::{AppState, CodexClient, DaemonClient};
 use calm_server::task_context::{ResolveError, TaskContextMonitor};
 use calm_server::track_report::{TrackReportPayload, persist_report, tasks_rebuild_tx};
 use calm_server::track_report_doc::ReportDoc;
@@ -79,25 +73,17 @@ pub(super) async fn upsert(boot: &Boot, id: Option<&str>, payload: Value) -> (St
 }
 
 pub(super) async fn user_upsert(boot: &Boot, id: &str, rev: u64, payload: Value) -> (u64, u64) {
-    let state = route_state(boot).await;
-    update_block(
-        State(RouteState::from_ref(&state)),
-        principal(),
-        Actor("user".into()),
-        Path((boot.track_id.to_string(), id.into())),
-        JsonBody(UpdateReportBlockBody {
-            kind: "task".into(),
-            markdown: None,
-            payload: Some(payload),
-            if_block_rev: rev as u32,
-        }),
+    let response = crate::support::authenticated_router::user_json(
+        route_state(boot).await,
+        "PATCH",
+        &format!("/api/tracks/{}/report/blocks/{id}", boot.track_id),
+        json!({"kind":"task","payload":payload,"ifBlockRev":rev as u32}),
     )
-    .await
-    .map(|response| {
-        let response = response.0;
-        (response.rev.unwrap().into(), response.doc_rev)
-    })
-    .expect("user task update")
+    .await;
+    (
+        response["rev"].as_u64().unwrap(),
+        response["docRev"].as_u64().unwrap(),
+    )
 }
 
 /// An agent write of `payload` with `ready: false`, then the user's release of it: how a test
@@ -271,17 +257,13 @@ async fn immediate_rebuild_serializes_with_waiting_writer_without_deadlock() {
 }
 
 async fn user_delete(boot: &Boot, id: &str, rev: u64) {
-    let _ = delete_block(
-        State(RouteState::from_ref(&route_state(boot).await)),
-        principal(),
-        Actor("user".into()),
-        Path((boot.track_id.to_string(), id.into())),
-        JsonBody(DeleteReportBlockBody {
-            if_block_rev: rev as u32,
-        }),
+    crate::support::authenticated_router::user_json(
+        route_state(boot).await,
+        "DELETE",
+        &format!("/api/tracks/{}/report/blocks/{id}", boot.track_id),
+        json!({"ifBlockRev":rev as u32}),
     )
-    .await
-    .unwrap();
+    .await;
 }
 
 async fn patch_policy(boot: &Boot, policy: &str) {
@@ -1589,18 +1571,7 @@ async fn deleted_tombstone_then_same_key_reproposal_creates_a_fresh_row() {
     let (id, rev) = upsert(&boot, None, task("phoenix")).await;
 
     // User delete normalizes the declaration to a tombstone.
-    let state = route_state(&boot).await;
-    let _ = delete_block(
-        State(RouteState::from_ref(&state)),
-        principal(),
-        Actor("user".into()),
-        Path((boot.track_id.to_string(), id.clone())),
-        JsonBody(DeleteReportBlockBody {
-            if_block_rev: rev as u32,
-        }),
-    )
-    .await
-    .unwrap();
+    user_delete(&boot, &id, rev).await;
     assert!(keys(&boot).await.is_empty());
 
     let block = index(&boot).await["blocks"]
@@ -1610,17 +1581,7 @@ async fn deleted_tombstone_then_same_key_reproposal_creates_a_fresh_row() {
         .find(|b| b["id"] == id)
         .unwrap()
         .clone();
-    let _ = delete_block(
-        State(RouteState::from_ref(&state)),
-        principal(),
-        Actor("user".into()),
-        Path((boot.track_id.to_string(), id)),
-        JsonBody(DeleteReportBlockBody {
-            if_block_rev: block["rev"].as_u64().unwrap() as u32,
-        }),
-    )
-    .await
-    .unwrap();
+    user_delete(&boot, &id, block["rev"].as_u64().unwrap()).await;
     upsert(&boot, None, task("phoenix")).await;
     assert_eq!(keys(&boot).await, ["phoenix"]);
 }

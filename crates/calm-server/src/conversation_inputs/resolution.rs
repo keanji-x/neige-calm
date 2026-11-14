@@ -80,7 +80,7 @@ async fn resolve(
 )> {
     crate::db::write_in_tx_typed(repo, move |tx| {
         Box::pin(async move {
-            let principal = source.current_principal()?;
+            let principal = source.current_human_principal()?;
             let area = authorize_human_tx(tx, &principal, &card_id).await?;
             super::authorize_human_resource_tx(tx, &source, &card_id).await?;
             let result = match request {
@@ -173,7 +173,7 @@ async fn resolve(
                 &event,
             )
             .await?;
-            source.current_principal()?;
+            source.current_human_principal()?;
             Ok((
                 result,
                 crate::event::BroadcastEnvelope {
@@ -235,7 +235,7 @@ pub(crate) async fn retry_read(
                 let (binding, _) =
                     crate::harness::profile::input_carrier_contract_tx(tx, &carrier).await?;
                 let current = ConversationExecutionProvenance::LegacySingleUserDeployment {
-                    deployment_owner_user_id: source.current_principal()?.user_id,
+                    deployment_owner_user_id: source.current_human_principal()?.user_id,
                     provider: binding.provider,
                     profile: binding.profile,
                 };
@@ -251,7 +251,7 @@ pub(crate) async fn retry_read(
                         reason: R::UnsupportedBinding,
                     };
                 }
-                source.current_principal()?;
+                source.current_human_principal()?;
             }
             Ok(Some(active))
         })

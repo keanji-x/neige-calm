@@ -1,3 +1,5 @@
+import type { ShareScope } from '../../../../core/api/generated/wire.ts';
+import { useShareManagementDialog, type ShareSelection } from '../providers/share-management.tsx';
 import { LayerDismissal } from '../../ui/dialog/public.tsx';
 import { LayerDepthProvider } from '@astryxdesign/core/Layer';
 import type { DialogOrigin } from '../../ui/dialog/public.tsx';
@@ -99,7 +101,18 @@ export function useMobileConversationOwner(owner: Scope) {
   }, [register, scope]);
 }
 
+type ShareAccess = Readonly<{ shareLinkId: string; scope: ShareScope }>;
+const ShareScopeContext = createContext<ShareAccess | null>(null);
+export function ShareScopeProvider({ value, children }: { value: ShareAccess | null; children: ReactNode }) {
+  return <ShareScopeContext.Provider value={value}>{children}</ShareScopeContext.Provider>;
+}
+export function useShareScope() { return useContext(ShareScopeContext); }
+
+const ShareContext = createContext<((selection: ShareSelection) => void) | null>(null);
+export function useShareManagement() { return useContext(ShareContext); }
+
 export type AppShellProps = Readonly<{
+  shareScope?: ShareScope | null;
   transport: ApiTransportPort;
   unauthorized: UnauthorizedChannel;
   onOpenSettings: () => void;
@@ -148,10 +161,17 @@ export function useOpenMobileSection(): OpenMobileSection {
 }
 
 export function AppShell({
-  transport, unauthorized, onOpenSettings, onOpenPlugins, onSignOut, nowMs, userLabel,
+  transport, unauthorized, onOpenSettings, onOpenPlugins, onSignOut, nowMs, userLabel, shareScope = null,
 }: AppShellProps) {
   const router = useRouter();
-  const workspace = useWorkspace(transport, unauthorized);
+  const { openShare, shareDialog } = useShareManagementDialog(transport, unauthorized);
+  const fullWorkspace = useWorkspace(transport, unauthorized);
+  const workspace = useMemo(() => shareScope === null ? fullWorkspace : {
+    ...fullWorkspace,
+    areas: fullWorkspace.areas.filter(area => shareScope.kind === 'area' ? area.id === shareScope.id : fullWorkspace.tracks.some(track => track.id === shareScope.id && track.areaId === area.id)),
+    tracks: fullWorkspace.tracks.filter(track => shareScope.kind === 'track' ? track.id === shareScope.id : track.areaId === shareScope.id),
+    tracksByArea: new Map([...fullWorkspace.tracksByArea].filter(([id]) => shareScope.kind === 'area' && id === shareScope.id)),
+  }, [fullWorkspace, shareScope]);
   const areaMutations = useAreaMutations(transport, unauthorized);
   const prepareNewTrack = usePrepareNewTrack();
   const trackMutations = useTrackMutations(transport, unauthorized);
@@ -414,10 +434,10 @@ export function AppShell({
   const navigationArea = areas.find((area) => area.id === navigationAreaId);
   const mobileNavigationLabel = mobileSection?.kind === 'pages' ? 'Pages' : 'Tracks and settings';
 
-  return (
-    <div className={`${styles.shell} ${narrowRail ? mobileFontClassName : ''} ${narrowRail && (settingsOpen || mobileOverlayRoute) ? styles.settingsPageShell : ''} ${railCollapsed ? styles.shellCollapsed : styles.shellExpanded}`}>
+  const shell = (
+    <div className={`${styles.shell} ${narrowRail ? mobileFontClassName : ''} ${narrowRail && (settingsOpen || mobileOverlayRoute) ? styles.settingsPageShell : ''} ${shareScope?.kind === 'track' ? styles.shellTrackOnly : railCollapsed ? styles.shellCollapsed : styles.shellExpanded}`}>
       {dismissalLayer}
-      {narrowRail && !settingsOpen && !mobileOverlayRoute && <MobileWorkspaceHeader
+      {narrowRail && !settingsOpen && !mobileOverlayRoute && <MobileWorkspaceHeader shareMode={shareScope !== null}
         areas={areas}
         activeArea={activeArea}
         navigationOpen={workspaceInteractive || historyOpen}
@@ -432,13 +452,13 @@ export function AppShell({
         actionsHostRef={setMobileHeaderActionsHost}
         titleHostRef={setMobileHeaderTitleHost}
       />}
-      {narrowRail && !settingsOpen && !mobileOverlayRoute && <button type="button"
+      {shareScope?.kind !== 'track' && narrowRail && !settingsOpen && !mobileOverlayRoute && <button type="button"
         className={`${styles.workspaceOpener} ${floatingControlClassName}`} aria-label="Open workspace"
         hidden={workspaceInteractive || historyOpen || conversationScope?.conversationOpen === true}
         style={{ bottom: `calc(${visibleViewport.bottomInset}px + var(--space-4) + env(safe-area-inset-bottom))` }}
         onClick={() => openMobileSection({ kind: 'areas', areaId: activeArea?.id })}><Icon name="folder" /></button>}
       <EdgeSwipe enabled={narrowRail && !settingsOpen && !mobileOverlayRoute && !mobileNavOpen && !historyOpen} onSwipe={() => setHistoryOpen(true)} />
-      {narrowRail && <MobileHistory owner={historyOwner.token} open={historyOpen} onOpenChange={setHistoryOpen}
+      {narrowRail && <MobileHistory shareMode={shareScope !== null} owner={historyOwner.token} open={historyOpen} onOpenChange={setHistoryOpen}
         selectedConversationId={conversationScope?.selectedConversationId ?? null}
         trackGroups={trackGroups} currentTrackId={conversationScope?.track.id}
         isUnread={isUnread} tracksLoading={readLoading || workspace.overlaysLoading} tracksError={readError ?? workspaceActivityErrorText(workspace)} onRetryTracks={retryRead}
@@ -450,7 +470,7 @@ export function AppShell({
         onOpenSettings={onOpenSettings}
         scopeLabel={conversationScope === null ? '当前 Track' : `当前 Track · ${trackDisplayTitle(conversationScope.track.title)}`}
         accountLabel={userLabel ?? '账号'} accountInitial={userLabel?.slice(0, 1) ?? '我'} onSignOut={onSignOut} />}
-      <div ref={mobileNavigationFrameRef} className={styles.navigationFrame}>
+      {shareScope?.kind !== 'track' && <div ref={mobileNavigationFrameRef} className={styles.navigationFrame}>
       <div
         ref={mobileNavigationRef}
         id="mobile-workspace-navigation"
@@ -465,7 +485,7 @@ export function AppShell({
       >
         <div className={styles.navigationPanel}>
           <div className={styles.navigationContent}>
-          {narrowRail ? (
+          {narrowRail && shareScope === null ? (
             <LayerDepthProvider>{mobileSection?.kind === 'pages' ? (
               <MobilePages
                 areaId={navigationArea?.id}
@@ -517,7 +537,7 @@ export function AppShell({
                 }}
               />
             ) : null}</LayerDepthProvider>
-          ) : <Sidebar
+          ) : <Sidebar shareScope={shareScope}
             trackGroups={trackGroups}
             collapsed={railCollapsed}
             onToggleCollapsed={() => preferences.setRailCollapsed(!railCollapsed)}
@@ -530,6 +550,8 @@ export function AppShell({
             activityError={workspaceActivityErrorText(workspace)}
             onRetryRead={retryRead}
             onGo={navigateFromRail}
+            onShareTrack={(track, origin) => openShare({ scope: { kind: 'track', id: track.id }, title: track.title, origin })}
+            onShareArea={(area, origin) => openShare({ scope: { kind: 'area', id: area.id }, title: area.name, origin })}
             onRequestCreateArea={requestCreateArea}
             onRequestEditArea={requestEditArea}
             onDeleteArea={(areaId, signal) => areaMutations.remove(areaId, signal)}
@@ -555,12 +577,12 @@ export function AppShell({
         </div>
       </div>
       </div>
-      <main ref={drawerWidth.mainRef} className={styles.main} style={drawerWidth.style} inert={mobileDialogActive} aria-hidden={mobileDialogActive ? true : undefined}>
+      }<main ref={drawerWidth.mainRef} className={styles.main} style={drawerWidth.style} inert={mobileDialogActive} aria-hidden={mobileDialogActive ? true : undefined}>
         {/* One flex item. Routes compose ErrorBox + page + Drawer as siblings;
             `:first-child` on `.main` would flex the banner, not the page. */}
         <div key={currentPath} className={styles.stage} hidden={narrowRail && settingsOpen}>
-          <ProviderAuthenticationNotice transport={transport} unauthorized={unauthorized}
-            onOpenPlanners={() => { closeMobileSection(); go({ name: 'settings-planners' }); }} />
+          {shareScope === null && <ProviderAuthenticationNotice transport={transport} unauthorized={unauthorized}
+            onOpenPlanners={() => { closeMobileSection(); go({ name: 'settings-planners' }); }} />}
           <MobileSectionContext.Provider value={openMobileSection}>
             <MobileHeaderActionsContext.Provider value={narrowRail ? mobileHeaderActionsHost : null}>
               <MobileHeaderTitleContext.Provider value={narrowRail ? mobileHeaderTitleHost : null}>
@@ -570,7 +592,7 @@ export function AppShell({
           </MobileSectionContext.Provider>
         </div>
         {/* Above the keyed route stage so settings panes survive tab changes and resizing. */}
-        <SettingsOverlay transport={transport} unauthorized={unauthorized} />
+        {shareScope === null && <SettingsOverlay transport={transport} unauthorized={unauthorized} />}
       </main>
       <Dialog purpose="form" origin={areaEditorTarget?.origin ?? { kind: 'surface-center' }}
         open={areaEditorTarget !== null}
@@ -616,4 +638,5 @@ export function AppShell({
       </Dialog>
     </div>
   );
+  return shareScope === null ? <ShareContext.Provider value={openShare}>{shell}{shareDialog}</ShareContext.Provider> : shell;
 }

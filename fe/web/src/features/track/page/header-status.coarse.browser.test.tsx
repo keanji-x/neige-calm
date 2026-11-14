@@ -6,7 +6,7 @@ import { renderPage, track } from './test-fixtures.tsx';
 afterEach(() => { cleanup(); document.body.replaceChildren(); });
 
 for (const width of [390]) {
-  it(`keeps timeout text and open/dismiss controls visible with none attention at ${width}px`, async () => {
+  it(`keeps timeout text and open/dismiss controls visible with none attention at ${width}px under a coarse pointer`, async () => {
     await browserPage.viewport(width, 844);
     expect(matchMedia('(pointer: coarse)').matches).toBe(true);
     const onReply = vi.fn();

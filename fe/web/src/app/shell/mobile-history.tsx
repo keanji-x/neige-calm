@@ -38,7 +38,8 @@ function groupName(at: number, now: number): string {
 }
 
 export function MobileHistory({ owner, open, onOpenChange, conversations, loading, failed, onRetry, onNew, onSelect, onArchive,
-  onOpenSettings, accountLabel, accountInitial, onSignOut, now, scopeLabel, selectedConversationId, trackGroups, currentTrackId, onOpenTrack, isUnread, tracksLoading, tracksError, onRetryTracks }: Readonly<{
+  shareMode = false, onOpenSettings, accountLabel, accountInitial, onSignOut, now, scopeLabel, selectedConversationId, trackGroups, currentTrackId, onOpenTrack, isUnread, tracksLoading, tracksError, onRetryTracks }: Readonly<{
+  shareMode?: boolean;
   /** Shell route/registration lifetime, not a label or callback identity. */
   owner: object;
   selectedConversationId: string | null;
@@ -161,7 +162,7 @@ export function MobileHistory({ owner, open, onOpenChange, conversations, loadin
           }}
         </ConversationGroups>
         </> : <>
-          <p className={styles.scope}>全部工作区</p>
+          <p className={styles.scope}>{shareMode ? '分享范围内的 Tracks' : '全部工作区'}</p>
           {tracksError !== null && <ErrorBox message={tracksError} actionLabel="重试" onRetry={onRetryTracks} />}
           {tracksLoading && <p role="status">正在加载 Tracks…</p>}
           <MobileTrackList tracks={trackGroups[view]} currentTrackId={currentTrackId} isUnread={isUnread}
@@ -169,13 +170,13 @@ export function MobileHistory({ owner, open, onOpenChange, conversations, loadin
             emptyState={!tracksLoading && tracksError === null ? trackEmptyContent(view) : undefined} />
         </>}
       </div>
-      <div className={styles.footer}>
+      {!shareMode && <div className={styles.footer}>
         <DropdownMenu placement="above" alignment="start" hasChevron={false}
           button={{ label: accountLabel, variant: 'ghost', size: 'lg', className: styles.footerButton, icon: <span className={styles.avatar}>{accountInitial}</span> }}
           items={[{ label: '退出登录', onClick: () => leave(onSignOut) }]} />
         <Button className={styles.footerButton} label="设置" variant="ghost" size="lg" icon={<Icon icon="wrench" />}
           onClick={() => leave(onOpenSettings)} />
-      </div>
+      </div>}
     </div>
   </MobileNav>;
 }

@@ -396,7 +396,10 @@ pub fn router() -> Router<AppState> {
         .route("/api/tracks/{id}/backlinks", get(get_track_backlinks))
         .route("/api/tracks/{id}/files/ls", get(list_track_files))
         .route("/api/tracks/{id}/files/cat", get(cat_track_file))
-        .route("/api/areas/{area_id}/tracks", get(list_tracks_by_area))
+        .route(
+            "/api/areas/{area_id}/tracks",
+            get(list_tracks_by_area).post(create_area_track),
+        )
 }
 
 #[derive(Debug, Deserialize, IntoParams, ToSchema)]
@@ -491,6 +494,7 @@ pub(crate) async fn cat_track_file(
     ),
 )]
 pub(crate) async fn list_tracks_by_area(
+    scope: Option<axum::Extension<crate::share_access::scope::ShareAccessScope>>,
     State(s): State<RouteState>,
     Path(area_id): Path<String>,
     principal: Principal,
@@ -499,6 +503,15 @@ pub(crate) async fn list_tracks_by_area(
         crate::track_access::list_areas(s.repo.as_ref(), &principal, Some(&area_id)).await?;
     let mut tracks = s.repo.tracks_by_area(&area_id).await?;
     tracks.retain(crate::track_access::user_visible_track);
+    if let Some(axum::Extension(scope)) = scope {
+        let mut visible = Vec::new();
+        for track in tracks {
+            if scope.track(s.repo.as_ref(), track.id.as_str()).await? {
+                visible.push(track);
+            }
+        }
+        tracks = visible;
+    }
     crate::track_access::require_list_publication(s.repo.as_ref(), &areas, &tracks, &principal)
         .await?;
     Ok(Json(
@@ -507,6 +520,44 @@ pub(crate) async fn list_tracks_by_area(
             .map(calm_types::track_wire::TrackWire)
             .collect(),
     ))
+}
+
+/// Use the existing allocation owner; the URL is the authoritative Area.
+#[utoipa::path(post, path="/api/areas/{area_id}/tracks", tag="tracks",
+    params(("area_id"=String,Path)), request_body=CreateTrackRequest,
+    responses(
+        (status=201,description="Track created",body=TrackWire),
+        (status=400,description="Invalid creation request",body=ErrorBody),
+        (status=403,description="Area or creation source outside share scope",body=ErrorBody),
+        (status=404,description="Area not found",body=ErrorBody),
+        (status=409,description="Creation conflict",body=ErrorBody),
+        (status=500,description="Internal error",body=ErrorBody),
+        (status=503,description="Creation currently unavailable",body=ErrorBody)))]
+// Axum extracts the scoped credential alongside state and request fields.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn create_area_track(
+    State(s): State<RouteState>,
+    source: Option<axum::Extension<crate::auth::HumanInputSource>>,
+    share: Option<axum::Extension<crate::share_access::scope::ShareAccessScope>>,
+    actor: Actor,
+    headers: HeaderMap,
+    State(codex): State<CodexShellState>,
+    Path(area_id): Path<String>,
+    JsonBody(request): JsonBody<CreateTrackRequest>,
+) -> Result<Response> {
+    if request.area_id.as_str() != area_id {
+        return Err(CalmError::Forbidden("creation Area mismatch".into()));
+    }
+    create_track(
+        State(s),
+        source,
+        share,
+        actor,
+        headers,
+        State(codex),
+        JsonBody(request),
+    )
+    .await
 }
 
 /// Build the initial report a template instantiates to. `Internal`, not `BadRequest`:
@@ -762,11 +813,28 @@ pub(crate) async fn get_track_detail(
 pub(crate) async fn create_track(
     State(s): State<RouteState>,
     source: Option<axum::Extension<crate::auth::HumanInputSource>>,
+    share: Option<axum::Extension<crate::share_access::scope::ShareAccessScope>>,
     actor: Actor,
     headers: HeaderMap,
     State(codex): State<CodexShellState>,
     JsonBody(request): JsonBody<CreateTrackRequest>,
 ) -> Result<Response> {
+    let share = share.map(|share| share.0);
+    if let Some(scope) = &share {
+        scope.validate(s.repo.as_ref()).await?;
+        if !matches!(&scope.read.link.delegation.scope, calm_types::share_links::ShareScope::Area(id) if id == request.area_id.as_str())
+            || request.cwd.is_some()
+            || request.admin
+            || request.allow_cross_area_cwd.is_some()
+        {
+            return Err(CalmError::Forbidden("creation outside share scope".into()));
+        }
+        if let Some(origin) = &request.fork_report_from
+            && !scope.track(s.repo.as_ref(), origin).await?
+        {
+            return Err(CalmError::Forbidden("source outside share scope".into()));
+        }
+    }
     let source = source.map(|source| source.0);
     let area_id = request.area_id.clone();
     let admin = request.admin;
@@ -807,6 +875,8 @@ pub(crate) async fn create_track(
                 ),
             };
             let source = source.ok_or(CalmError::Unauthorized)?;
+            let creation_source =
+                crate::conversation_inputs::CreationInputSource::new(source.clone(), share);
             #[cfg(feature = "fixtures")]
             crate::test_seams::pause_point("track-canonical-allocation", area_id.as_str()).await;
             let conflict = plan.folder_conflict();
@@ -814,7 +884,7 @@ pub(crate) async fn create_track(
                 create::CreateShape::MessageLess(plan) => {
                     let result = create::dormant::allocate_dormant_empty_track(
                         s.clone(),
-                        source.clone(),
+                        creation_source.clone(),
                         plan,
                         advice,
                     )
@@ -836,7 +906,7 @@ pub(crate) async fn create_track(
                 create::CreateShape::WithFirstMessage(plan) => {
                     let result = create::dormant::accept_dormant_human_track(
                         s.clone(),
-                        source.clone(),
+                        creation_source.clone(),
                         plan,
                         advice,
                     )
@@ -857,12 +927,9 @@ pub(crate) async fn create_track(
             let crate::db::sqlite::conversation::HumanTrackCreationAck::V1 {
                 planner_card_id, ..
             } = accepted.ack;
-            crate::operation::planner_start_fence::wake_canonical_human(
-                s,
-                CardId::from(planner_card_id),
-                source,
-            )
-            .await;
+            creation_source
+                .wake(s, CardId::from(planner_card_id))
+                .await?;
             return Ok((
                 StatusCode::CREATED,
                 Json(calm_types::track_wire::TrackWire(accepted.track)),
@@ -870,6 +937,11 @@ pub(crate) async fn create_track(
                 .into_response());
         }
     };
+    if share.is_some() {
+        return Err(CalmError::Forbidden(
+            "share cannot replay historical creation".into(),
+        ));
+    }
     let isolation = CreateIsolation::decode(&request.cwd, request.isolation)?;
     let historical_source = source.map(crate::conversation_inputs::HistoricalHumanSource::new);
     if let Some(source) = &historical_source
@@ -2382,12 +2454,18 @@ async fn restart_planner_harness_at(s: &RouteState, actor: &Actor, track: &Track
     ),
 )]
 pub(crate) async fn update_track(
+    share: Option<axum::Extension<crate::share_access::scope::ShareAccessScope>>,
     State(s): State<RouteState>,
     State(w): State<WorkerState>,
     actor: Actor,
     Path(id): Path<String>,
     JsonBody(p): JsonBody<TrackPatch>,
 ) -> Result<Response> {
+    if share.is_some() && (p.admin == Some(true) || p.workspace.is_some()) {
+        return Err(CalmError::Forbidden(
+            "share cannot grant admin or change workspace".into(),
+        ));
+    }
     if p.admin.is_some() {
         super::track_report_blocks::require_rest_user_actor_for(
             &actor,
@@ -3365,11 +3443,23 @@ impl From<report_backlinks::BacklinkPage> for TrackBacklinksResponse {
     ),
 )]
 pub(crate) async fn get_track_backlinks(
+    share: Option<axum::Extension<crate::share_access::scope::ShareAccessScope>>,
     State(s): State<RouteState>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse> {
     let page = report_backlinks::backlinks_for_track(s.repo.as_ref(), &id).await?;
-    Ok(Json(TrackBacklinksResponse::from(page)))
+    let mut response = TrackBacklinksResponse::from(page);
+    if let Some(axum::Extension(share)) = share {
+        let mut visible = Vec::new();
+        for backlink in response.backlinks {
+            if share.track(s.repo.as_ref(), &backlink.src_track_id).await? {
+                visible.push(backlink);
+            }
+        }
+        response.backlinks = visible;
+        response.skipped_sources = 0;
+    }
+    Ok(Json(response))
 }
 
 /// Request body for `POST /api/tracks/:id/report`. No `author` field: it is pinned
@@ -3419,12 +3509,7 @@ pub(crate) async fn get_track_report(
     principal: Principal,
     Path(id): Path<String>,
 ) -> Result<Response> {
-    crate::report_resource::get_track_report(
-        &s,
-        crate::read_access::Audience::Owner(&principal),
-        id,
-    )
-    .await
+    crate::report_resource::get_track_report(&s, &principal, id).await
 }
 
 /// `POST /api/tracks/:id/report` — user-driven track-report edit; only `ActorId::User`
@@ -3448,16 +3533,14 @@ pub(crate) async fn get_track_report(
 )]
 pub(crate) async fn update_track_report(
     State(s): State<RouteState>,
-    // `Principal` asserts the session middleware has run; not read today (single-user),
-    // held for the multi-user split.
-    _principal: Principal,
+    source: crate::auth::HumanInputSource,
     actor: Actor,
     Path(id): Path<String>,
     JsonBody(body): JsonBody<UpdateTrackReportBody>,
 ) -> Result<Response> {
     // Direct string check, NOT `to_actor_id()`: its defensive fallback maps unknown headers
     // to `ActorId::User`, which is right for attribution but wrong for gating.
-    super::track_report_blocks::require_rest_user_actor(&actor)?;
+    super::track_report_blocks::require_rest_human_actor(&actor, &source)?;
 
     // 404 on missing track; 500 on missing report card (invariant: one report row per track).
     let target = track_report::ReportEditTarget::resolve(s.repo.as_ref(), &id).await?;

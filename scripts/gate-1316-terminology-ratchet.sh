@@ -1,4 +1,11 @@
 #!/usr/bin/env bash
+# #3633 scoped creation bounded contract exception: runtime_id/crates 1125 -> 1132.
+# All seven occurrences in 0219_share_creation_receipts.sql preserve the frozen
+# origin_runtime_id column and initialRuntimeId receipt key while replacing the
+# two creation-proof triggers. No new domain identifier or scan rule is added.
+# Later receipt-schema changes edit their owning migration and this baseline;
+# ordinary new tests/files need no roster edit. The existing scan and selftest
+# each run once per CI lint workflow; no exclusion or invocation changes.
 # #3633 bounded guest-conversation contract exception: spec/crates 532 -> 535
 # preserves the released 'spec' profile in 0217 and the required 'shared-spec'
 # API kind in its producer and independent HTTP assertion. spec/docs 0 -> 1

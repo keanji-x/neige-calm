@@ -1,3 +1,4 @@
+import type { ShareScope } from '../../../../core/api/generated/wire.ts';
 import type { DialogOrigin } from '../../ui/dialog/public.tsx';
 import type { SidebarTrackGroups } from './sidebar-track-groups.ts';
 import { EmptyState } from '../../ui/empty-state/public.tsx';
@@ -31,6 +32,7 @@ import styles from './shell.module.css';
 import { navigationRowClass as rowLayout, navigationRowPresentation } from '../../ui/navigation-row/public.ts';
 
 export type SidebarProps = Readonly<{
+  shareScope?: ShareScope | null;
   areas: readonly Area[];
   tracksByArea: ReadonlyMap<string, readonly Track[]>;
   tracks: readonly Track[];
@@ -38,6 +40,8 @@ export type SidebarProps = Readonly<{
   trackGroups: SidebarTrackGroups;
   currentPath: string;
   onGo: (target: NavTarget) => void;
+  onShareTrack?: (track: Track, origin: DialogOrigin) => void;
+  onShareArea?: (area: Area, origin: DialogOrigin) => void;
   onRequestCreateArea: (origin: DialogOrigin) => void;
   onRequestEditArea: (area: Area, origin: DialogOrigin) => void;
   onDeleteArea: (areaId: string, signal: AbortSignal) => void | Promise<void>;
@@ -74,8 +78,8 @@ export function initialsOf(label: string): string {
  * as well as in the query layer.
  */
 export function Sidebar({
-  areas, tracksByArea, tracks, trackGroups: memberships, currentPath, onGo,
-  onRequestCreateArea, onRequestEditArea, onDeleteArea, onNewTrack, onSetPinned, onDeleteTrack,
+  shareScope = null, areas, tracksByArea, tracks, trackGroups: memberships, currentPath, onGo,
+  onShareTrack, onShareArea, onRequestCreateArea, onRequestEditArea, onDeleteArea, onNewTrack, onSetPinned, onDeleteTrack,
   onOpenSettings, onOpenPlugins, onSignOut, collapsed, onToggleCollapsed,
   userLabel = 'You', nowMs, readError = null, activityError = null,
   readLoading = false, onRetryRead = () => undefined,
@@ -235,6 +239,8 @@ export function Sidebar({
       onDelete: trackConfirm.request,
       trackRowRef: (trackId: string, element: HTMLButtonElement | null) => setTrackRef(groupKey, trackId, element),
       trackActions: (track: Track) => ({
+        onShare: shareScope === null && onShareTrack !== undefined && areas.some(area => area.id === track.areaId && area.kind === 'user')
+          ? (_id: string, origin: DialogOrigin) => onShareTrack(track, origin) : undefined,
         areaPinned: preferences.areaTrackPinned(track.areaId, track.id),
         onSetPinned: handleSetPinned,
         onSetAreaPinned: (id: string, next: boolean) => preferences.setAreaTrackPinned(track.areaId, id, next),
@@ -242,6 +248,14 @@ export function Sidebar({
       }),
     };
   };
+
+  if (shareScope !== null) return <nav className={styles.rail} aria-label="Workspace">
+    {userAreas.filter(area => shareScope.kind === 'area' && area.id === shareScope.id).map(area => <SidebarTrackGroup
+      key={area.id} icon="folder" emptyState={null} management={management(`area:${area.id}`, `Track list actions for ${area.name}`)} title={area.name} label={area.name} level="section" expanded onToggle={() => {}}
+      tracks={tracksByArea.get(area.id) ?? []} areas={[area]} activeTrackId={activeTrackId} markCurrent
+      {...{ ...rowPropsFor(`area:${area.id}`), onDelete: undefined }}
+      actions={<button type="button" onClick={() => onNewTrack(area.id)}>+ New Track</button>} />)}
+  </nav>;
 
   return (
     <nav ref={railRef} className={`${rowLayout('row')} ${styles.rail} ${collapsed ? styles.railCollapsed : ''}`} aria-label="Workspace">
@@ -395,6 +409,7 @@ export function Sidebar({
                     if (element === null) areaDisclosureRefs.current.delete(area.id);
                     else areaDisclosureRefs.current.set(area.id, element);
                   }}
+                  onShare={onShareArea === undefined ? undefined : origin => onShareArea(area, origin)}
                   onEdit={(origin) => onRequestEditArea(area, origin)}
                   onRequestDelete={areaConfirm.request}
                   onNewTrack={onNewTrack}

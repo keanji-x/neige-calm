@@ -51,6 +51,7 @@ pub struct MentionsQuery {
     ),
 )]
 pub(crate) async fn list_mentions(
+    scope: Option<axum::Extension<crate::share_access::scope::ShareAccessScope>>,
     State(s): State<RouteState>,
     Path(area_id): Path<String>,
     Query(query): Query<MentionsQuery>,
@@ -63,6 +64,17 @@ pub(crate) async fn list_mentions(
         CalmError::Internal("mentions: route requires a sqlite-backed repo".into())
     })?;
     let reports = area_reports::outlines(&s.mcp_context, pool.read_pool(), &area_id).await?;
+    let reports = if let Some(axum::Extension(scope)) = scope {
+        let mut visible = Vec::new();
+        for report in reports {
+            if scope.track(s.repo.as_ref(), &report.track_id).await? {
+                visible.push(report);
+            }
+        }
+        visible
+    } else {
+        reports
+    };
     Ok(Json(rank::candidates(
         &reports,
         &query.q,
