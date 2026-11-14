@@ -90,10 +90,13 @@ pub(super) async fn prepare(
         let mut attachment_guard = AttachmentGuard(Some(server.process.connection.client.clone()));
         let token = mint_token(params).await?;
         let mut attached_native = None;
+        // The durable worker owns this attachment across reconnects and shared-process
+        // generations. Keep the suffix length (and therefore the shim's tool-name budget)
+        // unchanged; credentials still rotate on every new attachment.
         let key = format!(
             "{}-{}",
             registration.profile.mcp_server_key(),
-            &uuid::Uuid::new_v4().simple().to_string()[..12]
+            &blake3::hash(params.worker_session_id.as_bytes()).to_hex()[..12]
         );
         let attachment = async {
             let mcp = [params.mcp_server(key.clone(), &token)];

@@ -83,6 +83,26 @@ provide AGY's sandbox, AGY documents that `proceed-in-sandbox` behaves like
 `request-review`: in Never mode those requests are declined. Verify sandbox
 availability on the host rather than inferring it from the launch flag.
 
+## MCP identity on reconnect
+
+Each card's durable Neige worker session has a stable MCP server name. Rebinding
+that session, restarting the resident ACP process, and resuming through `/compact`
+reuse the name. Different worker sessions use separate names. The name uses a
+short digest of Neige's own worker session identifier; it does not depend on AGY
+cache files, native session naming, or the current process. Starting a new Neige
+worker session gives it a new identity.
+
+Each new attachment still receives a fresh card-bound token and revokes the old
+credential. Keeping the server name stable does not preserve an old grant. The
+existing function-name budget and long-tool aliases remain in use.
+
+This prevents Neige from introducing another MCP name on each reconnect. It does
+not automatically remove stale servers or tools already accumulated in an old
+native AGY conversation, including names from earlier Neige versions. A fresh
+conversation may be needed for those sessions. The automated regression covers
+Neige's production attachment and authorization paths with an ACP fixture; it is
+not a completed real-model A/B comparison of AGY's tool selection.
+
 ## Permission modes and early stops
 
 `full` selects the agent's single-call `allow_once` option for each permission
