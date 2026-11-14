@@ -40,32 +40,91 @@ function mount(issueGuides?: Promise<ApiTransportResponse>) {
   return requests;
 }
 
-it('shows the locked template guide in the composer and removes it when the template changes', async () => {
+async function chooseTemplate(name: string) {
+  await expect.element(page.getByRole('button', { name: /^Template:/ })).toBeVisible();
+  await page.getByRole('button', { name: /^Template:/ }).click();
+  await page.getByRole('menuitem', { name: new RegExp(`^${name}`) }).click();
+}
+
+function inputGeometry() {
+  const input = page.getByRole('combobox', { name: 'What this track should do' }).element();
+  const box = input.getBoundingClientRect();
+  const composer = input.closest('[data-nc-new-track-message]')!.getBoundingClientRect();
+  return { box, topOffset: box.top - composer.top };
+}
+
+it('places the locked guide above the full-width multiline input at desktop and phone widths', async () => {
   await page.viewport(1440, 900);
   const requests = mount();
   const field = page.getByRole('combobox', { name: 'What this track should do' });
-  await field.fill('Keep this sentence');
-  await page.getByRole('button', { name: /^Template:/ }).click();
-  await page.getByRole('menuitem', { name: /^Development/ }).click();
-  await expect.element(page.getByLabelText('development, included by template')).toBeVisible();
-  expect(document.querySelector('[aria-label="development, included by template"] svg')).not.toBeNull();
-  await expect.poll(() => {
-    const guide = page.getByLabelText('development, included by template').element().getBoundingClientRect();
-    const input = field.element().getBoundingClientRect();
-    return guide.right <= input.left && guide.bottom > input.top && input.bottom > guide.top;
-  }).toBe(true);
-  await expect.element(field).toHaveTextContent('Keep this sentence');
-  for (const width of [390, 320]) {
+  const message = `Keep this sentence\nKeep this second line\n${'W'.repeat(120)}`;
+  await field.fill(message);
+  const fullWidths = new Map<number, number>();
+  for (const width of [1440, 390, 320]) {
+    await page.viewport(width, 844);
+    fullWidths.set(width, inputGeometry().box.width);
+  }
+  await page.viewport(1440, 900);
+  await chooseTemplate('Development');
+  for (const width of [1440, 390, 320]) {
     await page.viewport(width, 844);
     await expect.element(page.getByLabelText('development, included by template')).toBeVisible();
+    expect(document.querySelector('[aria-label="development, included by template"] svg')).not.toBeNull();
+    await expect.poll(() => {
+      const guide = page.getByLabelText('development, included by template').element().getBoundingClientRect();
+      return guide.bottom - inputGeometry().box.top;
+    }).toBeLessThanOrEqual(0);
+    await expect.poll(() => Math.abs(page.getByLabelText('development, included by template').element()
+      .getBoundingClientRect().left - inputGeometry().box.left)).toBeLessThanOrEqual(2);
+    expect(Math.abs(inputGeometry().box.width - fullWidths.get(width)!)).toBeLessThanOrEqual(2);
+
+    const input = field.element();
+    const box = input.getBoundingClientRect();
+    const padding = getComputedStyle(input);
+    const left = box.left + parseFloat(padding.paddingLeft);
+    const text = document.createRange();
+    text.selectNodeContents(input);
+    const lines = [...text.getClientRects()].filter(line => line.width > 0);
+    expect(lines.length).toBeGreaterThanOrEqual(3);
+    for (const line of lines) expect(Math.abs(line.left - left)).toBeLessThanOrEqual(2);
+    const textWidth = box.width - parseFloat(padding.paddingLeft) - parseFloat(padding.paddingRight);
+    expect(Math.max(...lines.map(line => line.width))).toBeGreaterThan(textWidth * 0.9);
+    await expect.element(field).toHaveTextContent('Keep this sentence');
     expect(document.documentElement.scrollWidth).toBe(window.innerWidth);
   }
   await page.viewport(1440, 900);
-  await page.getByRole('button', { name: /^Template:/ }).click();
-  await page.getByRole('menuitem', { name: /^No template/ }).click();
+  await chooseTemplate('No template');
   await expect.element(page.getByLabelText('development, included by template')).not.toBeInTheDocument();
   await expect.element(field).toHaveTextContent('Keep this sentence');
   expect(requests.every(request => request.method === 'GET')).toBe(true);
+});
+
+it('leaves no empty composer header for a template without guides or No template', async () => {
+  await page.viewport(1440, 900);
+  const requests = mount();
+  await expect.element(page.getByRole('button', { name: /^Template: No template/ })).toBeVisible();
+  expect(requests.some(request => request.path.endsWith('/plugin-guides'))).toBe(false);
+  const offsets = new Map<number, number>();
+  for (const width of [1440, 390, 320]) {
+    await page.viewport(width, 844);
+    offsets.set(width, inputGeometry().topOffset);
+  }
+  await page.viewport(1440, 900);
+  await chooseTemplate('Development');
+  await expect.element(page.getByLabelText('development, included by template')).toBeVisible();
+  await chooseTemplate('Small change');
+  await expect.poll(() => requests.some(request => request.path.endsWith('/small-change/plugin-guides'))).toBe(true);
+  await expect.element(page.getByRole('group', { name: 'Template plugin guides' })).not.toBeInTheDocument();
+  for (const width of [1440, 390, 320]) {
+    await page.viewport(width, 844);
+    await expect.poll(() => Math.abs(inputGeometry().topOffset - offsets.get(width)!)).toBeLessThanOrEqual(2);
+  }
+  await page.viewport(1440, 900);
+  await chooseTemplate('No template');
+  for (const width of [1440, 390, 320]) {
+    await page.viewport(width, 844);
+    await expect.poll(() => Math.abs(inputGeometry().topOffset - offsets.get(width)!)).toBeLessThanOrEqual(2);
+  }
 });
 
 it('does not revive a default guide when its read finishes after switching templates', async () => {
@@ -73,12 +132,14 @@ it('does not revive a default guide when its read finishes after switching templ
   let resolve!: (response: ApiTransportResponse) => void;
   const late = new Promise<ApiTransportResponse>(done => { resolve = done; });
   const requests = mount(late);
-  await page.getByRole('button', { name: /^Template:/ }).click();
-  await page.getByRole('menuitem', { name: /^Development/ }).click();
+  await expect.element(page.getByRole('button', { name: /^Template: No template/ })).toBeVisible();
+  const baseline = inputGeometry().topOffset;
+  await chooseTemplate('Development');
   await expect.poll(() => requests.some(request => request.path.endsWith('/dev/plugin-guides'))).toBe(true);
-  await page.getByRole('button', { name: /^Template:/ }).click();
-  await page.getByRole('menuitem', { name: /^No template/ }).click();
+  expect(Math.abs(inputGeometry().topOffset - baseline)).toBeLessThanOrEqual(2);
+  await chooseTemplate('No template');
   resolve({ status: 200, statusText: 'OK', body: [{ id: 'gitforge', name: 'development' }] });
   await expect.element(page.getByLabelText('development, included by template')).not.toBeInTheDocument();
   await expect.element(page.getByRole('button', { name: /^Template: No template/ })).toBeVisible();
+  expect(Math.abs(inputGeometry().topOffset - baseline)).toBeLessThanOrEqual(2);
 });

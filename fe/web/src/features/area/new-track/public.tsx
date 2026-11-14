@@ -304,12 +304,10 @@ export function NewTrackForm({
             isDisabled={submitting}
             onSubmit={submit}
             status={status}
-            input={<div className={styles.editor}>
-              {chosen !== undefined && templatePluginGuides?.(chosen.id)}
-              <ChatComposerInput className={styles.input} label={TASK_LABEL} placeholder={TASK_PLACEHOLDER} isDisabled={submitting || locked}
-                /* The `@` source delays its own requests; Astryx's delay would let its per-keystroke probe search fire. */
-                {...(triggers === undefined ? {} : { triggers, debounceMs: 0 })} />
-            </div>}
+            headerActions={chosen === undefined ? undefined : templatePluginGuides?.(chosen.id)}
+            input={<ChatComposerInput className={styles.input} label={TASK_LABEL} placeholder={TASK_PLACEHOLDER} isDisabled={submitting || locked}
+              /* The `@` source delays its own requests; Astryx's delay would let its per-keystroke probe search fire. */
+              {...(triggers === undefined ? {} : { triggers, debounceMs: 0 })} />}
             footerActions={<ComposerPreferences browsing={browsing !== null}
               isolation={{ hasFolder: cwd !== '', value: isolation, onChange: setIsolation, isDisabled: submitting || locked }}
               startingPoint={{ templates, templatesLoaded, recipes, value: effectiveSelection,

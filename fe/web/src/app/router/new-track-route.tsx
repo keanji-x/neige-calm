@@ -1,4 +1,4 @@
-import { TemplatePluginGuides } from './template-plugin-guides.tsx';
+import { useTemplatePluginGuides } from './template-plugin-guides.tsx';
 import { Banner } from '@astryxdesign/core/Banner';
 import { useQuery } from '@tanstack/react-query';
 import { useCallback, useEffect, useRef } from 'react';
@@ -13,6 +13,7 @@ import { isBlankForKernel, TRACK_CREATE_FAILURES, TRACK_CREATE_TEXT, trackCreate
 import { ModelPill, PlannerRolePill } from '../../features/chat/thread/model-pill.tsx';
 import { useMentionTrigger } from '../../features/chat/thread/mention-trigger.tsx';
 import { NewTrackForm, type NewTrackDraft, type NewTrackFormState } from '../../features/area/new-track/public.tsx';
+import { NO_STARTING_POINT } from '../../features/area/default-pills/public.tsx';
 import { useCompactViewport } from '../../ui/viewport/public.ts';
 import { ErrorBox } from '../../ui/error-box/public.tsx';
 import { managedProvidersQueryOptions } from '../providers/managed-providers.ts';
@@ -62,6 +63,12 @@ function NewTrackEditor({ transport, unauthorized, workspace, session, store }: 
   const trackMutations = useTrackMutations(transport, unauthorized);
   const templates = useTrackTemplates(transport, unauthorized);
   const recipes = useTrackRecipes(transport, unauthorized);
+  const openingTemplateId = useRef(session.area.defaultTemplateId).current;
+  const selected = session.form?.selected ?? (openingTemplateId === null
+    ? NO_STARTING_POINT : { kind: 'template', id: openingTemplateId });
+  const chosenTemplateId = selected.kind === 'template' && templates.templates.some(template => template.id === selected.id)
+    ? selected.id : null;
+  const pluginGuides = useTemplatePluginGuides(chosenTemplateId, transport, unauthorized);
   const go = useGo();
   const listDirectory = createDirectoryLister(transport, unauthorized);
   /* The sentence is the new track's Planner's first message, and that Planner reads this Area's reports; there is no track yet to rank first. */
@@ -167,7 +174,7 @@ function NewTrackEditor({ transport, unauthorized, workspace, session, store }: 
     readNotice={workspace.areasLoading ? <Banner status="info" title="Loading Area…"
       description="You can keep writing. Create track will be available when loading finishes." /> : undefined}
     mentionTrigger={mentionTrigger}
-    templatePluginGuides={id => <TemplatePluginGuides key={id} templateId={id} transport={transport} unauthorized={unauthorized} />}
+    templatePluginGuides={id => id === chosenTemplateId ? pluginGuides : undefined}
     modelControls={<>
       <ModelPill
         groups={[

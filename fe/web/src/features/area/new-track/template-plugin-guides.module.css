@@ -4,12 +4,4 @@
     flex-wrap: wrap;
     gap: var(--space-half);
   }
-
-  .lock {
-    inline-size: 1em;
-    block-size: 1em;
-    fill: none;
-    stroke: currentColor;
-    stroke-width: 1.4;
-  }
 }
