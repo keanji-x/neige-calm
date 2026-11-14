@@ -1,5 +1,7 @@
 #[path = "cases/acp_antigravity_compact.rs"]
 mod acp_antigravity_compact;
+#[path = "cases/acp_antigravity_mcp.rs"]
+mod acp_antigravity_mcp;
 #[path = "cases/acp_canonical.rs"]
 mod acp_canonical;
 #[path = "cases/acp_compact.rs"]

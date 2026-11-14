@@ -217,6 +217,14 @@ def write_native(state):
     pending.write_text(json.dumps(state))
     pending.replace(path)
 
+def capture_shared_token(servers):
+    if os.environ.get('ACP_FIXTURE_CAPTURE_SHARED_TOKEN') == '1':
+        for server in servers:
+            for variable in server['env']:
+                if variable['name'] == 'NEIGE_MCP_TOKEN':
+                    with open(root / f'{current}.test-token', 'w', opener=lambda path, flags: os.open(path, flags, 0o600)) as output:
+                        output.write(variable['value'])
+
 def check_mcp(servers):
     if servers and (root / 'scenario').read_text().strip() == 'cli':
         cli = pathlib.Path(servers[0]['command']).with_name('neige')
@@ -330,12 +338,7 @@ for line in sys.stdin:
         current = 'native_' + uuid.uuid4().hex
         native_path().write_text(json.dumps({'inputs': [], 'cwd': params['cwd'], 'model': model, 'effort': effort}))
         mcp_servers = params['mcpServers']
-        if os.environ.get('ACP_FIXTURE_CAPTURE_SHARED_TOKEN') == '1':
-            for server in mcp_servers:
-                for variable in server['env']:
-                    if variable['name'] == 'NEIGE_MCP_TOKEN':
-                        with open(root / f'{current}.test-token', 'x', opener=lambda path, flags: os.open(path, flags, 0o600)) as output:
-                            output.write(variable['value'])
+        capture_shared_token(mcp_servers)
         vendor('mcp/servers_updated')
         vendor('session/setup')
         check_mcp(params['mcpServers'])
@@ -367,6 +370,7 @@ for line in sys.stdin:
             update({'sessionUpdate': 'user_message_chunk', 'content': {'type': 'text', 'text': text}})
             update({'sessionUpdate': 'agent_message_chunk', 'content': {'type': 'text', 'text': 'historic reply'}})
         mcp_servers = params['mcpServers']
+        capture_shared_token(mcp_servers)
         vendor('session/setup')
         attach_updates()
         if xai and (root / 'scenario').read_text().strip().startswith('grok-compact-'):
