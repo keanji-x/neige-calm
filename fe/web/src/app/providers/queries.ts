@@ -53,11 +53,11 @@ import {
   createCardOperation, createClaudeCardOperation, createCodexCardOperation, createTerminalCardOperation, setTerminalWorkbenchOperation, createTrackOperation,
   createTrackRecipeOperation, deleteCardOperation, deleteTrackOperation, deleteTrackRecipeOperation,
   overlaysByKindOperation, recipeSaveAttempts, recipeSaveLanded, toTrack, updateTrackOperation, updateTrackRecipeOperation,
-  NEUTRAL_ACTIVITY, sortAreaTracksByRecent, trackActivitiesFrom, trackDetailOperation, trackRecipeOperation, trackRecipesOperation, trackTemplatesOperation,
+  NEUTRAL_ACTIVITY, sortAreaTracksByRecent, trackActivitiesFrom, trackDetailOperation, trackRecipeOperation, trackRecipesOperation,
   tracksInAreaOperation,
   type CardWire, type NewCardBody, type NewClaudeCardBody, type NewCodexCardBody, type NewTerminalCardBody,
   type NewTrackBody, type OverlayWire,
-  type Track, type TrackDetailWire, type TrackPatchBody, type TrackRecipe, type TrackTemplate,
+  type Track, type TrackDetailWire, type TrackPatchBody, type TrackRecipe,
 } from '../../../../core/domain/track.ts';
 import {
   compactPlannerOperation, interruptPlannerOperation, sendPlannerInputOperation,
@@ -555,39 +555,7 @@ export function settingsQueryOptions(transport: ApiTransportPort, unauthorized: 
   };
 }
 
-/** Templates for the new-track page. `retry: false` makes a failed roster visible instead of leaving either consumer spinning. */
-export function trackTemplatesQueryOptions(transport: ApiTransportPort, unauthorized: UnauthorizedChannel) {
-  return {
-    queryKey: queryKeys.trackTemplates(),
-    queryFn: (): Promise<TrackTemplate[]> => runOperation(transport, trackTemplatesOperation(), unauthorized),
-    retry: false,
-  };
-}
-
-export type TrackTemplates = Readonly<{
-  /** Never `undefined`; `loaded` and `error` distinguish empty, pending, and failed. */
-  templates: TrackTemplate[];
-  /** Visible roster failure. Whether it blocks depends on the saved selection. */
-  error: string | null;
-  /** `false` while the first read is still in flight — see `useTrackTemplates`. */
-  loaded: boolean;
-  refetch: () => void;
-}>;
-
-/** Shared template roster for New Track and the Area editor, so loading/error semantics live in one place. */
-export function useTrackTemplates(transport: ApiTransportPort, unauthorized: UnauthorizedChannel): TrackTemplates {
-  const query = useQuery(trackTemplatesQueryOptions(transport, unauthorized));
-  return {
-    templates: query.data ?? [],
-    error: query.isError ? readErrorText(query.error, 'Could not load templates.') : null,
-    // `[]` must not read as "loaded and empty", and a FAILED read is not loaded either: `!isPending` alone
-    // is true once a read has errored, making a dead server look like a server with no templates.
-    loaded: !query.isPending && !query.isError,
-    refetch: () => { void query.refetch(); },
-  };
-}
-
-/** The user's own recipes. `retry: false`: a failed read must degrade the picker to "built-ins only" rather than spin. */
+/** The user's own recipes for the independent management screen. Failed reads remain explicitly retryable. */
 export function trackRecipesQueryOptions(transport: ApiTransportPort, unauthorized: UnauthorizedChannel) {
   return {
     queryKey: queryKeys.trackRecipes(),
@@ -599,7 +567,7 @@ export function trackRecipesQueryOptions(transport: ApiTransportPort, unauthoriz
 export type TrackRecipes = Readonly<{
   refreshing: boolean;
   refetch: () => void;
-  /** Never `undefined`: for the picker, pending and failed both read as "no recipes of mine". */
+  /** Never `undefined`: pending and failed are distinguished by loaded and error. */
   recipes: TrackRecipe[];
   /** A notice, not a blocker. Retained during a retry after the first failure. */
   error: string | null;

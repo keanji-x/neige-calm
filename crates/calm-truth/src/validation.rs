@@ -19,7 +19,7 @@ pub const TERMINAL_PAYLOAD_SCHEMA_VERSION: u32 = 1;
 /// signals; a hook for such a card is advisory telemetry, never worker state.
 pub const TERMINAL_SIGNALS_PAYLOAD_KEY: &str = "terminal_signals";
 /// Creation-time template instructions, retained across Planner resets and
-/// report edits. Only the track-create transaction may mint this snapshot.
+/// report edits. Track creation and admitted template rebinding own this snapshot.
 pub const PLANNER_TEMPLATE_CONTEXT_PAYLOAD_KEY: &str = "template_context";
 /// Frozen named-source material, consumed by the first canonical claim.
 pub const TRACK_CREATION_CONTEXT_PAYLOAD_KEY: &str = "track_creation_context";
@@ -50,9 +50,13 @@ pub const CLAUDE_SESSION_ID_PAYLOAD_KEY: &str = "claude_session_id";
 
 pub use calm_types::card_presentation::TERMINAL_PRESENTATION_PAYLOAD_KEY;
 
+/// Original native cwd paired with the worker session identity that selected it.
+pub const BOUND_SESSION_CWD_PAYLOAD_KEY: &str = "bound_session_cwd";
+
 /// Kernel-owned card fields, refused at client boundaries and preserved by
 /// `card_update_tx` even when a replacement payload omits them.
-pub const SERVER_OWNED_CARD_PAYLOAD_KEYS: [&str; 12] = [
+pub const SERVER_OWNED_CARD_PAYLOAD_KEYS: [&str; 13] = [
+    BOUND_SESSION_CWD_PAYLOAD_KEY,
     TERMINAL_SIGNALS_PAYLOAD_KEY,
     TERMINAL_PRESENTATION_PAYLOAD_KEY,
     PLANNER_TEMPLATE_CONTEXT_PAYLOAD_KEY,
@@ -73,7 +77,9 @@ pub fn server_owned_value_is_sticky(key: &str, value: &Value) -> bool {
     match key {
         // Even corrupt snapshots stay protected: startup must report the
         // corruption, not erase it and silently drop the working method.
-        PLANNER_TEMPLATE_CONTEXT_PAYLOAD_KEY | TRACK_CREATION_CONTEXT_PAYLOAD_KEY => true,
+        PLANNER_TEMPLATE_CONTEXT_PAYLOAD_KEY
+        | TRACK_CREATION_CONTEXT_PAYLOAD_KEY
+        | BOUND_SESSION_CWD_PAYLOAD_KEY => true,
         // Creation-owned identity stays immutable, including a corrupt stored value.
         PLANNER_PROVIDER_PAYLOAD_KEY
         | ASSISTANT_PROVIDER_PAYLOAD_KEY

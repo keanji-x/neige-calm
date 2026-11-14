@@ -1,10 +1,8 @@
-import { TemplatePluginGuides } from './template-plugin-guides.tsx';
 import { Banner } from '@astryxdesign/core/Banner';
 import { useQuery } from '@tanstack/react-query';
 import { useCallback, useEffect, useRef } from 'react';
 import type { ApiTransportPort } from '../../../../core/api/types.ts';
 import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
-import { templateDetailOperation } from '../../../../core/domain/template.ts';
 import { availabilityOf } from '../../../../core/domain/agent-providers.ts';
 import { folderConflictMessage } from '../../../../core/domain/area.ts';
 import { ApiError, classifyFailure, NotSentError, refusedText, writeFailureOf } from '../../../../core/domain/failure-class.ts';
@@ -19,7 +17,7 @@ import { managedProvidersQueryOptions } from '../providers/managed-providers.ts'
 import { agentProvidersQueryOptions } from '../providers/agent-providers.ts';
 import { createDirectoryLister } from '../providers/directory.ts';
 import { useMentionSearch } from '../providers/mentions.ts';
-import { runOperation, folderConflictOf, modelCatalogQueryOptions, useTrackMutations, useTrackRecipes, useTrackTemplates, useWorkspace, type Workspace } from '../providers/queries.ts';
+import { folderConflictOf, modelCatalogQueryOptions, useTrackMutations, useWorkspace, type Workspace } from '../providers/queries.ts';
 import { readHostThemeRgb } from '../theme/host-rgb.ts';
 import { mintIdempotencyKey } from '../providers/idempotency-key.ts';
 import { useGo, useRouteParam } from './navigation.ts';
@@ -60,8 +58,6 @@ function NewTrackEditor({ transport, unauthorized, workspace, session, store }: 
   const availability = useQuery(agentProvidersQueryOptions(transport, unauthorized));
   const providers = useQuery(managedProvidersQueryOptions(transport, unauthorized));
   const trackMutations = useTrackMutations(transport, unauthorized);
-  const templates = useTrackTemplates(transport, unauthorized);
-  const recipes = useTrackRecipes(transport, unauthorized);
   const go = useGo();
   const listDirectory = createDirectoryLister(transport, unauthorized);
   /* The sentence is the new track's Planner's first message, and that Planner reads this Area's reports; there is no track yet to rank first. */
@@ -95,11 +91,8 @@ function NewTrackEditor({ transport, unauthorized, workspace, session, store }: 
       theme: readHostThemeRgb(),
       ...(current.model.model === null ? {} : { model: current.model.model }),
       ...(current.model.reasoning_effort === null ? {} : { reasoning_effort: current.model.reasoning_effort }),
-      ...(draft.template_id === undefined ? {} : { template_id: draft.template_id }),
-      ...(draft.template_input === undefined ? {} : { template_input: draft.template_input }),
-      ...(draft.recipe_id === undefined ? {} : { recipe_id: draft.recipe_id }),
       ...(draft.cwd === undefined ? {} : { cwd: draft.cwd, attach_folder: true,
-        ...(draft.isolation === 'none' ? { isolation: draft.isolation } : {}) }),
+        isolation: 'none' }),
       ...(current.role === 'admin' ? { admin: true } : {}),
       ...(authorization === undefined ? {} : { allow_cross_area_cwd: authorization }),
     } satisfies NewTrackBodyWithoutFirstMessage;
@@ -161,13 +154,11 @@ function NewTrackEditor({ transport, unauthorized, workspace, session, store }: 
     : !workspace.areasLoading && !available ? 'Area unavailable. Your draft is kept here; select and copy it to use elsewhere.' : null;
   const createdTrackId = session.createdTrackId;
   const configurationLocked = session.creating || session.request !== null || !available || createdTrackId !== null;
-  const loadTemplate = useCallback((id: string) => runOperation(transport, templateDetailOperation(id), unauthorized), [transport, unauthorized]);
 
   return <NewTrackForm
     readNotice={workspace.areasLoading ? <Banner status="info" title="Loading Area…"
       description="You can keep writing. Create track will be available when loading finishes." /> : undefined}
     mentionTrigger={mentionTrigger}
-    templatePluginGuides={id => <TemplatePluginGuides key={id} templateId={id} transport={transport} unauthorized={unauthorized} />}
     modelControls={<>
       <ModelPill
         groups={[
@@ -198,19 +189,11 @@ function NewTrackEditor({ transport, unauthorized, workspace, session, store }: 
     locked={session.request !== null}
     submitting={session.creating}
     error={areaFailure ?? (createdTrackId !== null ? 'Your track was created while you were away.' : session.error)}
-    templates={templates.templates}
-    loadTemplate={loadTemplate}
-    templatesLoaded={templates.loaded}
-    templatesError={templates.error}
-    recipes={recipes.recipes}
     errorAction={createdTrackId !== null && session.request !== null
       ? { label: 'Open track', onClick: () => { openCreated(createdTrackId); } }
       : folderConflict !== null
         ? { label: `Reuse directory in ${session.area.name}`, isApplicable: (draft) => draft.cwd === folderConflict.cwd, onClick: recoverFolderConflict }
         : session.canRetryAsNewTrack ? { label: 'Start as a new track', onClick: retryAsNewTrack } : undefined}
-    onManageRecipes={() => go({ name: 'recipes' })}
-    onOpenPluginSettings={() => go({ name: 'settings-plugins' })}
-    initialTemplateId={session.area.defaultTemplateId}
     initialCwd={session.area.defaultCwd}
     listDirectory={listDirectory}
     onSubmit={submit}

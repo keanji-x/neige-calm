@@ -275,10 +275,12 @@ async fn check_input_and_target(
         ));
     }
     let track = calm_truth::db::sqlite::track_get_tx(tx, &session.track_id).await?;
+    let cwd =
+        crate::harness::wiring::session_cwd_tx(tx, carrier.card_id(), &session, &track).await?;
     Ok(ReadTarget {
         track: track.id,
         area: track.area_id,
-        cwd: track.workspace.agent_cwd().to_owned(),
+        cwd,
         execution,
     })
 }

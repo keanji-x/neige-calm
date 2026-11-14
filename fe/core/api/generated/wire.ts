@@ -845,11 +845,11 @@ admin_granted_at: number | null,
  */
 cwd: string, 
 /**
- * Template this track was created from. Names the birth snapshot only.
+ * Currently selected Track working method. Switching preserves authored Report content.
  */
 template_id: string | null, 
 /**
- * The plugin that owns this track, recorded when the row is created.
+ * The plugin owning the selected working method. Earlier owners retain manifest-bound grants.
  */
 plugin_scope: string | null, 
 /**
@@ -1079,11 +1079,11 @@ admin_granted_at: number | null,
  */
 cwd: string, 
 /**
- * Template this track was created from. Names the birth snapshot only.
+ * Currently selected Track working method. Switching preserves authored Report content.
  */
 template_id: string | null, 
 /**
- * The plugin that owns this track, recorded when the row is created.
+ * The plugin owning the selected working method. Earlier owners retain manifest-bound grants.
  */
 plugin_scope: string | null, 
 /**

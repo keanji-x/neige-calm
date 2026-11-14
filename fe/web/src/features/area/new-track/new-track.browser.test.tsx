@@ -4,7 +4,6 @@
  * nor real hover.
  */
 import { cleanup, render, screen, waitFor } from '@testing-library/react';
-import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { page } from 'vitest/browser';
 
@@ -12,34 +11,16 @@ import { page } from 'vitest/browser';
 // The production-style compact overflow is exercised by new-track-model.browser.test.
 beforeEach(async () => { await page.viewport(1280, 720); });
 
-import type { TrackTemplate } from '../../../../../core/domain/track.ts';
 import { NewTrackForm } from './public.tsx';
-
-/* The template chip, matched on its prefix only; the rest of the name is what the assertions vary. */
-const TEMPLATE_CHIP = /^Template: /;
-
-const TEMPLATES: readonly TrackTemplate[] = [{
-  id: 'small-change',
-  title: 'Small change',
-  description: null, availability: { status: 'ready' as const }, tasks: [
-    { key: 'inspect', goal: 'Read the requested change and the code it touches.' },
-    { key: 'implement', goal: 'Implement the change and commit it.' },
-  ],
-}];
 
 afterEach(() => { cleanup(); document.body.replaceChildren(); });
 
 function renderForm() {
   return render(
     <NewTrackForm
-      loadTemplate={(id: string) => Promise.resolve({ id, title: 'Test template', description: 'Author supplied description.', instructions: 'Run relevant verification.', body: '# Template source\n' })}
       submitting={false}
       error={null}
-      templates={TEMPLATES}
-      templatesLoaded
-      initialTemplateId={null}
       initialCwd={null}
-      onManageRecipes={vi.fn()}
       /* Never exercised here; the prop is required so a call site cannot render a
                picker that silently lists nothing. */
       listDirectory={vi.fn(() => Promise.resolve({ path: '/', parent: null, entries: [] }))}
@@ -86,56 +67,5 @@ describe('the composer focus ring', () => {
 });
 
 function trigger(): HTMLButtonElement {
-  return screen.getByRole('button', { name: TEMPLATE_CHIP });
+  return screen.getByRole('button', { name: 'Repo: Neige workspace' });
 }
-
-async function openMenu() {
-  await userEvent.click(trigger());
-  await waitFor(() => { expect(screen.getByRole('menu')).toBeTruthy(); });
-  const layer = screen.getByRole('menu').closest('[popover]');
-  expect(layer?.matches(':popover-open')).toBe(true);
-  return layer as HTMLElement;
-}
-
-describe('Start from, in a real engine', () => {
-  it('dismisses the hover card and menu together with one Escape', async () => {
-    renderForm();
-    const menu = await openMenu();
-    const option = screen.getByRole('menuitem', { name: /^Small change/ });
-    option.focus();
-    const card = await screen.findByRole('dialog', { name: 'Small change tasks' });
-    expect(option.getAttribute('aria-controls')).toBe(card.id);
-    await waitFor(() => { expect(card?.matches(':popover-open')).toBe(true); });
-
-    /* The Template pill owns Escape in capture, before the HoverCard's native
-           listener can strand DropdownMenu's delegated handler. */
-    await userEvent.keyboard('{Escape}');
-    await waitFor(() => {
-      expect(screen.queryByRole('dialog', { name: 'Small change tasks' })).toBeNull();
-      expect(menu.matches(':popover-open')).toBe(false);
-      expect(trigger().getAttribute('aria-expanded')).toBe('false');
-      expect(document.activeElement).toBe(trigger());
-    });
-
-    /* Closing leaves two states behind, the DOM's and React's; if only the DOM had
-           closed this click would be read as "close" and swallowed. */
-    /* The 100 ms is astryx's: `DropdownMenu` swallows any trigger click within 50 ms
-           of a hide, for iOS Safari's pointerdown-then-click. */
-    await new Promise((resolve) => { setTimeout(resolve, 100); });
-    await userEvent.click(trigger());
-    await waitFor(() => { expect(menu.matches(':popover-open')).toBe(true); });
-  });
-
-  it('opens the task card by hovering the option itself', async () => {
-    renderForm();
-    await openMenu();
-    const option = screen.getByRole('menuitem', { name: /^Small change/ });
-    expect(screen.queryByRole('dialog', { name: 'Small change tasks' })).toBeNull();
-    await userEvent.hover(option);
-    const card = await screen.findByRole('dialog', { name: 'Small change tasks' });
-    expect(option.getAttribute('aria-controls')).toBe(card.id);
-    // `HoverCard`'s show delay is 300 ms; `waitFor` outlasts it.
-    await waitFor(() => { expect(card?.matches(':popover-open')).toBe(true); }, { timeout: 2000 });
-    expect(card?.textContent).toContain('implement');
-  });
-});

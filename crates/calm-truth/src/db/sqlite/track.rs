@@ -323,6 +323,11 @@ pub async fn track_update_tx(
     id: &str,
     p: TrackPatch,
 ) -> Result<Track> {
+    if p.template_id.is_some() {
+        return Err(CalmError::Forbidden(
+            "template_id requires the server admission owner".into(),
+        ));
+    }
     if p.admin.is_some() {
         return Err(CalmError::Forbidden(
             "admin requires the server authority owner".into(),
@@ -429,6 +434,27 @@ pub async fn track_update_tx(
             .await?;
     }
     Ok(w)
+}
+
+/// Template binding is owned by the server admission flow, separate from ordinary row edits.
+pub async fn track_bind_template_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    track_id: &TrackId,
+    template_id: &str,
+    plugin_scope: Option<&str>,
+    template_input: Option<&serde_json::Value>,
+) -> Result<Track> {
+    sqlx::query(
+        "UPDATE tracks SET template_id = ?1, plugin_scope = ?2, template_input = ?3, updated_at = ?4 WHERE id = ?5",
+    )
+    .bind(template_id)
+    .bind(plugin_scope)
+    .bind(template_input.map(serde_json::Value::to_string))
+    .bind(now_ms())
+    .bind(track_id.as_str())
+    .execute(&mut **tx)
+    .await?;
+    track_get_tx(tx, track_id).await
 }
 
 pub async fn track_delete_tx(

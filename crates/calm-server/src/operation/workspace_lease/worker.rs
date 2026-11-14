@@ -670,4 +670,5 @@ async fn supersede_stuck_leases_tx(tx: &mut Tx<'_>, path: &Path) -> Result<Vec<B
     append_workspace_events_tx(tx, events).await
 }
 
+mod lazy_worktree;
 pub(crate) mod preparation;

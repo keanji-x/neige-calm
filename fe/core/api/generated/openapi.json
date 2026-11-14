@@ -15640,7 +15640,7 @@
               "object",
               "null"
             ],
-            "description": "Replaces the stored payload. A payload carrying a server-owned key is refused with 400:\n`terminal_signals`, `terminal_presentation`, `template_context`, `track_creation_context`, `planner_provider`, `assistant_provider`, `side_source_card_id`, `assistant_opening_context`, `permission_mode`, `owner_created`, `settings_path`, `claude_session_id`. Every kernel-minted server-owned value the card already carries is kept."
+            "description": "Replaces the stored payload. A payload carrying a server-owned key is refused with 400:\n`terminal_signals`, `terminal_presentation`, `template_context`, `track_creation_context`, `bound_session_cwd`, `planner_provider`, `assistant_provider`, `side_source_card_id`, `assistant_opening_context`, `permission_mode`, `owner_created`, `settings_path`, `claude_session_id`. Every kernel-minted server-owned value the card already carries is kept."
           },
           "sort": {
             "type": [
@@ -22239,7 +22239,7 @@
               "string",
               "null"
             ],
-            "description": "The plugin that owns this track, recorded when the row is created."
+            "description": "The plugin owning the selected working method. Earlier owners retain manifest-bound grants."
           },
           "purpose": {
             "type": [
@@ -22272,7 +22272,7 @@
               "string",
               "null"
             ],
-            "description": "Template this track was created from. Names the birth snapshot only."
+            "description": "Currently selected Track working method. Switching preserves authored Report content."
           },
           "template_input": {
             "type": [
@@ -22944,6 +22944,13 @@
             ],
             "format": "double"
           },
+          "template_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Bind or switch the template; omitted/null leaves the current binding."
+          },
           "title": {
             "type": [
               "string",
@@ -23478,7 +23485,7 @@
       },
       "TrackWorkspacePatch": {
         "type": "object",
-        "description": "Point a track at a repository the user already has. The only transition is\n`managed → attached`: a managed path is derived from area and id, and\n`attached → *` stays refused, so this is a one-way door stamping `frozen_at`.",
+        "description": "Increase workspace isolation: managed → attached → attached with a worktree.",
         "required": [
           "kind",
           "path"
@@ -23487,6 +23494,17 @@
           "attach_folder": {
             "type": "boolean",
             "description": "Claim `path` for this track's area in the same transaction. Default\n`false`: an unclaimed path is refused rather than making a homeless track."
+          },
+          "isolation": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/WorkspaceIsolation",
+                "description": "Omitted means attached without isolation, preserving existing PATCH callers."
+              }
+            ]
           },
           "kind": {
             "$ref": "#/components/schemas/TrackWorkspaceKind",

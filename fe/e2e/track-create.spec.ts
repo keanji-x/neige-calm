@@ -65,7 +65,7 @@ test('creates a track from an Area group with no title, and persists it', async 
   // absence of `cwd`, so a control defaulting to `$HOME` or `""` would silently attach every track.
   await expect(page.getByRole('button', { name: 'Repo: Neige workspace' })).toBeVisible();
   // The picker is collapsed, so "what is selected" is read off the trigger's accessible name.
-  await expect(page.getByRole('button', { name: 'Template: No template' })).toBeVisible();
+  await expect(page.getByRole('button', { name: /^Template:/ })).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Create track' })).toBeDisabled();
   await page.getByLabel(TASK_LABEL).fill(message);
   await expect(page.getByRole('button', { name: 'Create track' })).toBeEnabled();
@@ -156,67 +156,6 @@ test('creates a track from an Area group with no title, and persists it', async 
   expect(errors).toEqual([]);
 });
 
-/* `small-change` is a template in every environment, bound to no plugin, so this does not depend on git-forge. */
-test('creates a track from a template and seeds its report', async ({ page, request }) => {
-  const errors = captureBrowserErrors(page);
-  const area = await createArea(request);
-  createdAreaIds.push(area.id);
-
-  const templates = await request.get('/api/track-templates');
-  expect(templates.ok()).toBe(true);
-  const ids = (await templates.json() as { id: string }[]).map((template) => template.id);
-  expect(ids).toContain('small-change');
-
-  await page.goto('/next/');
-  await page.getByRole('button', { name: `New track in ${area.name}` }).click();
-  await page.waitForURL(/\/area\/[^/]+\/new$/);
-  const message = `FE e2e template track ${Date.now()}`;
-  await page.getByLabel(TASK_LABEL).fill(message);
-  await page.getByRole('button', { name: /^Template: / }).click();
-
-  const option = page.getByRole('menuitem', { name: /^Small change/ });
-  await expect(option).toBeVisible();
-  await expect(page.getByText(/^\d+ tasks?$/)).toHaveCount(0);
-  await option.hover();
-  expect(await option.getAttribute('aria-describedby')).toBeNull();
-
-  await option.click();
-  await expect(page.getByRole('button', { name: 'Template: Small change' })).toBeVisible();
-
-  const [createRequest] = await Promise.all([
-    page.waitForRequest((pending) => pending.method() === 'POST' && new URL(pending.url()).pathname === '/api/tracks'),
-    page.getByRole('button', { name: 'Create track' }).click(),
-  ]);
-  const body = createRequest.postDataJSON() as Record<string, unknown>;
-  /* A template create carries the sentence too; the kernel runs the same harness start for both. */
-  expect(body).toMatchObject({ area_id: area.id, planner_provider: 'codex', template_id: 'small-change', first_message: message });
-  expect(body).not.toHaveProperty('title');
-  // Unbound template: the kernel rejects `template_input` against it.
-  expect(body).not.toHaveProperty('template_input');
-
-  await expect(page).toHaveURL(/\/track\/[0-9a-f-]+$/i);
-  await expect(page.locator('[data-nc-page-title]', { hasText: 'Untitled track' })).toBeVisible();
-  const trackId = /\/track\/([0-9a-f-]+)$/i.exec(page.url())?.[1];
-  expect(trackId).toBeTruthy();
-  const detail = await request.get(`/api/tracks/${trackId}`);
-  expect(detail.ok()).toBe(true);
-  const detailBody = await detail.json() as {
-    track: { template_id: string | null };
-    cards: { kind: string; payload: { body?: string } }[];
-  };
-  expect(detailBody.track.template_id).toBe('small-change');
-
-  const report = detailBody.cards.find((card) => card.kind === 'track-report');
-  expect(report, 'the created track must have a report').toBeTruthy();
-  const reportBody = report?.payload.body ?? '';
-  expect(reportBody).not.toContain('```neige-block task');
-  expect(reportBody).toContain('# 概要');
-  expect(reportBody).toContain('# 已完成');
-  await expect(page.locator('[data-nc-task-state]')).toHaveCount(0);
-
-
-  expect(errors).toEqual([]);
-});
 
 test('creates the planner with the model and effort selected beside Send', async ({ page, request }) => {
   // A deterministic roster for the UI; creation and the persisted planner read still use the real kernel.
@@ -311,3 +250,41 @@ test('offers no Claude group on a kernel without Claude Planners', async ({ page
   await expect(page.getByRole('menuitem', { name: 'E2E model' })).toBeVisible();
   await expect(page.getByRole('group', { name: 'Claude' })).toHaveCount(0);
 });
+
+// Inspect the production create path without dispatching a Planner turn.
+for (const width of [1280, 390, 320]) {
+  test(`submits ordinary intent without templates at ${width}px`, async ({ page, request }) => {
+    await page.setViewportSize({ width, height: 844 });
+    const area = await createArea(request);
+    createdAreaIds.push(area.id);
+    expect((await request.patch(`/api/areas/${area.id}`, { data: {
+      default_template_id: 'small-change', default_cwd: null,
+    } })).ok()).toBe(true);
+    const attempts: { body: Record<string, unknown>; key: string | undefined }[] = [];
+    const rosterReads: string[] = [];
+    page.on('request', pending => {
+      if (/\/api\/track-(templates|recipes)/.test(new URL(pending.url()).pathname)) rosterReads.push(pending.url());
+    });
+    await page.route('**/api/tracks', async route => {
+      if (route.request().method() !== 'POST') { await route.continue(); return; }
+      attempts.push({ body: route.request().postDataJSON() as Record<string, unknown>, key: route.request().headers()['idempotency-key'] });
+      await route.fulfill({ status: 503, json: { error: 'Preview intercepted; no Planner started' } });
+    });
+    await page.goto(`/next/area/${area.id}/new`);
+    const composer = page.getByLabel(TASK_LABEL);
+    await expect(composer).toBeFocused();
+    await expect(page.getByRole('button', { name: /^Template:|^Recipe:|Workspace isolation/ })).toHaveCount(0);
+    await expect(page.getByRole('region', { name: 'Selected template' })).toHaveCount(0);
+    await composer.fill('  Keep this request exactly  ');
+    await page.getByRole('button', { name: 'Create track', exact: true }).click();
+    await expect(page.getByRole('alert').filter({ hasText: 'unconfirmed' })).toBeVisible();
+    await page.getByRole('button', { name: 'Create track', exact: true }).click();
+    await expect.poll(() => attempts.length).toBe(2);
+    expect(attempts[0]?.body).toMatchObject({ area_id: area.id, first_message: '  Keep this request exactly  ', });
+    for (const key of ['template_id', 'template_input', 'recipe_id', 'cwd', 'attach_folder']) expect(attempts[0]?.body).not.toHaveProperty(key);
+    expect(attempts[0]?.key).toBeTruthy();
+    expect(attempts[1]).toEqual(attempts[0]);
+    expect(rosterReads).toEqual([]);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(width);
+  });
+}

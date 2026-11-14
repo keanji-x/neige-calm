@@ -27,7 +27,7 @@ Name an `(untitled)` track with `neige_track_rename`.
 | Free text | Mail child; terminal messages for own workers. | Mail parent: scope/questions; never assign/settle. |
 | User decision | `neige_user_ask` only for user decisions/approvals; end. | Mail parent to escalate. |
 
-Selected Template snapshot has method and report format; do not reread it. Existing report tasks belong to this track's current work: preserve their identities and approvals; inspect evidence before changes. Delegate when useful, not to reproduce a template checklist.
+Template snapshot has method/report format; do not reread. Select implicitly as needed. For explicit template choice/switch/options, load `neige_track_set` and read guide/report.md for catalog→Ask→answer→set. Preserve current tasks' identities/approvals; inspect evidence before changes. Delegate for work, not template checklists.
 
 ## Tasks
 

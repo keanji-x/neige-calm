@@ -19,8 +19,8 @@ function Form({ search, onSubmit, submitBlocked = false }: {
   submitBlocked?: boolean;
 }) {
   const mentionTrigger = useMentionTrigger(search);
-  return <NewTrackForm loadTemplate={() => Promise.reject(new Error('This fixture offers no templates'))} mentionTrigger={mentionTrigger} submitting={false} error={null} templates={[]} templatesLoaded
-    initialTemplateId={null} initialCwd={null} onManageRecipes={vi.fn()} submitBlocked={submitBlocked}
+  return <NewTrackForm mentionTrigger={mentionTrigger} submitting={false} error={null}
+    initialCwd={null} submitBlocked={submitBlocked}
     listDirectory={vi.fn(() => Promise.resolve({ path: '/', parent: null, entries: [] }))} onSubmit={onSubmit} />;
 }
 

@@ -19,6 +19,7 @@ pub(crate) async fn open_session(
         .track_get(row.track_id)
         .await?
         .ok_or_else(|| CalmError::NotFound("ACP track".into()))?;
+    let cwd = crate::harness::wiring::session_cwd(repo.as_ref(), &row, &track).await?;
     let instructions = crate::harness::instructions::profile_instructions(
         repo.as_ref(),
         &wiring.plugin,
@@ -36,7 +37,7 @@ pub(crate) async fn open_session(
         worker_session_id: row.worker_session_id.into(),
         card_id: row.card_id.into(),
         track_id: row.track_id.into(),
-        cwd: track.workspace.agent_cwd().into(),
+        cwd: cwd.into(),
         instructions,
     })))
 }

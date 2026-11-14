@@ -9,9 +9,9 @@ afterEach(cleanup);
 
 it('sizes the homepage mark with the title font and keeps it on the first text line', async () => {
   await page.viewport(1100, 800);
-  const { container } = render(<NewTrackForm submitting={false} error={null} templates={[]} templatesLoaded
-    initialTemplateId={null} initialCwd={null} loadTemplate={vi.fn(() => Promise.reject(new Error('No template selected')))}
-    onManageRecipes={vi.fn()} onSubmit={vi.fn()}
+  const { container } = render(<NewTrackForm submitting={false} error={null}
+    initialCwd={null}
+    onSubmit={vi.fn()}
     listDirectory={vi.fn(() => Promise.resolve({ path: '/', parent: null, entries: [] }))} />);
   const heading = screen.getByRole('heading', { name: 'What would you like to work on?' });
   const mark = container.querySelector<SVGSVGElement>('[data-nc-motion="creation"]')!.parentElement!;

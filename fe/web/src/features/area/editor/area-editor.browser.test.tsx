@@ -8,19 +8,16 @@ import { AreaEditorForm } from './public.tsx';
 
 afterEach(cleanup);
 
-it('renders both pills and both actions as one compact borderless row', async () => {
+it('renders the creation folder and both actions as one compact borderless row', async () => {
   await page.viewport(800, 600);
   render(
     <Dialog purpose="form" origin={{ kind: 'surface-center' }} open title="New area" onClose={vi.fn()}>
       <AreaEditorForm
-        initial={{ name: '', defaultTemplateId: null, defaultCwd: null }}
+        initial={{ name: '', defaultCwd: null }}
         submitting={false}
         locked={false}
         cancelLabel="Cancel"
         error={null}
-        templates={[]}
-        templatesLoaded
-        templatesError={null}
         listDirectory={vi.fn()}
         nameInputRef={{ current: null }}
         submitLabel="Create area"
@@ -29,22 +26,20 @@ it('renders both pills and both actions as one compact borderless row', async ()
       />
     </Dialog>,
   );
-  const template = screen.getByRole('button', { name: 'Default template: No template' });
+  expect(screen.queryByRole('button', { name: /template|isolation/i })).toBeNull();
   const folder = screen.getByRole('button', { name: 'Default folder: Neige workspace' });
-  for (const pill of [template, folder]) {
+  for (const pill of [folder]) {
     const style = getComputedStyle(pill);
     expect(style.borderStyle).toBe('none');
     expect(style.borderWidth).toBe('0px');
     expect(style.outlineStyle).toBe('none');
   }
-  const templateBox = template.getBoundingClientRect();
   const folderBox = folder.getBoundingClientRect();
   const cancelBox = screen.getByRole('button', { name: 'Cancel' }).getBoundingClientRect();
   const createBox = screen.getByRole('button', { name: 'Create area' }).getBoundingClientRect();
-  const centers = [templateBox, folderBox, cancelBox, createBox]
+  const centers = [folderBox, cancelBox, createBox]
     .map((box) => box.top + box.height / 2);
   expect(Math.max(...centers) - Math.min(...centers)).toBeLessThan(1);
-  expect(templateBox.height).toBe(folderBox.height);
 });
 
 it('wraps safely at phone width while keeping Cancel and Save together', async () => {
@@ -54,20 +49,13 @@ it('wraps safely at phone width while keeping Cancel and Save together', async (
       <AreaEditorForm
         initial={{
           name: 'Work',
-          defaultTemplateId: 'long-template',
+
           defaultCwd: '/srv/a-folder-with-a-very-long-name',
         }}
         submitting={false}
         locked={false}
         cancelLabel="Cancel"
         error={null}
-        templates={[{
-          id: 'long-template',
-          title: 'A template name that is deliberately very long',
-          description: null, availability: { status: 'ready' as const }, tasks: [],
-        }]}
-        templatesLoaded
-        templatesError={null}
         listDirectory={vi.fn()}
         nameInputRef={{ current: null }}
         submitLabel="Save changes"

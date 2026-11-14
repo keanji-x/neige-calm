@@ -210,6 +210,7 @@ impl ChildTrackAdapter {
             &self.track_area_cache,
         )
         .await?;
+        crate::track_plugin_access::grant_git_workspace_plugins_tx(tx, &child).await?;
         // Managed branch: real work, and the ownership marker names the CHILD, so a child that ended up on the parent's managed path is refused here.
         // Attached branch: a no-op by contract — `materialize_workspace` never creates, `git init`s or writes to a directory the user owns.
         workspace_runtime::selection::materialize_workspace(

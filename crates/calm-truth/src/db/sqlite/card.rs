@@ -726,3 +726,37 @@ pub async fn card_execution_shape_tx(
         payload: serde_json::from_str(&payload)?,
     })
 }
+
+/// Kernel template rebind writer. Ordinary payload replacements preserve these
+/// keys; configuration admission owns refreshing the selected Planner method.
+pub async fn planner_configuration_set_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    id: &str,
+    selected: &serde_json::Value,
+) -> Result<()> {
+    let mut card = card_for_update_tx(tx, id).await?;
+    let map = card
+        .payload
+        .as_object_mut()
+        .ok_or_else(|| CalmError::Internal("Planner payload must be an object".into()))?;
+    for key in [
+        crate::validation::PLANNER_TEMPLATE_CONTEXT_PAYLOAD_KEY,
+        crate::validation::TRACK_CREATION_CONTEXT_PAYLOAD_KEY,
+    ] {
+        match selected.get(key) {
+            Some(value) => {
+                map.insert(key.into(), value.clone());
+            }
+            None => {
+                map.remove(key);
+            }
+        }
+    }
+    sqlx::query("UPDATE cards SET payload=?1, updated_at=?2 WHERE id=?3")
+        .bind(serde_json::to_string(&card.payload)?)
+        .bind(now_ms())
+        .bind(id)
+        .execute(&mut **tx)
+        .await?;
+    Ok(())
+}

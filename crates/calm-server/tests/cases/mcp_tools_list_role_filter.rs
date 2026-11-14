@@ -46,6 +46,7 @@ fn expected_planner_toolset() -> Vec<&'static str> {
         "neige_terminal_show",
         "neige_track_close",
         "neige_track_rename",
+        "neige_track_set",
         "neige_user_ask",
     ]
 }

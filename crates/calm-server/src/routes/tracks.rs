@@ -1032,7 +1032,10 @@ pub(super) async fn create_historical_track_with_source_for_test(
         .into_response())
 }
 
-/// The single answer to "may this id create a track", plus the optional plugin binding
+pub(crate) mod template_binding;
+pub(crate) mod workspace_retry;
+
+/// The single answer to "may this id select a Track template", plus the optional plugin binding
 /// that comes with it.
 pub(crate) struct TemplateAdmission {
     /// The admitted roster entry itself — not a key copied off it.
@@ -1082,7 +1085,7 @@ pub(crate) async fn resolve_template_binding(
     })
 }
 
-/// The authoritative creation prerequisite, also advertised by the read-only picker.
+/// The authoritative template prerequisite, also advertised by the read-only picker.
 /// Binding already incorporates trusted ownership and the current running lifecycle.
 pub(crate) fn missing_required_template_owner(
     template_key: &str,
@@ -1117,7 +1120,7 @@ fn validate_template_input_binding(
 /// to travel back out through `Err`; the closure parks the body here.
 /// `Mutex` is only ever locked between `await` points.
 #[derive(Clone, Default)]
-struct FolderConflictSlot(std::sync::Arc<std::sync::Mutex<Option<FolderConflict>>>);
+pub(crate) struct FolderConflictSlot(std::sync::Arc<std::sync::Mutex<Option<FolderConflict>>>);
 
 impl FolderConflictSlot {
     /// Park `body` and return the error that unwinds (and rolls back)
@@ -1983,37 +1986,25 @@ struct RepointFence {
     superseded_runtime_ids: Vec<String>,
 }
 
-/// Point a track at a repository the user already has (`managed → attached`).
-///
-/// SQLite transactions do not isolate the filesystem: every active runtime is fenced in
-/// the same transaction as the criteria, the criteria are re-checked before the move, and
-/// the row is written before the directory moves so every abort is a clean 409.
-async fn repoint_track_workspace(
-    s: &RouteState,
-    w: &WorkerState,
-    actor: &Actor,
-    track: &Track,
-    requested: &TrackWorkspacePatch,
-) -> Result<Response> {
-    // Moving a directory is a human decision. Unreachable through HTTP today (the only
-    // non-`User` header form already 403s further out); it guards internal callers holding
-    // a real `ActorId::AiCodex`.
-    if !matches!(actor.to_actor_id(), ActorId::User) {
-        return Err(CalmError::Forbidden(
-            "track workspace changes are user-only".into(),
-        ));
+/// Classify the only attached transition before admission and again under the lifecycle fence.
+fn attached_worktree_upgrade(
+    track_id: &str,
+    old: &TrackWorkspace,
+    new_path: &str,
+    wants_worktree: bool,
+) -> Result<bool> {
+    if old.kind == TrackWorkspaceKind::Managed {
+        return Ok(false);
     }
-
-    // There is no `managed → managed`: a managed path is derived from the area and track ids.
-    if requested.kind != TrackWorkspaceKind::Attached {
-        return Err(CalmError::BadRequest(
-            "track workspace: only `attached` is a target — pointing a track at a repository \
-             you already have. There is no `managed` target: a managed workspace's path is \
-             derived from the track, so re-allocating one would produce the same directory."
-                .into(),
-        ));
+    if old.worktree.is_none() && old.path == new_path && wants_worktree {
+        return Ok(true);
     }
+    Err(CalmError::Conflict(format!(
+        "track {track_id}: attached workspaces only allow a same-path upgrade to worktree isolation"
+    )))
+}
 
+async fn require_user_workspace_area(s: &RouteState, track: &Track) -> Result<()> {
     // The system area's launchpad path is kernel-maintained and is the documented exception
     // to the freeze latch; a user PATCH must not touch it.
     let area = s.repo.area_get(track.area_id.as_str()).await?;
@@ -2024,22 +2015,91 @@ async fn repoint_track_workspace(
         )));
     }
 
+    Ok(())
+}
+
+/// Validate the monotonic workspace selection before entering its lifecycle fence.
+pub(crate) async fn preflight_workspace_upgrade(
+    s: &RouteState,
+    track: &Track,
+    requested: &TrackWorkspacePatch,
+) -> Result<(String, bool, TrackWorkspacePlan)> {
+    // There is no `managed → managed`: a managed path is derived from the area and track ids.
+    if requested.kind != TrackWorkspaceKind::Attached {
+        return Err(CalmError::BadRequest(
+            "track workspace: only `attached` is a target — pointing a track at a repository \
+             you already have. There is no `managed` target: a managed workspace's path is \
+             derived from the track, so re-allocating one would produce the same directory."
+                .into(),
+        ));
+    }
+
+    use calm_types::model::WorkspaceIsolation;
+    if requested.isolation == Some(WorkspaceIsolation::Managed) {
+        return Err(CalmError::BadRequest(
+            "track workspace: managed isolation is not a PATCH target".into(),
+        ));
+    }
+    let wants_worktree = requested.isolation == Some(WorkspaceIsolation::Worktree);
+
+    require_user_workspace_area(s, track).await?;
+
     // Validate the target BEFORE any write, so a bad path fails here with git's own words
     // rather than as a worker's `spawn-failed`.
     let new_path = normalize_path(&requested.path);
     workspace_runtime::selection::validate_attached_workspace(std::path::Path::new(&new_path))?;
 
+    let track_id = track.id.to_string();
+    let repo_root = if wants_worktree {
+        let root = workspace_runtime::selection::git_repo_root_for_track_cwd(&track_id, &new_path)?;
+        let root = std::fs::canonicalize(root)?;
+        use crate::operation::workspace_lease::upstream::{
+            LeaseStart, choose_lease_start, diverged_refusal,
+        };
+        if let LeaseStart::Diverged {
+            head,
+            upstream,
+            unpushed,
+            ahead,
+            behind,
+        } = choose_lease_start(&root)?
+        {
+            return Err(diverged_refusal(
+                &root, &head, &upstream, unpushed, ahead, behind,
+            ));
+        }
+        Some(root)
+    } else {
+        None
+    };
+    let workspace_plan = repo_root
+        .as_ref()
+        .map_or(TrackWorkspacePlan::AttachedFromCwd, |root| {
+            TrackWorkspacePlan::AttachedWithTrackWorktree(root.clone())
+        });
+    let admission_plan = workspace_plan.clone();
+    let admission_track_id = track_id.clone();
     let admission_roots = s.owned_location_roots();
     let teardown_targets = s.teardown_targets.clone();
     let admission_path = new_path.clone();
     crate::db::write_in_tx_typed(s.repo.as_ref(), move |tx| {
         Box::pin(async move {
+            let old = crate::db::sqlite::track_workspace_read_tx(tx, &admission_track_id).await?;
+            attached_worktree_upgrade(&admission_track_id, &old, &admission_path, wants_worktree)?;
             crate::db::sqlite::admit_attached_workspace_tx(
                 tx,
                 &admission_path,
                 &admission_roots,
                 &teardown_targets.snapshot(),
-                &TrackWorkspacePlan::AttachedFromCwd,
+                &admission_plan,
+            )
+            .await?;
+            validate_workspace_upgrade_tx(
+                tx,
+                &admission_track_id,
+                &admission_path,
+                wants_worktree,
+                true,
             )
             .await?;
             Ok(())
@@ -2047,7 +2107,123 @@ async fn repoint_track_workspace(
     })
     .await?;
 
+    Ok((new_path, wants_worktree, workspace_plan))
+}
+
+async fn validate_workspace_upgrade_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    track_id: &str,
+    new_path: &str,
+    wants_worktree: bool,
+    preserve_carriers: bool,
+) -> Result<TrackWorkspace> {
+    let old_workspace = crate::db::sqlite::track_workspace_read_tx(tx, track_id).await?;
+    let attached_upgrade =
+        attached_worktree_upgrade(track_id, &old_workspace, new_path, wants_worktree)?;
+    if attached_upgrade {
+        let active: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM tasks WHERE track_id=?1 \
+                     AND status IN ('dispatched','running','verifying'))",
+        )
+        .bind(track_id)
+        .fetch_one(&mut **tx)
+        .await?;
+        if active {
+            return Err(CalmError::Conflict(format!(
+                "track {track_id} has active tasks; workspace isolation cannot change"
+            )));
+        }
+    } else if let Some(frozen_at) = old_workspace.frozen_at {
+        return Err(CalmError::Conflict(format!(
+            "track {track_id} workspace was frozen at {frozen_at}; a workspace is a \
+                     default that can be changed only before any work happens in it"
+        )));
+    }
+    // This lifecycle replaces all carriers. The conversation owner must
+    // allow that before any native shutdown or directory change occurs.
+    crate::conversation_inputs::require_recreatable_track_carriers_tx(
+        tx,
+        track_id,
+        (attached_upgrade && preserve_carriers).then_some(new_path),
+    )
+    .await?;
+    // The one predicate that does not enumerate writers: it asks the disk. Repeated after
+    // the commit because SQLite isolates none of it.
+    if old_workspace.kind == TrackWorkspaceKind::Managed {
+        let verdict = workspace_pristine(std::path::Path::new(&old_workspace.path));
+        if !verdict.is_pristine() {
+            return Err(CalmError::Conflict(
+                verdict.conflict_message(std::path::Path::new(&old_workspace.path)),
+            ));
+        }
+    }
+    Ok(old_workspace)
+}
+
+/// Increase workspace isolation: managed → attached → attached with a track worktree.
+///
+/// SQLite transactions do not isolate the filesystem: fence active runtimes with the
+/// eligibility checks, then stop them before writing the new selection. Materialize
+/// worktrees under the lifecycle guards before restarting the Planner.
+pub(crate) async fn repoint_track_workspace(
+    s: &RouteState,
+    w: &WorkerState,
+    actor: &Actor,
+    track: &Track,
+    requested: &TrackWorkspacePatch,
+) -> Result<Response> {
+    let conflict = FolderConflictSlot::default();
+    match upgrade_track_workspace(s, w, actor, track, requested, conflict.clone()).await {
+        Ok(updated) => Ok(Json(calm_types::track_wire::TrackWire(updated)).into_response()),
+        Err(error) => folder_conflict_response(&conflict, error),
+    }
+}
+
+/// Own the runtime fence, atomic selection write, and materialization.
+pub(crate) async fn upgrade_track_workspace(
+    s: &RouteState,
+    w: &WorkerState,
+    actor: &Actor,
+    track: &Track,
+    requested: &TrackWorkspacePatch,
+    conflict: FolderConflictSlot,
+) -> Result<Track> {
+    // Moving a directory is a human decision. Unreachable through HTTP today (the only
+    // non-`User` header form already 403s further out); it guards internal callers holding
+    // a real `ActorId::AiCodex`.
+    if !matches!(actor.to_actor_id(), ActorId::User) {
+        return Err(CalmError::Forbidden(
+            "track workspace changes are user-only".into(),
+        ));
+    }
+
+    if workspace_retry::is_repair(&track.workspace, requested) {
+        let (live, active_runtime) = workspace_retry::admit_and_repair(s, track, requested).await?;
+        if !active_runtime {
+            restart_planner_harness_at(s, actor, &live, live.workspace.agent_cwd()).await;
+        }
+        return Ok(live);
+    }
+    let (new_path, wants_worktree, workspace_plan) =
+        preflight_workspace_upgrade(s, track, requested).await?;
+    if track.workspace.kind == TrackWorkspaceKind::Attached
+        && track.workspace.worktree.is_none()
+        && wants_worktree
+        && track.workspace.path == new_path
+    {
+        let id = track.id.to_string();
+        let retained = crate::db::write_in_tx_typed(s.repo.as_ref(), move |tx| {
+            Box::pin(async move {
+                crate::conversation_inputs::has_canonical_track_carriers_tx(tx, &id).await
+            })
+        })
+        .await?;
+        if retained {
+            return workspace_retry::upgrade_same_locator(s, track, &workspace_plan).await;
+        }
+    }
     let track_id = track.id.to_string();
+
     let area_id = track.area_id.as_str().to_string();
 
     // Serialize classification through the move with normal task starts and
@@ -2083,7 +2259,7 @@ async fn repoint_track_workspace(
         }
     }
 
-    let fence_conflict = FolderConflictSlot::default();
+    let fence_conflict = conflict.clone();
     let fence_track_id = track_id.clone();
     let fence_area_id = area_id.clone();
     let fence_path = new_path.clone();
@@ -2102,33 +2278,9 @@ async fn repoint_track_workspace(
             // and scoped the event; every decision below comes from here.
             crate::operation::terminal_disposal::require_track_location_safe_tx(tx, &track_id)
                 .await?;
-            let old_workspace = crate::db::sqlite::track_workspace_read_tx(tx, &track_id).await?;
-            if old_workspace.kind != TrackWorkspaceKind::Managed {
-                return Err(CalmError::Conflict(format!(
-                    "track {track_id} already has an attached workspace ({}); an attached \
-                     repository belongs to you, and the server never moves, initializes or \
-                     deletes one — so it is also never re-pointed away from",
-                    old_workspace.path
-                )));
-            }
-            if let Some(frozen_at) = old_workspace.frozen_at {
-                return Err(CalmError::Conflict(format!(
-                    "track {track_id} workspace was frozen at {frozen_at}; a workspace is a \
-                     default that can be changed only before any work happens in it"
-                )));
-            }
-            // This lifecycle replaces all carriers. The conversation owner must
-            // allow that before any native shutdown or directory change occurs.
-            crate::conversation_inputs::require_recreatable_track_carriers_tx(tx, &track_id)
-                .await?;
-            // The one predicate that does not enumerate writers: it asks the disk. Repeated after
-            // the commit because SQLite isolates none of it.
-            let verdict = workspace_pristine(std::path::Path::new(&old_workspace.path));
-            if !verdict.is_pristine() {
-                return Err(CalmError::Conflict(
-                    verdict.conflict_message(std::path::Path::new(&old_workspace.path)),
-                ));
-            }
+            let old_workspace =
+                validate_workspace_upgrade_tx(tx, &track_id, &new_path, wants_worktree, false)
+                    .await?;
             // Fail fast on the claim rules WITHOUT minting: this transaction commits (it is also
             // the fence), so a row written here would survive a later refusal.
             enforce_folder_claim_tx(
@@ -2158,10 +2310,7 @@ async fn repoint_track_workspace(
         })
     })
     .await;
-    let fence = match fence {
-        Ok(fence) => fence,
-        Err(error) => return folder_conflict_response(&fence_conflict, error),
-    };
+    let fence = fence?;
 
     // The in-memory half of the fence: `maybe_issue_turn` consults no durable state, so an
     // observation enqueued before the commit would still become a turn.
@@ -2224,28 +2373,37 @@ async fn repoint_track_workspace(
             "The managed ACP session could not be stopped; the workspace was not moved: {error}"
         )));
     }
-    let verdict = workspace_pristine(&old_path);
-    if let PristineVerdict::Dirty { .. } = &verdict {
-        drop(track_guard.take());
-        drop(operation_guard.take());
-        restart_planner_harness_at(s, actor, track, &fence.old_workspace.path).await;
-        return Err(CalmError::Conflict(verdict.conflict_message(&old_path)));
+    if fence.old_workspace.kind == TrackWorkspaceKind::Managed {
+        let verdict = workspace_pristine(&old_path);
+        if let PristineVerdict::Dirty { .. } = &verdict {
+            drop(track_guard.take());
+            drop(operation_guard.take());
+            restart_planner_harness_at(s, actor, track, &fence.old_workspace.path).await;
+            return Err(CalmError::Conflict(verdict.conflict_message(&old_path)));
+        }
     }
 
     let new_workspace = TrackWorkspace {
         kind: TrackWorkspaceKind::Attached,
         path: new_path.clone(),
-        // Frozen, one-way: `attached → *` is not a legal transition, and an unfrozen attached
-        // row is exactly what a PATCH that forgot to check `kind` would relocate.
+        // Keep the path frozen through every monotonic isolation upgrade.
         frozen_at: Some(crate::model::now_ms()),
-        worktree: None,
+        worktree: match &workspace_plan {
+            TrackWorkspacePlan::AttachedWithTrackWorktree(root) => Some(root),
+            _ => None,
+        }
+        .map(|root| {
+            workspace::worktree::track_worktree_path_for(root, &track_id)
+                .to_string_lossy()
+                .into_owned()
+        }),
     };
     let scope = EventScope::Track {
         track: track.id.clone(),
         area: track.area_id.clone(),
     };
     let actor_id = actor.to_actor_id();
-    let write_conflict = FolderConflictSlot::default();
+    let write_conflict = conflict;
     let write_claim = FolderClaim::Enforce {
         attach: requested.attach_folder,
         allow_cross_area_cwd: None,
@@ -2265,8 +2423,15 @@ async fn repoint_track_workspace(
             let claim = write_claim.clone();
             let actor_id = actor_id.clone();
             Box::pin(async move {
-                // Authoritative, and atomic with the workspace write because
-                // they share this `BEGIN IMMEDIATE`.
+                // Recheck eligibility in the selection writer.
+                validate_workspace_upgrade_tx(
+                    tx,
+                    &track_id,
+                    &workspace.path,
+                    wants_worktree,
+                    false,
+                )
+                .await?;
                 enforce_folder_claim_tx(
                     tx,
                     &claim,
@@ -2283,7 +2448,7 @@ async fn repoint_track_workspace(
                     &workspace.path,
                     &admission_roots,
                     &teardown_targets.snapshot(),
-                    &TrackWorkspacePlan::AttachedFromCwd,
+                    &workspace_plan,
                 )
                 .await?;
                 calm_truth::db::sqlite::workspace_retirement::retire_workspace_selection_tx(
@@ -2292,6 +2457,7 @@ async fn repoint_track_workspace(
                 .await?;
                 crate::db::sqlite::track_workspace_write_tx(tx, &track_id, &workspace).await?;
                 let track = track_get_tx(tx, &TrackId::from(track_id)).await?;
+                crate::track_plugin_access::grant_git_workspace_plugins_tx(tx, &track).await?;
                 let events = vec![(
                     actor_id,
                     scope,
@@ -2312,9 +2478,15 @@ async fn repoint_track_workspace(
             drop(track_guard.take());
             drop(operation_guard.take());
             restart_planner_harness_at(s, actor, track, &fence.old_workspace.path).await;
-            return folder_conflict_response(&write_conflict, error);
+            return Err(error);
         }
     };
+
+    let held = crate::workspace_service::HeldTrack::new(track_guard.take().expect("Track fence"));
+    if updated.workspace.worktree.is_some() {
+        crate::workspace_service::materialize_configuration(s, &updated, Some(held.clone()))
+            .await?;
+    }
 
     #[cfg(feature = "fixtures")]
     crate::test_seams::pause_point("c5-repoint-committed", &track_id).await;
@@ -2324,11 +2496,11 @@ async fn repoint_track_workspace(
 
     // `force_new_thread` is the only mechanism that re-reads `cwd`: a resumed codex thread
     // keeps the cwd it was minted with.
-    drop(track_guard.take());
+    held.release();
     drop(operation_guard.take());
-    restart_planner_harness_at(s, actor, &updated, &updated.workspace.path).await;
+    restart_planner_harness_at(s, actor, &updated, updated.workspace.agent_cwd()).await;
 
-    Ok(Json(calm_types::track_wire::TrackWire(updated)).into_response())
+    Ok(updated)
 }
 
 /// Reach the re-point with a caller HTTP cannot produce. `fixtures`-only.
@@ -2355,7 +2527,12 @@ fn folder_conflict_response(slot: &FolderConflictSlot, error: CalmError) -> Resu
 
 /// Re-open the track's planner harness thread at `cwd`. Best effort: the workspace has
 /// already moved, so the caller must not be told the whole operation failed.
-async fn restart_planner_harness_at(s: &RouteState, actor: &Actor, track: &Track, cwd: &str) {
+pub(crate) async fn restart_planner_harness_at(
+    s: &RouteState,
+    actor: &Actor,
+    track: &Track,
+    cwd: &str,
+) {
     // Same resolution the dispatcher uses (`resolve_planner_card`): the role
     // cache, not a `cards.kind` guess.
     let cards = match s.repo.cards_by_track(track.id.as_str()).await {
@@ -2383,6 +2560,18 @@ async fn restart_planner_harness_at(s: &RouteState, actor: &Actor, track: &Track
         &CardId::from(planner_card_id.clone()),
     )
     .await;
+    let canonical = crate::db::write_in_tx_typed(s.repo.as_ref(), {
+        let card = planner_card_id.clone();
+        move |tx| {
+            Box::pin(async move {
+                Ok(crate::db::sqlite::conversation::card_has_canonical_storage(tx, &card).await?)
+            })
+        }
+    })
+    .await;
+    if !matches!(canonical, Ok(false)) {
+        return;
+    }
     let request = PlannerHarnessStartOperationPayload {
         actor: actor.to_actor_id(),
         track_id: track.id.to_string(),
@@ -2466,6 +2655,13 @@ pub(crate) async fn update_track(
             "share cannot grant admin or change workspace".into(),
         ));
     }
+    if p.template_id.is_some() {
+        super::track_report_blocks::require_rest_user_actor_for(
+            &actor,
+            "template_id",
+            "Only the user changes the Track template.",
+        )?;
+    }
     if p.admin.is_some() {
         super::track_report_blocks::require_rest_user_actor_for(
             &actor,
@@ -2493,6 +2689,7 @@ pub(crate) async fn update_track(
         // Destructured rather than enumerated so adding a field to `TrackPatch` is a compile error here.
         let TrackPatch {
             workspace: _,
+            template_id,
             title,
             sort,
             pinned_at,
@@ -2503,7 +2700,8 @@ pub(crate) async fn update_track(
             automation_policy,
             tree_task_budget,
         } = &p;
-        let mixes_other_fields = title.is_some()
+        let mixes_other_fields = template_id.is_some()
+            || title.is_some()
             || sort.is_some()
             || pinned_at.is_some()
             || closed.is_some()
@@ -2522,6 +2720,23 @@ pub(crate) async fn update_track(
         return repoint_track_workspace(&s, &w, &actor, &existing, workspace).await;
     }
 
+    let _configuration_guard = if p.template_id.is_some() {
+        Some(
+            crate::per_card_lock::lock_key(
+                &s.track_delete_locks,
+                &format!("template-binding:{}", existing.id),
+            )
+            .await,
+        )
+    } else {
+        None
+    };
+    let template_binding = match p.template_id.as_deref() {
+        Some(id) => Some(template_binding::prepare(&s, &existing, id).await?),
+        None => None,
+    };
+    let template_changed = template_binding.is_some();
+    let restart_actor = actor.clone();
     let scope = EventScope::Track {
         track: existing.id.clone(),
         area: existing.area_id.clone(),
@@ -2576,7 +2791,8 @@ pub(crate) async fn update_track(
     }
 
     // An entirely empty patch is the idempotent retry path: nothing to write or emit.
-    let patch_has_changes = p.admin.is_some()
+    let patch_has_changes = p.template_id.is_some()
+        || p.admin.is_some()
         || p.title.is_some()
         || p.sort.is_some()
         || p.closed.is_some()
@@ -2609,6 +2825,7 @@ pub(crate) async fn update_track(
             Box::pin(async move {
                 let mut patch = p_for_tx;
                 let admin = patch.admin.take();
+                patch.template_id = None;
                 let live = calm_truth::db::sqlite::track_get_tx(tx, &id.clone().into()).await?;
                 if admin == Some(true)
                     && live.admin_granted_at.is_none()
@@ -2620,7 +2837,8 @@ pub(crate) async fn update_track(
                 }
                 let admin_changed =
                     admin.is_some_and(|value| value != live.admin_granted_at.is_some());
-                let other_changes = patch.title.is_some()
+                let other_changes = template_binding.is_some()
+                    || patch.title.is_some()
                     || patch.sort.is_some()
                     || patch.pinned_at.is_some()
                     || patch.closed.is_some()
@@ -2638,6 +2856,10 @@ pub(crate) async fn update_track(
                 if admin_changed {
                     track = crate::area_admin::set_tx(tx, &track, admin.unwrap()).await?;
                 }
+                let mut binding_events = Vec::new();
+                if let Some(binding) = template_binding {
+                    (track, binding_events) = binding.apply_tx(tx, &track).await?;
+                }
                 let projections = if projection_policy_changed {
                     if tree_budget_changed {
                         tasks_rebuild_tree_tx(tx, &id).await?
@@ -2647,7 +2869,7 @@ pub(crate) async fn update_track(
                 } else {
                     Vec::new()
                 };
-                let mut events: Vec<(ActorId, EventScope, Event)> = Vec::new();
+                let mut events: Vec<(ActorId, EventScope, Event)> = binding_events;
                 events.push((
                     actor_id.clone(),
                     scope.clone(),
@@ -2684,6 +2906,9 @@ pub(crate) async fn update_track(
         result => result?.0,
     };
     drop(lifecycle_guard);
+    if template_changed {
+        restart_planner_harness_at(&s, &restart_actor, &track, track.workspace.agent_cwd()).await;
+    }
     if reopening && let Err(error) = w.dispatcher.wake_planner_on_reopen(&track.id).await {
         tracing::warn!(%error, track_id=%track.id, "Planner resume after reopen failed; next wake can retry");
     }

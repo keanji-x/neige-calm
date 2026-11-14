@@ -8,7 +8,7 @@ import { AreaSelector } from './area-selector.tsx';
 import styles from './mobile-header.module.css';
 
 export function MobileWorkspaceHeader({
-  areas, activeArea, navigationOpen, onOpenNavigation, onSelectArea, onCreateArea,
+  areas, activeArea, draftArea, navigationOpen, onOpenNavigation, onSelectArea, onCreateArea,
   actionsHostRef, titleHostRef, onBack, historyTriggerRef, shareMode = false,
 }: Readonly<{
   shareMode?: boolean;
@@ -16,6 +16,7 @@ export function MobileWorkspaceHeader({
   historyTriggerRef: Ref<HTMLButtonElement>;
   areas: readonly Area[];
   activeArea: Area | undefined;
+  draftArea?: Pick<Area, 'id' | 'name'>;
   navigationOpen: boolean;
   onOpenNavigation: () => void;
   onSelectArea: (areaId: string) => void;
@@ -24,11 +25,11 @@ export function MobileWorkspaceHeader({
   titleHostRef: RefCallback<HTMLDivElement>;
 }>) {
   return <div data-nc-workspace-header="" inert={navigationOpen} aria-hidden={navigationOpen || undefined}>
-    <MobileHeader actionsHidden className={styles.rootHeader} title={activeArea?.name ?? 'Choose area'}
+    <MobileHeader actionsHidden className={styles.rootHeader} title={activeArea?.name ?? draftArea?.name ?? 'Choose area'}
       titleContent={<div className={styles.titleContent}>
         <div ref={titleHostRef} className={styles.trackTitleHost} />
         <div className={styles.areaTitle}>
-          {!shareMode && <AreaSelector areas={areas} activeArea={activeArea} onSelectArea={onSelectArea} onCreateArea={onCreateArea} />}
+          {!shareMode && <AreaSelector areas={areas} activeArea={activeArea} draftArea={draftArea} onSelectArea={onSelectArea} onCreateArea={onCreateArea} />}
         </div>
       </div>}
       onBack={onBack} backLabel="Tracks"

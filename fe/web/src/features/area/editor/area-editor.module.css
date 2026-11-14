@@ -19,10 +19,4 @@
     margin-inline-start: auto;
   }
 
-  .notice {
-    font-size: var(--font-step-1-size);
-    line-height: var(--font-step-1-line);
-    margin: 0;
-    color: var(--text-3);
-  }
 }

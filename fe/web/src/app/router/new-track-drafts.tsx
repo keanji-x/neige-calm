@@ -11,8 +11,10 @@ import { mintIdempotencyKey } from '../providers/idempotency-key.ts';
 /** One create's wire body and the key it is sent under on every attempt. */
 export type TrackCreationRequest = Readonly<{ body: NewTrackBody; key: string }>;
 
+export type NewTrackDraftArea = Pick<Area, 'id' | 'name' | 'defaultCwd'>;
+
 export type NewTrackSession = Readonly<{
-  area: Area;
+  area: NewTrackDraftArea;
   form: NewTrackFormState | null;
   /** The Planner's backend; `codex` until the reader picks a model from another provider's group. */
   provider: AgentProvider;
@@ -40,7 +42,7 @@ function createDraftStore() {
     get: (areaId: string) => drafts.get(areaId) ?? null,
     ensure: (area: Area) => {
       if (drafts.has(area.id)) return;
-      drafts.set(area.id, { area, form: null, provider: 'codex', model: FOLLOW_INSTALLATION_DEFAULT, role: 'member', key: mintIdempotencyKey(), creating: false,
+      drafts.set(area.id, { area: { id: area.id, name: area.name, defaultCwd: area.defaultCwd }, form: null, provider: 'codex', model: FOLLOW_INSTALLATION_DEFAULT, role: 'member', key: mintIdempotencyKey(), creating: false,
         request: null, createdTrackId: null, error: null, canRetryAsNewTrack: false, folderConflict: null });
       notify();
     },
@@ -69,7 +71,7 @@ function useDraftStore() {
 }
 
 /** Read a retained intention for presentation; it never proves live Area membership. */
-export function useNewTrackDraftArea(areaId: string | undefined): Area | undefined {
+export function useNewTrackDraftArea(areaId: string | undefined): NewTrackDraftArea | undefined {
   const store = useDraftStore();
   return useSyncExternalStore(store.subscribe, () => areaId === undefined ? undefined : store.get(areaId)?.area);
 }

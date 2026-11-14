@@ -617,22 +617,31 @@ async fn the_next_task_waits_for_the_previous_commit() {
     assert_eq!(b.base_sha, commit);
 }
 
-/// T5 (D1) — an attached track without a worktree (the pre-#1830 shape) refuses workers with
-/// `spawn-failed: refused: track-without-worktree`; the user's checkout is untouched.
+/// Attached(None) materializes isolation on first worker admission and leaves the checkout untouched.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_worktree_less_attached_track_refuses_workers() {
+async fn a_worktree_less_attached_track_starts_a_worker_in_its_leased_worktree() {
     let w = borrowed_world(false).await;
     let fx = &w.fx;
     let status = git(&fx.track_root, &["status", "--porcelain"]);
     let head = git(&fx.track_root, &["rev-parse", "HEAD"]);
+    assert_eq!(worktree_entries(&fx.track_root), w.before.0);
 
     declare_task(fx, "a", json!({})).await;
-    let a = wait_task(fx, "a", |task| task.status == TaskStatus::Failed).await;
-
-    let detail = a.status_detail.unwrap_or_default();
+    let a = wait_running(fx, "a").await;
+    let track = fx.boot.repo.track_get(fx.track()).await.unwrap().unwrap();
+    assert_ne!(a.cwd, fx.track_root);
+    assert_eq!(a.cwd, PathBuf::from(track.workspace.agent_cwd()));
+    assert_eq!(lease_state(fx, &a.lease_id).await, "held");
+    assert_eq!(worktree_entries(&fx.track_root), w.before.0 + 1);
+    assert_eq!(
+        git(&a.cwd, &["branch", "--show-current"]),
+        format!("neige/track-{}", fx.track())
+    );
     assert!(
-        detail.starts_with("spawn-failed: refused: track-without-worktree: "),
-        "{detail}"
+        w.shared
+            .minted_thread_cwds_for_test()
+            .iter()
+            .any(|(thread, cwd)| { thread == &a.identity.thread_id && Path::new(cwd) == a.cwd })
     );
     assert_eq!(git(&fx.track_root, &["status", "--porcelain"]), status);
     assert_eq!(git(&fx.track_root, &["rev-parse", "HEAD"]), head);

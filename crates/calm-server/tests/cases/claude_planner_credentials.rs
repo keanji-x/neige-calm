@@ -227,6 +227,8 @@ async fn a_failed_claude_reset_never_lets_the_old_token_back() {
     let (_track, card_id) = stack.create_claude_track().await;
     let (_, token) = stack.run_turn(&root, &card_id, "exit", "hello").await;
     let old = stack.runtime(&card_id).await;
+    let original_cwd = root.read_fake("pwd").expect("spawn cwd");
+    let original_thread = old.thread_id.clone().expect("native identity");
 
     let failure = claude_spawn_failure::arm(&card_id);
     let reset = {
@@ -264,6 +266,10 @@ async fn a_failed_claude_reset_never_lets_the_old_token_back() {
     );
     let restored = stack.runtime(&card_id).await;
     assert_eq!(restored.id, old.id, "compensation restored the old row");
+    assert_eq!(
+        restored.thread_id.as_deref(),
+        Some(original_thread.as_str())
+    );
     assert!(
         !stack.token_authenticates(&token).await,
         "the restored row does not carry the old hash"
@@ -278,6 +284,109 @@ async fn a_failed_claude_reset_never_lets_the_old_token_back() {
     let new_token = root.spawned_token();
     assert_ne!(new_token, token);
     assert!(stack.token_authenticates(&new_token).await);
+    assert_eq!(root.read_fake("pwd").unwrap(), original_cwd);
+    let argv = root.read_fake("argv").expect("spawn argv");
+    let argv: Vec<_> = argv.lines().collect();
+    let resume = argv
+        .iter()
+        .position(|arg| *arg == "--resume")
+        .expect("resume predecessor");
+    assert_eq!(argv[resume + 1], original_thread);
+    stack.shutdown().await;
+
+    // The restored native identity and locator must survive a cold boot as one binding.
+    let stack = Stack::boot(&root).await;
+    let (outcome, _) = stack
+        .run_turn(&root, &card_id, "exit", "after reboot")
+        .await;
+    assert_eq!(outcome["status"], "completed");
+    assert_eq!(root.read_fake("pwd").unwrap(), original_cwd);
+    assert_eq!(
+        stack.runtime(&card_id).await.thread_id,
+        Some(original_thread)
+    );
+    assert!(!stack.token_authenticates(&token).await);
+    stack.shutdown().await;
+}
+
+/// Compensation must not give the card back to a native identity changed after preparation.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_failed_reset_refuses_a_changed_predecessor_native_identity() {
+    failed_reset_with_changed_binding(true).await;
+}
+
+/// Another session's locator is an ownership change, even when it names the same path.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_failed_reset_refuses_a_foreign_session_locator() {
+    failed_reset_with_changed_binding(false).await;
+}
+
+async fn failed_reset_with_changed_binding(native: bool) {
+    let root = Root::new("exit");
+    let stack = Stack::boot(&root).await;
+    let (_, card_id) = stack.create_claude_track().await;
+    let (_, token) = stack.run_turn(&root, &card_id, "exit", "hello").await;
+    let old = stack.runtime(&card_id).await;
+    let failure = claude_spawn_failure::arm(&card_id);
+    let reset = {
+        let app = stack.app.clone();
+        let card = card_id.clone();
+        tokio::spawn(async move {
+            use axum::body::Body;
+            use axum::http::Request;
+            use tower::ServiceExt;
+            app.oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/cards/{card}/planner/reset"))
+                    .header("x-calm-actor", "user")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+            .status()
+        })
+    };
+    tokio::time::timeout(BUDGET, failure.entered.notified())
+        .await
+        .expect("spawn pause");
+    let db = stack.repo().sqlite_db().unwrap();
+    if native {
+        db.writer()
+            .execute(
+                sqlx::query(
+                    "UPDATE worker_sessions SET thread_id='changed-native-identity' WHERE id=?1",
+                )
+                .bind(&old.id),
+            )
+            .await
+            .unwrap();
+    } else {
+        db.writer()
+            .execute(
+                sqlx::query(
+                    "UPDATE cards SET payload=json_set(payload, \
+             '$.bound_session_cwd.worker_session_id','foreign-session') WHERE id=?1",
+                )
+                .bind(&card_id),
+            )
+            .await
+            .unwrap();
+    }
+    failure.release.notify_one();
+    assert!(!reset.await.unwrap().is_success());
+    let current: String = sqlx::query_scalar("SELECT session_id FROM cards WHERE id=?1")
+        .bind(&card_id)
+        .fetch_one(db.read_pool())
+        .await
+        .unwrap();
+    assert_ne!(
+        current, old.id,
+        "compensation cannot restore changed ownership"
+    );
+    assert!(!stack.token_authenticates(&token).await);
+    stack.shutdown().await;
 }
 
 /// Rewrite the Planner row's snapshot as a crash at a given point would have left it.

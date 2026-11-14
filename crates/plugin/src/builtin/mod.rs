@@ -18,9 +18,13 @@ pub struct Definition {
     pub tool_prompt_directory: &'static str,
     manifest: Manifest,
     optional: bool,
+    git_workspace_bound: bool,
     tools: Vec<tools::NativeToolSpec>,
 }
 impl Definition {
+    pub fn git_workspace_bound(&self) -> bool {
+        self.git_workspace_bound
+    }
     pub fn tools(&self) -> &[tools::NativeToolSpec] {
         &self.tools
     }
@@ -42,6 +46,7 @@ static CATALOG: LazyLock<Vec<Definition>> = LazyLock::new(|| {
             manifest: Manifest::parse(feishu_watch::MANIFEST)
                 .expect("compiled inspection manifest"),
             optional: true,
+            git_workspace_bound: false,
             tools: feishu_watch::descriptors(),
         },
         Definition {
@@ -53,6 +58,7 @@ static CATALOG: LazyLock<Vec<Definition>> = LazyLock::new(|| {
             manifest: Manifest::parse(opencode_history::MANIFEST)
                 .expect("compiled history manifest"),
             optional: true,
+            git_workspace_bound: false,
             tools: opencode_history::descriptors(),
         },
         Definition {
@@ -63,6 +69,7 @@ static CATALOG: LazyLock<Vec<Definition>> = LazyLock::new(|| {
             ),
             manifest: Manifest::parse(gitforge::MANIFEST).expect("compiled manifest"),
             optional: true,
+            git_workspace_bound: true,
             tools: vec![
                 gitforge::publish::descriptor(),
                 gitforge::rerun::descriptor(),
@@ -76,6 +83,7 @@ static CATALOG: LazyLock<Vec<Definition>> = LazyLock::new(|| {
             ),
             manifest: Manifest::parse(calendar::MANIFEST).expect("compiled manifest"),
             optional: false,
+            git_workspace_bound: false,
             tools: calendar::tools::descriptors(),
         },
     ]

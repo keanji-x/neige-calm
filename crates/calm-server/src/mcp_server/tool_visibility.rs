@@ -13,9 +13,13 @@ use crate::track_binding::{TrackOwnerBinding, resolve_track_owner_binding};
 pub(crate) enum TrackPluginScope {
     /// No track context or an unbound track — union of all running plugins.
     All,
+    Unbound {
+        extras: std::collections::BTreeSet<String>,
+    },
     /// Track with `plugin_scope = Some(id)` whose plugin is running ∧ trusted.
     Only(String /* plugin_id */),
-    /// A live owner plus manifest-bound, explicitly approved extras. Never inherited.
+    /// A live owner plus manifest-bound approved extras, including earlier template owners.
+    /// Never inherited.
     Granted {
         owner: String,
         extras: std::collections::BTreeSet<String>,
@@ -30,12 +34,13 @@ impl TrackPluginScope {
         self.allows(&manifest.id)
             && (manifest.agent_tools_scope
                 == crate::plugin_host::manifest::AgentToolsScope::Enabled
+                || matches!(self, Self::Unbound { extras } if extras.contains(&manifest.id))
                 || matches!(self, Self::Only(owner) if owner == &manifest.id)
-                || matches!(self, Self::Granted { owner, .. } if owner == &manifest.id))
+                || matches!(self, Self::Granted { owner, extras } if owner == &manifest.id || extras.contains(&manifest.id)))
     }
     pub(crate) fn allows(&self, plugin_id: &str) -> bool {
         match self {
-            Self::All => true,
+            Self::All | Self::Unbound { .. } => true,
             Self::Only(allowed) => allowed == plugin_id,
             Self::Granted { owner, extras } => owner == plugin_id || extras.contains(plugin_id),
             Self::None => false,
@@ -142,15 +147,15 @@ pub(crate) async fn plugin_scope_for_track_row_with_grants(
     host: Option<&crate::plugin_host::PluginHost>,
 ) -> TrackPluginScope {
     let base = plugin_scope_for_track_row(track, host).await;
-    let (TrackPluginScope::Only(owner), Some(host)) = (&base, host) else {
+    let Some(host) = host else {
         return base;
     };
+    if !matches!(base, TrackPluginScope::Only(_) | TrackPluginScope::All) {
+        return base;
+    }
     match crate::track_plugin_access::current_grants(db, track, host).await {
         Ok(extras) if extras.is_empty() => base,
-        Ok(extras) => TrackPluginScope::Granted {
-            owner: owner.clone(),
-            extras,
-        },
+        Ok(extras) => with_grants(base, extras),
         Err(error) => {
             tracing::warn!(%error, track_id=%track.id, "plugin grant lookup failed; failing closed");
             TrackPluginScope::None
@@ -165,19 +170,26 @@ pub(crate) async fn plugin_scope_for_track_row_tx(
     host: &crate::plugin_host::PluginHost,
 ) -> crate::error::Result<TrackPluginScope> {
     let base = plugin_scope_for_track_row(track, Some(host)).await;
-    let TrackPluginScope::Only(owner) = &base else {
+    if !matches!(base, TrackPluginScope::Only(_) | TrackPluginScope::All) {
         return Ok(base);
-    };
+    }
     let rows = crate::track_plugin_access::grants_from(&mut **tx, track.id.as_str()).await?;
-    let extras = crate::track_plugin_access::filter_grants(rows, host)?;
-    Ok(if extras.is_empty() {
-        base
-    } else {
-        TrackPluginScope::Granted {
-            owner: owner.clone(),
-            extras,
-        }
-    })
+    let extras = crate::track_plugin_access::filter_grants(rows, host).await?;
+    Ok(with_grants(base, extras))
+}
+
+fn with_grants(
+    base: TrackPluginScope,
+    extras: std::collections::BTreeSet<String>,
+) -> TrackPluginScope {
+    if extras.is_empty() {
+        return base;
+    }
+    match base {
+        TrackPluginScope::All => TrackPluginScope::Unbound { extras },
+        TrackPluginScope::Only(owner) => TrackPluginScope::Granted { owner, extras },
+        other => other,
+    }
 }
 
 /// Explain a known disabled tool only to an otherwise eligible Planner.
@@ -245,6 +257,101 @@ mod tests {
         assert!(TrackPluginScope::Only("dev.owner".into()).allows("dev.owner"));
         assert!(!TrackPluginScope::Only("dev.owner".into()).allows("dev.other"));
         assert!(!TrackPluginScope::None.allows("dev.owner"));
+    }
+
+    #[test]
+    fn cumulative_template_grants_allow_bound_track_manifests() {
+        let manifest = crate::builtin_plugins::get("gitforge").unwrap().manifest();
+        assert_eq!(
+            manifest.agent_tools_scope,
+            crate::plugin_host::manifest::AgentToolsScope::BoundTrack
+        );
+        let scope = TrackPluginScope::Granted {
+            owner: "other-owner".into(),
+            extras: [manifest.id.clone()].into(),
+        };
+        assert!(scope.allows_manifest(manifest));
+        assert!(!TrackPluginScope::Only("other-owner".into()).allows_manifest(manifest));
+        assert!(!TrackPluginScope::All.allows_manifest(manifest));
+    }
+
+    #[tokio::test]
+    async fn template_grant_allows_running_bound_plugin_without_stored_plugin_row() {
+        use crate::db::prelude::*;
+        use crate::error::CalmError;
+        use crate::model::{NewArea, NewTrack};
+        use crate::track_plugin_access::{current_grants, grant_template_plugin_tx};
+        use std::sync::Arc;
+        let repo = Arc::new(
+            crate::db::sqlite::SqlxRepo::open("sqlite::memory:")
+                .await
+                .unwrap(),
+        );
+        let area = repo
+            .area_create(
+                calm_types::organization::LEGACY_OWNER_USER_ID,
+                NewArea {
+                    name: "grants".into(),
+                    color: "#000".into(),
+                    sort: None,
+                },
+            )
+            .await
+            .unwrap();
+        let track = repo
+            .track_create(NewTrack {
+                template_input: None,
+                area_id: area.id,
+                title: "grants".into(),
+                sort: None,
+                cwd: "/tmp".into(),
+                template_id: None,
+                plugin_scope: Some("other-owner".into()),
+                attach_folder: false,
+                theme: crate::model::RequestTheme::default_dark(),
+            })
+            .await
+            .unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let host = Arc::new(crate::plugin_host::PluginHost::new_full(
+            Arc::new(crate::plugin_host::PluginRegistry::empty().with_builtins()),
+            repo.clone(),
+            tmp.path().join("plugins"),
+            tmp.path().join("data"),
+            vec![],
+            crate::event::EventBus::new(),
+            crate::state::WriteContext::new(Default::default(), Default::default()),
+        ));
+        host.reconcile_builtins().await.unwrap();
+        host.enable("gitforge").await.unwrap();
+        let manifest = host.registry().get("gitforge").unwrap();
+        crate::db::write_in_tx_typed(repo.as_ref(), {
+            let track = track.clone();
+            move |tx| {
+                Box::pin(async move {
+                    grant_template_plugin_tx(tx, &track.id, &manifest).await?;
+                    sqlx::query("DELETE FROM plugins WHERE id='gitforge'")
+                        .execute(&mut **tx)
+                        .await?;
+                    Ok::<_, CalmError>(())
+                })
+            }
+        })
+        .await
+        .unwrap();
+        assert!(
+            current_grants(repo.sqlite_db().as_ref(), &track, &host)
+                .await
+                .unwrap()
+                .contains("gitforge")
+        );
+        host.stop("gitforge").await.unwrap();
+        assert!(
+            current_grants(repo.sqlite_db().as_ref(), &track, &host)
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[tokio::test]

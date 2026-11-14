@@ -11,14 +11,6 @@
     gap: var(--space-half);
   }
 
-  .isolation {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: var(--space-half);
-    min-inline-size: 0;
-  }
-
   .host {
     min-inline-size: 0;
   }
@@ -27,9 +19,6 @@
     flex-wrap: wrap;
   }
 
-  .startingPoint {
-    display: contents;
-  }
 
   .panel {
     max-inline-size: min(22rem, calc(100dvw - var(--space-6)));

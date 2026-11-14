@@ -9,7 +9,9 @@ use calm_types::report_blocks::live_refs::referenced_plugin_ids;
 
 use crate::db::Repo;
 use crate::error::{CalmError, Result};
-use crate::mcp_server::tool_visibility::plugin_scope_for_track_row_with_grants;
+use crate::mcp_server::tool_visibility::{
+    TrackPluginScope, plugin_scope_for_track_row_with_grants,
+};
 use crate::model::Track;
 use crate::plugin_host::{Manifest, PluginHost};
 
@@ -32,6 +34,20 @@ pub(crate) fn plugin_documents_track(manifest: &Manifest, track: &Track) -> bool
             .templates
             .iter()
             .any(|template| Some(template.id.as_str()) == track.template_id.as_deref())
+}
+
+/// Authorization precedes every documentation reason, including template-id matches.
+fn instructs_track(
+    scope: &TrackPluginScope,
+    manifest: &Manifest,
+    track: &Track,
+    approved: &BTreeSet<String>,
+    referenced: &BTreeSet<String>,
+) -> bool {
+    scope.allows_manifest(manifest)
+        && (plugin_documents_track(manifest, track)
+            || approved.contains(&manifest.id)
+            || referenced.contains(&manifest.id))
 }
 
 /// Append the plugin section, joiner included, to `instructions`.
@@ -74,6 +90,7 @@ async fn instructing_plugins(
     let scope =
         plugin_scope_for_track_row_with_grants(repo.sqlite_db().as_ref(), track, Some(plugin))
             .await;
+    // Grants include earlier template owners as well as individually approved plugins.
     let extra_plugins =
         crate::track_plugin_access::current_grants(repo.sqlite_db().as_ref(), track, plugin)
             .await?;
@@ -89,11 +106,7 @@ async fn instructing_plugins(
     };
     Ok(stored
         .into_iter()
-        .filter(|manifest| {
-            plugin_documents_track(manifest, track)
-                || extra_plugins.contains(&manifest.id)
-                || referenced.contains(&manifest.id)
-        })
+        .filter(|manifest| instructs_track(&scope, manifest, track, &extra_plugins, &referenced))
         .filter_map(|manifest| Some((manifest.id, manifest.planner_instructions?)))
         .collect())
 }
@@ -152,4 +165,56 @@ fn render_section(plugins: &[(String, String)]) -> String {
         section.push_str(OMITTED_NOTICE);
     }
     section
+}
+
+/// Configuration wakes use the same standing documentation owners as a harness
+/// start, with grants read after rebinding in the caller's writer transaction.
+pub(crate) async fn append_configuration_instructions_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    track: &Track,
+    host: &PluginHost,
+    instructions: &mut String,
+) -> Result<()> {
+    let scope =
+        crate::mcp_server::tool_visibility::plugin_scope_for_track_row_tx(tx, track, host).await?;
+    let referenced = match crate::track_report::report_blocks_snapshot_tx(tx, track.id.as_str())
+        .await
+    {
+        Ok((_, blocks)) => referenced_plugin_ids(&blocks),
+        Err(error) => {
+            tracing::warn!(track_id = %track.id, %error, "track report unreadable; no plugin is instructed by report reference");
+            BTreeSet::new()
+        }
+    };
+    let rows = crate::track_plugin_access::grants_from(&mut **tx, track.id.as_str()).await?;
+    let approved = crate::track_plugin_access::filter_grants(rows, host).await?;
+    let active = host.running_plugin_ids().await;
+    for component in crate::builtin_plugins::catalog() {
+        if active.contains(&component.manifest().id)
+            && instructs_track(&scope, component.manifest(), track, &approved, &referenced)
+        {
+            instructions.push_str(JOINER);
+            instructions.push_str(component.instructions());
+        }
+    }
+    let rows: Vec<(String, String)> =
+        sqlx::query_as("SELECT id,manifest FROM plugins WHERE enabled=1")
+            .fetch_all(&mut **tx)
+            .await?;
+    let mut plugins = Vec::new();
+    for (id, raw) in rows {
+        if !active.contains(&id) {
+            continue;
+        }
+        let manifest =
+            Manifest::parse(&raw).map_err(|error| CalmError::Internal(error.to_string()))?;
+        if instructs_track(&scope, &manifest, track, &approved, &referenced)
+            && let Some(text) = manifest.planner_instructions
+        {
+            plugins.push((id, text));
+        }
+    }
+    plugins.sort_by(|a, b| a.0.cmp(&b.0));
+    instructions.push_str(&render_section(&plugins));
+    Ok(())
 }

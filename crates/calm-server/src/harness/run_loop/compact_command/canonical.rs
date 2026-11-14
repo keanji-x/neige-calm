@@ -661,6 +661,13 @@ impl SelectionSource for MaintenanceAdmission<'_> {
             .ok_or_else(|| {
                 IssuanceRefusal::retryable("maintenance track no longer exists".into())
             })?;
-        Ok(track.workspace.agent_cwd().to_owned())
+        crate::harness::wiring::session_cwd_for(
+            self.inner.repo.as_ref(),
+            &self.target.card_id,
+            &self.target.worker_session_id,
+            &track,
+        )
+        .await
+        .map_err(|error| IssuanceRefusal::retryable(error.to_string()))
     }
 }

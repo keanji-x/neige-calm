@@ -1949,7 +1949,8 @@
       "a keyed card create keeps the key when Create is pressed again on the same draft, and mints a new one for a changed draft",
       "a keyed card create resends the held key and body when the same fieldless kind is picked again",
       "AppShell Area editor flow retries a lost create confirmation with the same identity and payload after reopening",
-      "AppShell Area editor flow keeps the original create identity after an unknown attempt followed by 413"
+      "AppShell Area editor flow keeps the original create identity after an unknown attempt followed by 413",
+      "keeps a legacy unknown Area body and key when the new builder omits templates"
     ],
     "selection_paths": [
       "web/src/app/router/new-card.test.tsx",

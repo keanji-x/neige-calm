@@ -567,6 +567,7 @@ pub struct FakeSharedCodexAppServer {
     reject_config_read: AtomicBool,
     /// The `cwd` of every `config/read` this fake was asked, in order.
     config_read_cwds: std::sync::Mutex<Vec<Option<String>>>,
+    minted_thread_cwds: std::sync::Mutex<Vec<(String, String)>>,
     /// Answer `model/list` the way codex does when it refuses the request.
     reject_model_list: AtomicBool,
     /// The `account/read` answer; logged in (an account present) unless a test says otherwise.
@@ -639,6 +640,7 @@ impl FakeSharedCodexAppServer {
             config_read: std::sync::Mutex::new(None),
             reject_config_read: AtomicBool::new(false),
             config_read_cwds: std::sync::Mutex::new(Vec::new()),
+            minted_thread_cwds: std::sync::Mutex::new(Vec::new()),
             reject_model_list: AtomicBool::new(false),
             account_read: std::sync::Mutex::new(AccountRead::for_test(true, true)),
             fail_turn_interrupt: AtomicBool::new(false),
@@ -1161,6 +1163,10 @@ impl SharedCodexAppServer {
             }
             let n = fake.next_thread.fetch_add(1, Ordering::SeqCst);
             let thread_id = format!("fake-thread-{n:04}");
+            fake.minted_thread_cwds
+                .lock()
+                .expect("minted cwd lock")
+                .push((thread_id.clone(), params.cwd));
             self.kernel_initiated_threads
                 .lock()
                 .await
@@ -3817,6 +3823,18 @@ impl SharedCodexAppServer {
                 .lock()
                 .expect("fake shared codex config-read mutex poisoned") = Some(config);
         }
+    }
+
+    /// The native mint boundary's exact thread identity and cwd.
+    #[cfg(feature = "fixtures")]
+    pub fn minted_thread_cwds_for_test(&self) -> Vec<(String, String)> {
+        self.fake
+            .as_ref()
+            .expect("fixture daemon")
+            .minted_thread_cwds
+            .lock()
+            .expect("minted cwd lock")
+            .clone()
     }
 
     /// The `cwd` of every `config/read` the fixtures fake was asked, in order.

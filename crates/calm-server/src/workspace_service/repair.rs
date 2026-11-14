@@ -27,6 +27,9 @@ impl HeldTrack {
             guard: Arc::new(Mutex::new(TrackOwnership::Held(Arc::new(guard)))),
         }
     }
+    pub(crate) fn track_id(&self) -> &str {
+        &self.track
+    }
     /// Release once for every clone, including the driver's settlement context.
     pub(crate) fn release(&self) {
         *self.guard.lock().expect("HeldTrack mutex poisoned") = TrackOwnership::HandedOff;
@@ -131,7 +134,26 @@ where
         RetainedPreparation::Locator => None,
         RetainedPreparation::Managed(root) => Some(root),
     };
-    fenced_worktree(repo, lifecycle, selected, true, workspace_root, admit).await
+    fenced_worktree(repo, lifecycle, selected, true, workspace_root, None, admit).await
+}
+
+/// Task repair retains its existing fence through materialization and observation,
+/// including after the awaiting preparation future is cancelled.
+pub(crate) async fn retained_task_worktree<F, A>(
+    repo: Arc<dyn RouteRepo>,
+    pool: crate::db::sqlite::SqliteDb,
+    selected: &Track,
+    held: HeldTrack,
+    admit: F,
+) -> Result<()>
+where
+    F: Fn() -> A + Send + Sync + 'static,
+    A: std::future::Future<Output = Result<()>> + Send,
+{
+    let lifecycle = TrackHold::Held {
+        _guard: held.require_held(selected.id.as_str())?,
+    };
+    fenced_worktree(repo, lifecycle, selected, true, None, Some(pool), admit).await
 }
 
 /// Canonical HTTP creation owns no operation drive and may wait for clean or
@@ -154,6 +176,7 @@ where
         selected,
         repair,
         None,
+        None,
         admit,
     )
     .await
@@ -167,6 +190,7 @@ async fn fenced_worktree<F, A>(
     selected: &Track,
     repair: bool,
     workspace_root: Option<std::path::PathBuf>,
+    observe_pool: Option<crate::db::sqlite::SqliteDb>,
     admit: F,
 ) -> Result<()>
 where
@@ -190,7 +214,12 @@ where
                 prepare_managed(&current, root, ManagedPreparation::Materialize).await?;
             }
             admit().await?;
-            super::validate_runtime_workspace(&current.workspace)
+            super::validate_runtime_workspace(&current.workspace)?;
+            if let Some(pool) = observe_pool {
+                admit().await?;
+                super::identity::observe_for_task(&pool, current.id.as_str()).await?;
+            }
+            Ok(())
         },
     )
     .await

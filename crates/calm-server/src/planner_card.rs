@@ -376,7 +376,7 @@ mod tests {
     // Fixed compaction advice moved here from every turn (+122 bytes at startup).
     // Four parent/child boundaries replace the separate handback lifecycle guidance.
     // Failure follow-up stays in Planner policy; no separate decision tool.
-    const PLANNER_PROMPT_MAX_BYTES: usize = 8_542;
+    const PLANNER_PROMPT_MAX_BYTES: usize = 8_527;
 
     #[test]
     fn planner_diagnostics_regression_prompt_fits_its_byte_budget() {
@@ -407,7 +407,9 @@ mod tests {
         use crate::mcp_server::tools::track_file::GUIDES;
         const GUIDE_MAX_BYTES: usize = 6_144;
         // The shared catalog includes three on-demand operations documents.
-        const GUIDES_TOTAL_MAX_BYTES: usize = 14_000;
+        // #3651 catch-up combines template-choice guidance with the upstream operation
+        // guides: the rendered total is 14,099 bytes, without changing either contract.
+        const GUIDES_TOTAL_MAX_BYTES: usize = 14_099;
 
         assert!(GUIDES.len() >= 4, "anti-vacuity: {} guides", GUIDES.len());
         for (name, text) in GUIDES {

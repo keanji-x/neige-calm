@@ -117,7 +117,8 @@ pub async fn closed_worktree_candidate(
 
 /// Write a track's workspace — kind, path, freeze stamp and track worktree — in one statement.
 /// The freeze latch is enforced here, at the bottom of every workspace write.
-/// A frozen row is `Conflict`, told apart from `NotFound` by a second read.
+/// Frozen rows only admit a same-path attached upgrade to a worktree with a freeze stamp.
+/// Other frozen writes are `Conflict`, told apart from `NotFound` by a second read.
 pub async fn track_workspace_write_tx(
     tx: &mut Transaction<'_, Sqlite>,
     track_id: &str,
@@ -127,7 +128,10 @@ pub async fn track_workspace_write_tx(
         r#"UPDATE tracks
            SET workspace_path = ?1, workspace_kind = ?2, workspace_frozen_at = ?3,
                workspace_worktree_path = ?4
-           WHERE id = ?5 AND workspace_frozen_at IS NULL"#,
+           WHERE id = ?5 AND (workspace_frozen_at IS NULL OR
+               (workspace_kind = 'attached' AND workspace_path = ?1
+                AND workspace_worktree_path IS NULL AND ?2 = 'attached'
+                AND ?3 IS NOT NULL AND ?4 IS NOT NULL))"#,
     )
     .bind(&workspace.path)
     .bind(workspace.kind.as_db_str())

@@ -115,6 +115,7 @@ async fn repoint(provider: AgentProvider, proven: bool) {
         crate::extract::JsonBody(TrackPatch {
             workspace: Some(TrackWorkspacePatch {
                 kind: TrackWorkspaceKind::Attached,
+                isolation: None,
                 path: target.display().to_string(),
                 attach_folder: true,
             }),

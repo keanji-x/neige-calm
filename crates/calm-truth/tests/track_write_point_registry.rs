@@ -1,5 +1,5 @@
-//! Hygiene check on writers of `tracks.workspace_*`: surfaces every `.rs` string literal that writes a
-//! workspace column so a new writer is visible in review. It is not a security boundary and cannot
+//! Hygiene check on workspace and template-binding writers: surfaces every `.rs` literal that writes a
+//! tracked column so a new writer is visible in review. It is not a security boundary and cannot
 //! prove that only one writer exists.
 
 use std::collections::BTreeSet;
@@ -9,27 +9,28 @@ use std::path::{Path, PathBuf};
 use proc_macro2::{TokenStream, TokenTree};
 
 /// Columns owned by `tracks` alone, so no table-name reasoning is needed.
-const WORKSPACE_COLUMNS: [&str; 4] = [
+const TRACK_COLUMNS: [&str; 6] = [
     "workspace_kind",
     "workspace_path",
     "workspace_frozen_at",
     "workspace_worktree_path",
+    "template_id",
+    "plugin_scope",
 ];
 
 /// SQL write keywords, matched on word boundaries so `updated_at` is not a write; `update`/`insert`
 /// are bare so SQLite's conflict-clause variants (`UPDATE OR REPLACE`) are covered.
 const WRITE_KEYWORDS: [&str; 4] = ["insert", "update", "delete", "replace"];
 
-/// The production writers, pinned as exact normalized text; all of them live in one file. There is
+/// The workspace production writers, pinned as exact normalized text in one file. There is
 /// deliberately no un-freeze writer: monotonicity is a property of the available statements.
 const WRITER_FILE: &str = "crates/calm-truth/src/db/sqlite/track_workspace.rs";
 const WRITER_STATEMENTS: &[(&str, &str)] = &[
     (
-        "update tracks set workspace_path = ?1, workspace_kind = ?2, workspace_frozen_at = ?3, workspace_worktree_path = ?4 where id = ?5 and workspace_frozen_at is null",
-        "The whole-value writer. The trailing predicate is the freeze latch \
-         (#1147 S3): once a track has a stamp, neither kind nor path may change \
-         again. #1830 S1: the track worktree is written by the same statement, \
-         so it is set only at creation (a re-point writes `None`).",
+        "update tracks set workspace_path = ?1, workspace_kind = ?2, workspace_frozen_at = ?3, workspace_worktree_path = ?4 where id = ?5 and (workspace_frozen_at is null or (workspace_kind = 'attached' and workspace_path = ?1 and workspace_worktree_path is null and ?2 = 'attached' and ?3 is not null and ?4 is not null))",
+        "The whole-value writer. Frozen rows admit only a same-path attached \
+         upgrade from no worktree to a stamped worktree selection. Kind and path \
+         remain frozen; downgrades and repeated worktree writes stay refused.",
     ),
     (
         "update tracks set workspace_frozen_at = ?1 where id = ?2 and workspace_frozen_at is null and (select c.kind from areas as c where c.id = tracks.area_id) <> 'system'",
@@ -94,6 +95,91 @@ const EXPECTED_OTHER_WRITES: &[(&str, &str, &str)] = &[
     ),
 ];
 
+/// Template binding shares this existing scan: a new writer edits its source and this registry,
+/// with no extra CI invocation. Initial creation and deferred binding live in the same owner.
+const EXPECTED_TRACK_WRITE_SITES: &[(&str, &str, &str)] = &[
+    (
+        "crates/calm-truth/src/db/sqlite/track.rs",
+        "insert into tracks (id, area_id, title, sort, pinned_at, closed_at, admin_granted_at, template_id, plugin_scope, purpose, template_input, tree_task_budget, recipe_id, recipe_revision, created_at, updated_at) values (?1, ?2, ?3, ?4, null, null, null, ?5, ?6, ?7, ?8, null, ?9, ?10, ?11, ?12)",
+        "The creation writer stamps the admitted template and its initial owner.",
+    ),
+    (
+        "crates/calm-truth/src/db/sqlite/track.rs",
+        "update tracks set template_id = ?1, plugin_scope = ?2, template_input = ?3, updated_at = ?4 where id = ?5",
+        "Admitted binding writes the template, owner and validated input; manifest-bound grants retain prior authority.",
+    ),
+    (
+        "crates/calm-server/src/builtin_plugins/calendar/tests/grants.rs",
+        "update tracks set plugin_scope=? where id=?",
+        "Calendar grant fixtures select the Track owner before testing native authorization.",
+    ),
+    (
+        "crates/calm-server/src/builtin_plugins/calendar/tests.rs",
+        "update tracks set plugin_scope=? where id=?",
+        "Calendar fixtures select the owning plugin for native scope and lifecycle checks.",
+    ),
+    (
+        "crates/calm-server/src/builtin_plugins/tests.rs",
+        "update tracks set template_id='dev' where id=?",
+        "The template-only fixture proves that a template key alone grants no plugin ownership.",
+    ),
+    (
+        "crates/calm-server/src/routes/canonical_flow_tests/system_assistant_tests/http.rs",
+        "update tracks set purpose=null,template_id='small-change',plugin_scope='legacy' where id=?1",
+        "Historical canonical-adoption fixture reconstructs released template and owner metadata.",
+    ),
+    (
+        "crates/calm-server/src/routes/today.rs",
+        "update tracks set purpose='launchpad',template_id=null,plugin_scope=null,template_input=null,updated_at=?2 where id=?1",
+        "The managed Today owner clears legacy template metadata only after proving canonical adoption.",
+    ),
+    (
+        "crates/calm-server/src/routes/today.rs",
+        "insert into tracks(id,area_id,title,sort,template_id,purpose,template_input,admin_granted_at,created_at,updated_at) values(?1,?2,'today',?3,null,'launchpad',null,null,?4,?4)",
+        "The managed Today owner creates its canonical untemplated row before workspace assignment.",
+    ),
+    (
+        "crates/calm-server/src/routes/tracks/preparation/capability_tests.rs",
+        "create trigger capability_before_report before update on cards when new.kind='track-report' and (select template_id from tracks where id=new.track_id)='site/cap' begin select case when not exists(select 1 from track_capabilities where track_id=new.track_id and capability='objectives') then raise(abort,'capability must precede report') end; end;",
+        "Read-only trigger: checks template capability before report UPDATE; it never writes Tracks.",
+    ),
+    (
+        "crates/calm-server/tests/cases/codex_calendar_preview.rs",
+        "update tracks set plugin_scope=null where id=?",
+        "Preview fixtures clear the owner to exercise unbound Calendar access.",
+    ),
+    (
+        "crates/calm-server/tests/cases/mcp_bootstrap_discovery.rs",
+        "update tracks set plugin_scope = ?1 where id = ?2",
+        "Bootstrap discovery fixtures select the owner to distinguish discovery from call authority.",
+    ),
+    (
+        "crates/calm-server/tests/cases/mcp_closed_input.rs",
+        "update tracks set plugin_scope = ?1 where id = ?2",
+        "MCP input-contract fixtures select the owning plugin for their probe tools.",
+    ),
+    (
+        "crates/calm-server/tests/cases/today_launchpad.rs",
+        "update tracks set purpose=null,template_id='small-change',template_input='{\"issue\":1209}' where id=?1",
+        "Historical Today fixture reconstructs a released template-bearing candidate before adoption.",
+    ),
+    (
+        "crates/calm-server/tests/cases/today_launchpad_adoption.rs",
+        "update tracks set purpose=null,template_id='small-change',template_input='{\"issue\":2843}',plugin_scope='legacy' where id=?1",
+        "Historical adoption fixture reconstructs released template, input and legacy owner metadata.",
+    ),
+    (
+        "crates/calm-server/tests/cases/user_ask/admin.rs",
+        "update tracks set plugin_scope = null where id = ?1",
+        "Admin approval fixtures clear plugin ownership independently of the authority under test.",
+    ),
+    (
+        "crates/calm-truth/src/db/sqlite/track_admin_tests.rs",
+        "update tracks set plugin_scope='bound-plugin' where id='bound'",
+        "Admin eligibility fixtures include an explicitly plugin-bound Track.",
+    ),
+];
+
 /// This file, skipped by its own scan: its literals are the detector's test vectors.
 const SELF: &str = "crates/calm-truth/tests/track_write_point_registry.rs";
 
@@ -118,12 +204,12 @@ fn contains_word(haystack: &str, needle: &str) -> bool {
     })
 }
 
-/// Workspace columns named by a normalized literal that also looks like a write; `None` for reads.
-fn workspace_write_columns(normalized: &str) -> Option<Vec<&'static str>> {
+/// Tracked columns named by a normalized literal that also looks like a write; `None` for reads.
+fn track_write_columns(normalized: &str) -> Option<Vec<&'static str>> {
     if !WRITE_KEYWORDS.iter().any(|k| contains_word(normalized, k)) {
         return None;
     }
-    let columns: Vec<&'static str> = WORKSPACE_COLUMNS
+    let columns: Vec<&'static str> = TRACK_COLUMNS
         .into_iter()
         .filter(|column| contains_word(normalized, column))
         .collect();
@@ -269,12 +355,13 @@ fn relative(root: &Path, file: &Path) -> String {
 }
 
 #[test]
-fn workspace_writes_are_the_ones_we_expect() {
+fn track_writes_are_the_ones_we_expect() {
     let root = workspace_root();
     let expected: BTreeSet<(&str, &str)> = EXPECTED_OTHER_WRITES
         .iter()
         .map(|(f, s, _)| (*f, *s))
         .chain(WRITER_STATEMENTS.iter().map(|(s, _)| (WRITER_FILE, *s)))
+        .chain(EXPECTED_TRACK_WRITE_SITES.iter().map(|(f, s, _)| (*f, *s)))
         .collect();
 
     let mut seen: BTreeSet<(String, String)> = BTreeSet::new();
@@ -286,7 +373,7 @@ fn workspace_writes_are_the_ones_we_expect() {
         }
         for literal in sql_literals(&fs::read_to_string(&file).expect("read source")) {
             let normalized = normalize(&literal);
-            let Some(columns) = workspace_write_columns(&normalized) else {
+            let Some(columns) = track_write_columns(&normalized) else {
                 continue;
             };
             if expected.contains(&(rel.as_str(), normalized.as_str())) {
@@ -294,7 +381,7 @@ fn workspace_writes_are_the_ones_we_expect() {
             } else {
                 problems.push(format!(
                     "{rel}: unexpected write of {columns:?}. If it is intentional, add it to \
-                     EXPECTED_OTHER_WRITES verbatim with a reason — and read this file's module \
+                     the applicable write registry verbatim with a reason — and read this file's module \
                      doc first, because being listed here is bookkeeping, not approval.\n  {normalized}"
                 ));
             }
@@ -338,13 +425,21 @@ fn detector_sees_the_shapes_that_defeated_earlier_versions() {
             "INSERT OR IGNORE INTO tracks(workspace_path) VALUES(?1)",
         ),
         (
+            "template binding",
+            "UPDATE tracks SET template_id = ?1 WHERE id = ?2",
+        ),
+        (
+            "plugin binding",
+            "UPDATE tracks SET plugin_scope = ?1 WHERE id = ?2",
+        ),
+        (
             "no table literal at all",
             "UPDATE {T} SET workspace_frozen_at = NULL",
         ),
     ];
     for (label, sql) in shapes {
         assert!(
-            workspace_write_columns(&normalize(sql)).is_some(),
+            track_write_columns(&normalize(sql)).is_some(),
             "shape `{label}` not detected: {sql}"
         );
     }
@@ -355,14 +450,14 @@ fn detector_ignores_reads_and_near_misses() {
     let benign = [
         (
             "select",
-            "SELECT workspace_kind, workspace_path, workspace_frozen_at FROM tracks WHERE id = ?1",
+            "SELECT workspace_kind, workspace_path, workspace_frozen_at, template_id, plugin_scope FROM tracks WHERE id = ?1",
         ),
         (
             "updated_at is not a write",
             "SELECT workspace_path, updated_at FROM tracks",
         ),
         (
-            "write touching no workspace column",
+            "write touching no tracked column",
             "UPDATE tracks SET lifecycle='planning', updated_at=?1 WHERE id=?2",
         ),
         (
@@ -372,7 +467,7 @@ fn detector_ignores_reads_and_near_misses() {
     ];
     for (label, sql) in benign {
         assert_eq!(
-            workspace_write_columns(&normalize(sql)),
+            track_write_columns(&normalize(sql)),
             None,
             "benign shape `{label}` was flagged: {sql}"
         );
@@ -387,7 +482,7 @@ fn prose_is_not_evidence() {
     assert!(
         sql_literals(source)
             .iter()
-            .all(|l| workspace_write_columns(&normalize(l)).is_none())
+            .all(|l| track_write_columns(&normalize(l)).is_none())
     );
 }
 

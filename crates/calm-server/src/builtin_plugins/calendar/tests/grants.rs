@@ -349,11 +349,7 @@ async fn track_plugin_access_rejects_forged_target_options_and_owner_only_plugin
     assert_eq!(calendar(&fx, &who).await.unwrap_err().code, -32601);
 }
 
-#[tokio::test]
-async fn track_plugin_access_materialized_cli_connector_uses_declared_identity() {
-    let fx = Fixture::new().await;
-    let who = owned(&fx).await;
-    let track = who.track_id.as_deref().unwrap();
+async fn install_grant_probe(fx: &Fixture) -> crate::plugin_host::Manifest {
     let raw=json!({"manifest_version":2,"id":"grantprobe","version":"0.1.0","min_kernel_version":"0.1.0",
         "kind":"cli-query","display_name":"Grant probe","exposes_tools":[],
         "cli_query":{"command":"/bin/echo","tools":[{"name":"ping","input_schema":{"type":"object","properties":{},"additionalProperties":false},"args":["{\"ok\":true}"]}]}}).to_string();
@@ -365,6 +361,15 @@ async fn track_plugin_access_materialized_cli_connector_uses_declared_identity()
         .await
         .unwrap();
     fx.host.enable("grantprobe").await.unwrap();
+    crate::plugin_host::Manifest::parse(&raw).unwrap()
+}
+
+#[tokio::test]
+async fn track_plugin_access_materialized_cli_connector_uses_declared_identity() {
+    let fx = Fixture::new().await;
+    let who = owned(&fx).await;
+    let track = who.track_id.as_deref().unwrap();
+    install_grant_probe(&fx).await;
     let stored = fx
         .repo
         .plugin_get_by_id("grantprobe")
@@ -510,8 +515,9 @@ async fn track_plugin_access_pending_decision_cannot_overwrite_a_newer_revision(
 }
 
 #[tokio::test]
-async fn track_plugin_access_unbound_track_needs_no_extra_grant_storage() {
-    let fx = Fixture::installed().await;
+async fn track_plugin_access_unbound_track_reads_persisted_cumulative_grants() {
+    let fx = Fixture::new().await;
+    fx.host.enable("gitforge").await.unwrap();
     let who = fx.identity(CardRole::Planner).await;
     let track = fx
         .repo
@@ -521,9 +527,128 @@ async fn track_plugin_access_unbound_track_needs_no_extra_grant_storage() {
         .unwrap();
     assert!(track.plugin_scope.is_none());
     assert!(
-        crate::track_plugin_access::current_grants(None, &track, &fx.host)
+        crate::track_plugin_access::current_grants(Some(fx.repo.db()), &track, &fx.host)
             .await
             .unwrap()
             .is_empty()
+    );
+    let id = track.id.clone();
+    let manifests: Vec<_> = ["calendar", "gitforge"]
+        .iter()
+        .map(|id| fx.host.registry().get(id).unwrap())
+        .collect();
+    crate::db::write_in_tx_typed(fx.repo.as_ref(), move |tx| {
+        Box::pin(async move {
+            for manifest in manifests {
+                crate::track_plugin_access::grant_template_plugin_tx(tx, &id, &manifest).await?;
+            }
+            Ok(())
+        })
+    })
+    .await
+    .unwrap();
+    let grants = crate::track_plugin_access::current_grants(Some(fx.repo.db()), &track, &fx.host)
+        .await
+        .unwrap();
+    assert_eq!(
+        grants,
+        ["calendar".to_owned(), "gitforge".to_owned()]
+            .into_iter()
+            .collect()
+    );
+    assert!(
+        visible(&fx, &who)
+            .await
+            .iter()
+            .any(|name| name == "plugin_calendar_add")
+    );
+}
+
+#[tokio::test]
+async fn track_plugin_access_unbound_track_requires_sqlite() {
+    let fx = Fixture::installed().await;
+    let who = fx.identity(CardRole::Planner).await;
+    let track = fx
+        .repo
+        .track_get(who.track_id.as_ref().unwrap())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(track.plugin_scope.is_none());
+    assert!(matches!(
+        crate::track_plugin_access::current_grants(None, &track, &fx.host).await,
+        Err(crate::error::CalmError::Internal(_))
+    ));
+}
+
+#[tokio::test]
+async fn template_plugin_grant_materialized_cli_connector_preserves_declared_identity_when_disabled()
+ {
+    let fx = Fixture::new().await;
+    let who = owned(&fx).await;
+    let track: crate::ids::TrackId = who.track_id.clone().unwrap().into();
+    let declared = install_grant_probe(&fx).await;
+    let live = fx.host.registry().get("grantprobe").unwrap();
+    assert_ne!(
+        crate::track_plugin_access::digest(&declared).unwrap(),
+        crate::track_plugin_access::digest(&live).unwrap()
+    );
+    crate::db::write_in_tx_typed(fx.repo.as_ref(), move |tx| {
+        Box::pin(async move {
+            crate::track_plugin_access::grant_template_plugin_tx(tx, &track, &live).await
+        })
+    })
+    .await
+    .unwrap();
+    let approved: String = sqlx::query_scalar(
+        "SELECT manifest_sha256 FROM track_plugin_access WHERE track_id=? AND plugin_id='grantprobe'",
+    )
+    .bind(who.track_id.as_ref().unwrap())
+    .fetch_one(fx.repo.db().read_pool())
+    .await
+    .unwrap();
+    assert_eq!(
+        approved,
+        crate::track_plugin_access::digest(&declared).unwrap()
+    );
+    assert!(
+        visible(&fx, &who)
+            .await
+            .iter()
+            .any(|n| n == "plugin_grantprobe_ping")
+    );
+    let bound = ConnectionIdentity::CardBound(CardIdentity {
+        mcp_token_hash: None,
+        card_id: who.card_id.clone().into(),
+        role: who.role,
+        provider: who.provider.clone(),
+        session_id: who.session_id.clone(),
+        track_id: who.track_id.clone(),
+        area_id: who.area_id.clone(),
+    });
+    let registry = Arc::new(crate::mcp_server::build_default_registry());
+    let call = || {
+        crate::mcp_server::transport::dispatch_tools_call(
+            &fx.ctx,
+            None,
+            json!({"name":"plugin_grantprobe_ping","arguments":{}}),
+            &bound,
+            &registry,
+        )
+    };
+    assert_eq!(call().await.unwrap()["isError"], false);
+    fx.host.disable("grantprobe").await.unwrap();
+    assert_eq!(call().await.unwrap_err().code, -32503);
+    let status = invoke(&fx, &who, "neige_access_ask", json!({"action":"status"}))
+        .await
+        .unwrap();
+    assert_eq!(
+        status["plugins"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["plugin_id"] == "grantprobe")
+            .unwrap()["authorization"],
+        "extra"
     );
 }

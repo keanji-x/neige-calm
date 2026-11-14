@@ -104,6 +104,9 @@ pub struct NewTrack {
 /// `plugin_scope` is create-time only and is not a field here. Extra JSON keys are ignored.
 #[derive(Clone, Debug, Default, Deserialize, ToSchema)]
 pub struct TrackPatch {
+    /// Bind or switch the template; omitted/null leaves the current binding.
+    #[serde(default)]
+    pub template_id: Option<String>,
     pub title: Option<String>,
     pub sort: Option<f64>,
     /// Pass `Some(Some(ts))` to pin, `Some(None)` to unpin,
@@ -134,12 +137,13 @@ pub struct TrackPatch {
     pub workspace: Option<TrackWorkspacePatch>,
 }
 
-/// Point a track at a repository the user already has. The only transition is
-/// `managed → attached`: a managed path is derived from area and id, and
-/// `attached → *` stays refused, so this is a one-way door stamping `frozen_at`.
+/// Increase workspace isolation: managed → attached → attached with a worktree.
 #[derive(Clone, Debug, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct TrackWorkspacePatch {
+    /// Omitted means attached without isolation, preserving existing PATCH callers.
+    #[serde(default)]
+    pub isolation: Option<calm_types::model::WorkspaceIsolation>,
     /// Must be `attached`. `managed` is a documented 400, not a silent no-op.
     pub kind: TrackWorkspaceKind,
     /// Absolute path to an existing Git work tree, validated before anything is written.
@@ -171,7 +175,7 @@ pub struct CardPatch {
     pub kind: Option<String>,
     pub sort: Option<f64>,
     /// Replaces the stored payload. A payload carrying a server-owned key is refused with 400:
-    /// `terminal_signals`, `terminal_presentation`, `template_context`, `track_creation_context`, `planner_provider`, `assistant_provider`, `side_source_card_id`, `assistant_opening_context`, `permission_mode`, `owner_created`, `settings_path`, `claude_session_id`. Every kernel-minted server-owned value the card already carries is kept.
+    /// `terminal_signals`, `terminal_presentation`, `template_context`, `track_creation_context`, `bound_session_cwd`, `planner_provider`, `assistant_provider`, `side_source_card_id`, `assistant_opening_context`, `permission_mode`, `owner_created`, `settings_path`, `claude_session_id`. Every kernel-minted server-owned value the card already carries is kept.
     #[schema(value_type = Option<Object>)]
     pub payload: Option<serde_json::Value>,
     /// Not patchable via API: surfaced only so a client sending it gets a clear

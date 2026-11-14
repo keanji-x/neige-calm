@@ -1,9 +1,120 @@
-//! The report write boundary. [`persist`] is the one function that performs a report edit and
-//! is private to this module; every caller outside goes through a purpose-specific entry point.
+//! The report write boundary. User and agent operations enter private [`persist`] through
+//! purpose-specific functions. Template binding uses [`apply_template_report_tx`] inside its
+//! caller's transaction; both paths share row persistence and task projection.
 //! [`persist_report`] is the test-only escape hatch (`cfg(any(test, feature = "fixtures"))`).
 
 use super::compact_origination::guard_compact_origination;
 use super::*;
+
+pub(crate) async fn apply_template_report_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    track: &Track,
+    template: &TrackReportPayload,
+) -> Result<Vec<(ActorId, EventScope, Event)>, CalmError> {
+    let card_id: String =
+        sqlx::query_scalar("SELECT id FROM cards WHERE track_id=?1 AND kind='track-report'")
+            .bind(track.id.as_str())
+            .fetch_one(&mut **tx)
+            .await?;
+    let card = crate::db::sqlite::card_for_update_tx(tx, &card_id).await?;
+    let current: TrackReportPayload = serde_json::from_value(card.payload)?;
+    let mut doc = match card_body_crdt_get_tx(tx, &card_id).await? {
+        Some(bytes) => ReportDoc::from_bytes(&bytes).map_err(block_op_internal)?,
+        None => ReportDoc::from_payload(&current),
+    };
+    doc.ensure_blocks_layout(current.blocks.as_deref())
+        .map_err(block_op_internal)?;
+    let before = doc.blocks_snapshot().map_err(block_op_internal)?;
+    let (summary_before, body_before) = doc.project().map_err(block_op_internal)?;
+    if let Some(contract) = super::template_report_contract(&current, template)? {
+        let text = calm_types::report_blocks::flat_text(contract);
+        let replace = before.first().filter(|block| {
+            block.kind == calm_types::report_blocks::KIND_PROSE
+                && calm_types::report_blocks::flat_text(block)
+                    .starts_with(calm_types::report_contract::HEADER_OPEN)
+                && calm_types::report_contract::is_pure_comment_block(
+                    &calm_types::report_blocks::flat_text(block),
+                )
+        });
+        let (id, _) = doc
+            .upsert_block(
+                replace.map(|block| block.id.as_str()),
+                calm_types::report_blocks::KIND_PROSE,
+                &text,
+            )
+            .map_err(block_op_internal)?;
+        if replace.is_none() {
+            doc.move_block(&id, 0).map_err(block_op_internal)?;
+        }
+    } else {
+        doc.update(&template.summary, &template.body)
+            .map_err(block_op_internal)?;
+    }
+    let doc_rev = doc.increment_doc_rev().map_err(block_op_internal)?;
+    let (summary_after, body_after) = doc.project().map_err(block_op_internal)?;
+    let mut payload = TrackReportPayload::new(summary_after.clone(), body_after.clone());
+    payload.doc_rev = doc_rev;
+    payload.blocks = Some(doc.blocks_snapshot().map_err(block_op_internal)?);
+    let blocks = payload.blocks.as_deref().expect("snapshot set above");
+    guard_compact_origination(&before, blocks, EditAuthor::Kernel)?;
+    let (declarations, diagnostics) =
+        calm_types::report_blocks::tasks::project_task_declarations(blocks);
+    let (updated, projection) = write_report_row_and_project_tx(
+        tx,
+        &card_id,
+        track.id.as_str(),
+        &before,
+        &payload,
+        &mut doc,
+        &declarations,
+        &diagnostics,
+    )
+    .await?;
+    let card_scope = EventScope::Card {
+        card: updated.id.clone(),
+        track: track.id.clone(),
+        area: track.area_id.clone(),
+    };
+    let mut events = vec![
+        (
+            ActorId::User,
+            card_scope.clone(),
+            Event::CardUpdated(updated.clone()),
+        ),
+        (
+            ActorId::User,
+            card_scope,
+            Event::TrackReportEdited {
+                track_id: track.id.clone(),
+                card_id: updated.id,
+                author: EditAuthor::Kernel,
+                author_plugin_id: None,
+                edit_id: uuid::Uuid::new_v4().to_string(),
+                summary_before,
+                body_before,
+                summary_after,
+                body_after,
+                agent_message: None,
+            },
+        ),
+    ];
+    if !projection.changed_keys.is_empty() {
+        events.push((
+            ActorId::User,
+            EventScope::Track {
+                track: track.id.clone(),
+                area: track.area_id.clone(),
+            },
+            Event::PlanUpdated {
+                track_id: track.id.clone(),
+                changed_keys: projection.changed_keys,
+                agent_message: None,
+            },
+        ));
+    }
+    events.extend(projection.kernel_events);
+    Ok(events)
+}
 
 /// The arguments of [`structural_init_report_tx`], as one value. The `doc` arrives already
 /// authoritative and this door applies no op to it: routing through `apply_report_op` would
@@ -295,7 +406,7 @@ pub async fn persist_report(
 
 /// Apply one [`ReportDocOp`] to the report card's CRDT, write the row, and emit
 /// `Event::CardUpdated` + `Event::TrackReportEdited` from the same transaction. Private: every
-/// report edit goes through here. `target.current_payload` seeds only the first-time
+/// user or agent report operation goes through here. `target.current_payload` seeds only the first-time
 /// `from_payload` branch; once `body_crdt` is non-NULL the doc is the source.
 #[allow(clippy::too_many_arguments)]
 async fn persist(

@@ -13,8 +13,28 @@ import type { ApiRequest, ApiTransportPort, ApiTransportResponse } from '../../.
 import { createUnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import { APP_BASEPATH, createAppRouter } from './public.tsx';
 import { bootTestCardRuntime } from './test-card-runtime.ts';
-import { ISSUE_INPUT_BODY, ISSUE_INPUT_SCHEMA } from '../../features/area/new-track/template-input-fixture.ts';
 import { ThemeProvider } from '../theme/public.tsx';
+
+const restored = vi.hoisted(() => ({ request: null as import('./new-track-drafts.tsx').TrackCreationRequest | null }));
+
+vi.mock('./new-track-drafts.tsx', async importOriginal => {
+  const original = await importOriginal<typeof import('./new-track-drafts.tsx')>();
+  const { useLayoutEffect, useMemo } = await import('react');
+  return { ...original, useNewTrackSession: (...args: Parameters<typeof original.useNewTrackSession>) => {
+    const value = original.useNewTrackSession(...args);
+    const request = value.session === null ? null : restored.request;
+    const session = useMemo(() => request === null || value.session === null ? value.session : {
+      ...value.session, request, form: { message: request.body.first_message ?? '', cwd: request.body.cwd ?? '' },
+    }, [request, value.session]);
+    useLayoutEffect(() => {
+      if (request === null || session === null) return;
+      restored.request = null;
+      value.store.update(args[0], { request, form: session.form });
+    }, [request, session, value.store, args]);
+    return { ...value, session };
+  } };
+
+});
 
 /** The fixed unknown state of a create whose answer was lost (#2131): never the transport's text. */
 const UNCONFIRMED_TRACK = 'The track creation is unconfirmed. Try again to check the same track.';
@@ -36,8 +56,6 @@ const TASK_LABEL = 'What this track should do';
 const FOLDER_PLACEHOLDER = 'Neige workspace';
 const FOLDER_CHIP_NAME = `Repo: ${FOLDER_PLACEHOLDER}`;
 
-/* The template chip always names the current choice, "No template" until one is picked. */
-const TEMPLATE_CHIP = /^Template: /;
 
 const AREA = { id: 'c1', name: 'Work', color: '#5B8DEF', sort: 1, kind: 'user', created_at: 1, updated_at: 1 };
 const OTHER = { id: 'c2', name: 'Reading', color: '#8B7FE8', sort: 2, kind: 'user', created_at: 1, updated_at: 1 };
@@ -57,17 +75,6 @@ const TRACK_ROW = { workspace: { isolation: 'none' as const, kind: 'attached' as
 const CONFLICT = {
   folder_id: 4, area_id: 'c1', conflict_path: '/srv/app', conflict_kind: 'descendant',
 };
-
-/* One template bound to a running plugin (an `input_schema`, therefore fields) and one that is not. */
-const TEMPLATES = [
-  { id: 'small-change', title: 'Small change', description: null, availability: { status: 'ready' as const }, tasks: [{ key: 'inspect', goal: 'Read the change.' }] },
-  {
-    id: 'dev',
-    title: 'Development',
-    input_schema: JSON.parse(ISSUE_INPUT_SCHEMA) as unknown,
-    description: null, availability: { status: 'ready' as const }, tasks: [{ key: 'inspect-issue', goal: 'Read the bound issue.' }],
-  },
-];
 
 /* The Claude CLI's own list (#1822): its effort levels carry no description, and Haiku declares none. */
 const CLAUDE_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'].map((level) => ({ reasoning_effort: level, description: null }));
@@ -105,8 +112,6 @@ async function pick(trigger: string, group: 'Codex' | 'Claude', item: string | R
 }
 
 function harness(options: {
-  templates?: unknown;
-  templateDetailDelayMs?: number;
   areaDefaults?: Readonly<{ default_template_id: string | null; default_cwd: string | null }>;
   otherAreaDefaults?: Readonly<{ default_template_id: string | null; default_cwd: string | null }>;
   trackCreate?: ApiTransportResponse;
@@ -208,23 +213,6 @@ function harness(options: {
           source: 'live', fetched_at_ms: 1,
         } });
       }
-      if (request.path === '/api/track-templates') {
-        // `undefined` here is the read failing outright.
-        const templates = options.templates;
-        return templates === undefined
-          ? Promise.resolve({ status: 500, statusText: 'Server Error', body: { message: 'boom' } })
-          : Promise.resolve({ status: 200, statusText: 'OK', body: templates });
-      }
-      if (request.method === 'GET' && request.path.endsWith('/plugin-guides')) return Promise.resolve({ status: 200, statusText: 'OK', body: [] });
-      if (request.method === 'GET' && request.path.startsWith('/api/track-templates/')) {
-        const id = decodeURIComponent(request.path.slice('/api/track-templates/'.length));
-        if (id !== 'dev' && id !== 'small-change') return Promise.resolve({ status: 404, statusText: 'Not Found', body: {} });
-        const detail = { status: 200, statusText: 'OK', body: { id, title: id, description: null, instructions: null,
-          body: id === 'dev' ? ISSUE_INPUT_BODY : '# Template source' } };
-        return options.templateDetailDelayMs
-          ? new Promise((resolve) => setTimeout(() => resolve(detail), options.templateDetailDelayMs))
-          : Promise.resolve(detail);
-      }
       /* Served rather than left to fall through to `[]`: a decode failure would look
                identical to "the feature did not run". */
       if (request.method === 'GET' && request.path === '/api/tracks/w-new') {
@@ -294,7 +282,7 @@ function harness(options: {
 
 describe('New track model selection', () => {
   it('keeps model and effort in the Area draft and retries the original creation configuration', async () => {
-    const { sent } = harness({ templates: [], loseFirstCreateAck: true });
+    const { sent } = harness({ loseFirstCreateAck: true });
     await userEvent.click(await screen.findByRole('button', { name: 'New track in Work' }));
     await findComposer();
     await userEvent.click(await screen.findByRole('button', { name: 'Model: Default' }));
@@ -324,7 +312,7 @@ describe('New track model selection', () => {
   });
 
   it('omits overrides after returning to the installation default', async () => {
-    const { sent } = harness({ templates: [] });
+    const { sent } = harness({ });
     await userEvent.click(await screen.findByRole('button', { name: 'New track in Work' }));
     await findComposer();
     await userEvent.click(await screen.findByRole('button', { name: 'Model: Default' }));
@@ -342,7 +330,7 @@ describe('New track model selection', () => {
   });
 
   it('offers no Claude group on a server without Claude Planners', async () => {
-    harness({ templates: [] });
+    harness({ });
     await userEvent.click(await screen.findByRole('button', { name: 'New track in Work' }));
     await findComposer();
     await userEvent.click(await screen.findByRole('button', { name: 'Model: Default' }));
@@ -352,7 +340,7 @@ describe('New track model selection', () => {
   });
 
   it('offers no Claude group before its catalog has answered', async () => {
-    harness({ templates: [], claudePlanner: true, heldClaudeCatalog: new Promise<void>(() => undefined) });
+    harness({ claudePlanner: true, heldClaudeCatalog: new Promise<void>(() => undefined) });
     await userEvent.click(await screen.findByRole('button', { name: 'New track in Work' }));
     await findComposer();
     await userEvent.click(await screen.findByRole('button', { name: 'Model: Default' }));
@@ -362,7 +350,7 @@ describe('New track model selection', () => {
 
   it('creates a fresh blank track with unavailable Claude and its server reason (#3037)', async () => {
     const reason = 'not logged in — run `claude /login` with CLAUDE_CONFIG_DIR=/srv/claude';
-    const { sent } = harness({ templates: [], claudePlanner: true, claudeUnavailable: reason });
+    const { sent } = harness({ claudePlanner: true, claudeUnavailable: reason });
     await userEvent.click(await screen.findByRole('button', { name: 'New track in Work' }));
     await findComposer();
     (await screen.findByRole('button', { name: 'Model: Codex Default' })).focus();
@@ -383,7 +371,7 @@ describe('New track model selection', () => {
 
   it('creates on an unavailable Codex: its rows stay pickable, as create still accepts it (#1817)', async () => {
     const reason = 'shared codex app-server is not running';
-    const { sent } = harness({ templates: [], claudePlanner: true, codexUnavailable: reason });
+    const { sent } = harness({ claudePlanner: true, codexUnavailable: reason });
     await userEvent.click(await screen.findByRole('button', { name: 'New track in Work' }));
     await findComposer();
     await pick('Model: Codex Default', 'Codex', 'GPT-5');
@@ -396,7 +384,7 @@ describe('New track model selection', () => {
   });
 
   it('switches a Claude draft back to Codex while Codex is unavailable (#1817)', async () => {
-    const { sent } = harness({ templates: [], claudePlanner: true, codexUnavailable: 'shared codex app-server is not running' });
+    const { sent } = harness({ claudePlanner: true, codexUnavailable: 'shared codex app-server is not running' });
     await userEvent.click(await screen.findByRole('button', { name: 'New track in Work' }));
     await findComposer();
     await pick('Model: Codex Default', 'Claude', /^Sonnet/);
@@ -409,7 +397,7 @@ describe('New track model selection', () => {
   });
 
   it('a Claude pick sets the provider and the value, and drops a retained effort', async () => {
-    const { sent } = harness({ templates: [], claudePlanner: true });
+    const { sent } = harness({ claudePlanner: true });
     await userEvent.click(await screen.findByRole('button', { name: 'New track in Work' }));
     await findComposer();
     await pick('Model: Codex Default', 'Codex', 'GPT-5');
@@ -428,7 +416,7 @@ describe('New track model selection', () => {
   });
 
   it('a Claude Default sends the provider and no model', async () => {
-    const { sent } = harness({ templates: [], claudePlanner: true });
+    const { sent } = harness({ claudePlanner: true });
     await userEvent.click(await screen.findByRole('button', { name: 'New track in Work' }));
     await findComposer();
     await pick('Model: Codex Default', 'Claude', /^Default/);
@@ -442,7 +430,7 @@ describe('New track model selection', () => {
   });
 
   it('a Codex pick after a Claude one starts again on Codex', async () => {
-    const { sent } = harness({ templates: [], claudePlanner: true });
+    const { sent } = harness({ claudePlanner: true });
     await userEvent.click(await screen.findByRole('button', { name: 'New track in Work' }));
     await findComposer();
     await pick('Model: Codex Default', 'Claude', /^Opus \(1M context\)/);
@@ -457,7 +445,7 @@ describe('New track model selection', () => {
   });
 
   it('keeps the choice per Area draft and resets it once the track is created', async () => {
-    harness({ templates: [], claudePlanner: true });
+    harness({ claudePlanner: true });
     await userEvent.click(await screen.findByRole('button', { name: 'New track in Work' }));
     await findComposer();
     await pick('Model: Codex Default', 'Claude', /^Haiku/);
@@ -476,7 +464,7 @@ describe('New track model selection', () => {
   });
 
   it('inside a Claude track lists only the Claude CLI\'s models, offers the default\'s levels and stores a pick', async () => {
-    const { sent } = harness({ templates: [], claudePlanner: true, plannerProvider: 'claude' });
+    const { sent } = harness({ claudePlanner: true, plannerProvider: 'claude' });
     await userEvent.click(await screen.findByRole('button', { name: 'New track in Work' }));
     await findComposer();
     await pick('Model: Codex Default', 'Claude', /^Sonnet/);
@@ -502,7 +490,7 @@ describe('New track model selection', () => {
   });
 
   it('names the Codex Planner backend on every create', async () => {
-    const { sent } = harness({ templates: [] });
+    const { sent } = harness({ });
     await userEvent.click(await screen.findByRole('button', { name: 'New track in Work' }));
     await findComposer();
     await userEvent.type(screen.getByLabelText(TASK_LABEL), 'Start the Planner');
@@ -516,7 +504,7 @@ describe('New track model selection', () => {
 
 describe('Track creation drafts survive navigation', () => {
   it('explains an attached repository divergence and retries the same request', async () => {
-    const { sent } = harness({ templates: [], trackCreateSequence: [{
+    const { sent } = harness({ trackCreateSequence: [{
       status: 409, statusText: 'Conflict',
       body: { code: 'attached_repo_diverged', error: 'The repository needs attention.' },
     }] });
@@ -533,7 +521,7 @@ describe('Track creation drafts survive navigation', () => {
   });
 
   it.each(['offline', 'rate-limit', 'folder-conflict'] as const)('keeps an earlier unconfirmed request after a later %s rejection', async (rejection) => {
-    const { sent } = harness({ templates: [], loseFirstCreateAck: true,
+    const { sent } = harness({ loseFirstCreateAck: true,
       otherAreaDefaults: { default_template_id: null, default_cwd: '/srv/app' },
       trackCreateSequence: rejection === 'offline' ? undefined : [
         rejection === 'rate-limit'
@@ -569,13 +557,11 @@ describe('Track creation drafts survive navigation', () => {
   });
 
   it('restores unsent text and options independently for each Area', async () => {
-    harness({ templates: TEMPLATES, templateDetailDelayMs: 100 });
+    harness({ });
     await userEvent.click(await screen.findByRole('button', { name: 'New track in Work' }));
     await findComposer();
     await userEvent.type(screen.getByLabelText(TASK_LABEL), 'Unsent intent');
-    await userEvent.click(screen.getByRole('button', { name: 'Template: No template' }));
-    await userEvent.click(screen.getByRole('menuitem', { name: /Development/ }));
-    await userEvent.type(await screen.findByLabelText('Issue URL'), 'unfinished-url');
+
     await userEvent.click(screen.getByRole('button', { name: 'New track in Reading' }));
     await findComposer();
     expect(composerText()).toBe('');
@@ -583,14 +569,13 @@ describe('Track creation drafts survive navigation', () => {
     await userEvent.click(screen.getByRole('button', { name: 'New track in Work' }));
     await findComposer();
     expect(composerText()).toBe('Unsent intent');
-    expect((await screen.findByLabelText<HTMLInputElement>('Issue URL')).value).toBe('unfinished-url');
     await userEvent.click(screen.getByRole('button', { name: 'New track in Reading' }));
     await findComposer();
     expect(composerText()).toBe('Other draft');
   }, 15_000);
 
   it('retries the exact lost-ack request and key after leaving and returning', async () => {
-    const { sent } = harness({ templates: TEMPLATES, loseFirstCreateAck: true });
+    const { sent } = harness({ loseFirstCreateAck: true });
     await userEvent.click(await screen.findByRole('button', { name: 'New track in Work' }));
     await findComposer();
     await userEvent.type(screen.getByLabelText(TASK_LABEL), '  Create once  ');
@@ -613,7 +598,7 @@ describe('Track creation drafts survive navigation', () => {
   });
 
   it('retains an unsent draft when its parent is deleted and prevents an orphan create', async () => {
-    const { sent, client } = harness({ templates: TEMPLATES });
+    const { sent, client } = harness({ });
     await userEvent.click(await screen.findByRole('button', { name: 'New track in Work' }));
     await findComposer();
     await userEvent.type(screen.getByLabelText(TASK_LABEL), 'Keep this after Area deletion');
@@ -628,7 +613,7 @@ describe('Track creation drafts survive navigation', () => {
   it('keeps a pending creation leased across route remount and offers its late acknowledgement', async () => {
     let release!: () => void;
     const heldCreate = new Promise<void>((resolve) => { release = resolve; });
-    const { sent } = harness({ templates: TEMPLATES, heldCreate });
+    const { sent } = harness({ heldCreate });
     await userEvent.click(await screen.findByRole('button', { name: 'New track in Work' }));
     await findComposer();
     await userEvent.type(screen.getByLabelText(TASK_LABEL), 'Create while away');
@@ -692,20 +677,20 @@ describe('the new-track page is a route reached from Area groups', () => {
 
   it('remounts the route when switching directly between Areas and takes only the new Area defaults', async () => {
     const { sent } = harness({
-      templates: TEMPLATES,
+
       areaDefaults: { default_template_id: 'small-change', default_cwd: '/srv/work-a' },
       otherAreaDefaults: { default_template_id: null, default_cwd: '/srv/work-b' },
     });
     await userEvent.click(await screen.findByRole('button', { name: 'New track in Work' }));
     await findComposer();
-    expect(screen.getByRole('button', { name: 'Template: Small change' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /^Template:/ })).toBeNull();
     expect(screen.getByRole('button', { name: 'Repo: work-a (/srv/work-a)' })).toBeTruthy();
     await userEvent.type(screen.getByLabelText(TASK_LABEL), 'Draft for A');
 
     await userEvent.click(screen.getByRole('button', { name: 'New track in Reading' }));
     await waitFor(() => expect(window.location.pathname).toBe(`${APP_BASEPATH}/area/c2/new`));
     expect(composerText()).toBe('');
-    expect(screen.getByRole('button', { name: 'Template: No template' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /^Template:/ })).toBeNull();
     expect(screen.getByRole('button', { name: 'Repo: work-b (/srv/work-b)' })).toBeTruthy();
 
     await userEvent.type(screen.getByLabelText(TASK_LABEL), 'Draft for B');
@@ -719,7 +704,7 @@ describe('the new-track page is a route reached from Area groups', () => {
   it('does not let a create started in one Area navigate away after switching to another Area', async () => {
     let releaseCreate!: () => void;
     const heldCreate = new Promise<void>((resolve) => { releaseCreate = resolve; });
-    const { sent } = harness({ templates: TEMPLATES, heldCreate });
+    const { sent } = harness({ heldCreate });
     await userEvent.click(await screen.findByRole('button', { name: 'New track in Work' }));
     await findComposer();
     await userEvent.type(screen.getByLabelText(TASK_LABEL), 'Create in A');
@@ -752,11 +737,11 @@ describe('the new-track page is a route reached from Area groups', () => {
   /* Asserted on key absence: `title: ''` reaches the same stored value, and only a
        missing key leaves `neige_track_rename` able to name the track. */
   it('creates with no title control on screen and no title key on the wire', async () => {
-    const { sent } = harness({ templates: TEMPLATES });
+    const { sent } = harness({ });
     await userEvent.click(await screen.findByRole('button', { name: 'New track in Reading' }));
     // Exposed first, so the absence checks below cannot pass vacuously.
     expect(await findComposer()).toBeTruthy();
-    /* By name, not by counting textboxes: the composer and the template input are textboxes too. */
+    /* Identify the title control by name; the composer is also a textbox. */
     expect(screen.queryByRole('textbox', { name: /title/i })).toBeNull();
     expect(screen.queryByRole('combobox', { name: /title/i })).toBeNull();
     expect(screen.queryByLabelText(/title/i)).toBeNull();
@@ -773,7 +758,7 @@ describe('the new-track page is a route reached from Area groups', () => {
   });
 
   it('posts the opener\'s area_id and omits cwd / attach_folder with no folder chosen', async () => {
-    const { sent } = harness({ templates: TEMPLATES });
+    const { sent } = harness({ });
     await userEvent.click(await screen.findByRole('button', { name: 'New track in Reading' }));
     // Exposed first: the absence checks below would pass vacuously against a page that never rendered.
     expect(await findComposer()).toBeTruthy();
@@ -798,15 +783,15 @@ describe('the new-track page is a route reached from Area groups', () => {
     expect(body).not.toHaveProperty('template_input');
   });
 
-  it('turns the Area defaults into an explicit template and attached-folder request', async () => {
+  it('ignores the Area template default while preserving its directory snapshot', async () => {
     const message = '  Read it exactly  ';
     const { sent } = harness({
-      templates: TEMPLATES,
+
       areaDefaults: { default_template_id: 'small-change', default_cwd: '/srv/ area ' },
     });
     await userEvent.click(await screen.findByRole('button', { name: 'New track in Work' }));
     expect(await findComposer()).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Template: Small change' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /^Template:|^Recipe:/i })).toBeNull();
     const folder = screen.getByRole('button', { name: 'Repo: area (/srv/ area )' });
     expect(folder.getAttribute('aria-label')).toBe('Repo:  area  (/srv/ area )');
     await userEvent.type(screen.getByLabelText(TASK_LABEL), message);
@@ -815,21 +800,21 @@ describe('the new-track page is a route reached from Area groups', () => {
     expect(createdTrackBodies(sent)[0]).toMatchObject({
       area_id: 'c1',
       first_message: message,
-      template_id: 'small-change',
       cwd: '/srv/ area ',
       attach_folder: true,
     });
+    expect(createdTrackBodies(sent)[0]).not.toHaveProperty('template_id');
+    expect(createdTrackBodies(sent)[0]).not.toHaveProperty('template_input');
+    expect(createdTrackBodies(sent)[0]).not.toHaveProperty('recipe_id');
   });
 
   it('lets one Track clear Area defaults back to a new managed folder', async () => {
     const { sent } = harness({
-      templates: TEMPLATES,
+
       areaDefaults: { default_template_id: 'small-change', default_cwd: '/srv/area-default' },
     });
     await userEvent.click(await screen.findByRole('button', { name: 'New track in Work' }));
     expect(await findComposer()).toBeTruthy();
-    await userEvent.click(screen.getByRole('button', { name: TEMPLATE_CHIP }));
-    await userEvent.click(await screen.findByRole('menuitem', { name: /^No template/ }));
     await userEvent.click(screen.getByRole('button', { name: 'Use a Neige workspace instead' }));
     await userEvent.type(screen.getByLabelText(TASK_LABEL), 'Read it');
     await userEvent.click(screen.getByRole('button', { name: 'Create track' }));
@@ -842,7 +827,7 @@ describe('the new-track page is a route reached from Area groups', () => {
 
   /* The kernel forwards `first_message` untrimmed and hashes it untrimmed, so surrounding whitespace is content. */
   it('posts the sentence exactly as typed, whitespace and all', async () => {
-    const { sent } = harness({ templates: TEMPLATES });
+    const { sent } = harness({ });
     await userEvent.click(await screen.findByRole('button', { name: 'New track in Reading' }));
     await findComposer();
     const padded = '  keep indentation  ';
@@ -855,7 +840,7 @@ describe('the new-track page is a route reached from Area groups', () => {
 
   /* With `attach_folder` omitted the kernel refuses any path no area has already claimed. */
   it('posts the picked folder as cwd with attach_folder: true', async () => {
-    const { sent } = harness({ templates: TEMPLATES });
+    const { sent } = harness({ });
     await userEvent.click(await screen.findByRole('button', { name: 'New track in Work' }));
     expect(await findComposer()).toBeTruthy();
     await userEvent.type(screen.getByLabelText(TASK_LABEL), 'Read it');
@@ -876,32 +861,10 @@ describe('the new-track page is a route reached from Area groups', () => {
     expect(body).not.toHaveProperty('template_id');
   });
 
-  it('carries a chosen folder and a chosen template on the same POST', async () => {
-    const { sent } = harness({ templates: TEMPLATES });
-    await userEvent.click(await screen.findByRole('button', { name: 'New track in Work' }));
-    expect(await findComposer()).toBeTruthy();
-    await userEvent.type(screen.getByLabelText(TASK_LABEL), 'Read it');
-    await userEvent.click(screen.getByRole('button', { name: TEMPLATE_CHIP }));
-    await userEvent.click(await screen.findByRole('menuitem', { name: /^Small change/ }));
-
-    await userEvent.click(await screen.findByRole('button', { name: FOLDER_CHIP_NAME }));
-    await screen.findByDisplayValue('/srv/app/');
-    await userEvent.click(await screen.findByRole('button', { name: 'Select this directory' }));
-    await userEvent.click(await screen.findByRole('button', { name: 'Create track' }));
-
-    await waitFor(() => expect(createdTrackBodies(sent)).toHaveLength(1));
-    expect(createdTrackBodies(sent)[0]).toMatchObject({
-      area_id: 'c1',
-      template_id: 'small-change',
-      cwd: '/srv/app',
-      attach_folder: true,
-    });
-  });
-
   /* The 409 body has no `error` key, so `ApiError.message` is the bare status text. */
   it('renders the structured folder conflict, not the word Conflict', async () => {
     harness({
-      templates: TEMPLATES,
+
       trackCreate: { status: 409, statusText: 'Conflict', body: CONFLICT },
     });
     await userEvent.click(await screen.findByRole('button', { name: 'New track in Reading' }));
@@ -922,7 +885,7 @@ describe('the new-track page is a route reached from Area groups', () => {
     'explicitly reuses the claimed directory in the current Area for a %s conflict',
     async (conflictKind) => {
     const { sent } = harness({
-      templates: TEMPLATES,
+
       otherAreaDefaults: { default_template_id: null, default_cwd: '/srv/app' },
       trackCreateSequence: [
         { status: 409, statusText: 'Conflict', body: { ...CONFLICT, conflict_kind: conflictKind } },
@@ -932,8 +895,6 @@ describe('the new-track page is a route reached from Area groups', () => {
     await userEvent.click(await screen.findByRole('button', { name: 'New track in Reading' }));
     await findComposer();
     await userEvent.type(screen.getByLabelText(TASK_LABEL), 'Read it');
-    await userEvent.click(screen.getByRole('button', { name: TEMPLATE_CHIP }));
-    await userEvent.click(await screen.findByRole('menuitem', { name: /^Small change/ }));
     await userEvent.click(screen.getByRole('button', { name: 'Create track' }));
 
     const alert = await within(await screen.findByRole('main')).findByRole('alert', {}, { timeout: 5_000 });
@@ -942,11 +903,11 @@ describe('the new-track page is a route reached from Area groups', () => {
     const [failed, recovered] = createdTrackRequests(sent);
     expect(failed?.body).toMatchObject({
       area_id: 'c2', cwd: '/srv/app', attach_folder: true,
-      first_message: 'Read it', template_id: 'small-change',
+      first_message: 'Read it',
     });
     expect(recovered?.body).toMatchObject({
       area_id: 'c2', cwd: '/srv/app', attach_folder: true,
-      first_message: 'Read it', template_id: 'small-change',
+      first_message: 'Read it',
       allow_cross_area_cwd: { folder_id: 4, area_id: 'c1' },
     });
     expect(recovered?.headers?.['Idempotency-Key']).toBeDefined();
@@ -957,7 +918,7 @@ describe('the new-track page is a route reached from Area groups', () => {
 
   it('unlocks the draft when vanished directory consent is rejected as invalid input', async () => {
     const { sent } = harness({
-      templates: [],
+
       otherAreaDefaults: { default_template_id: null, default_cwd: '/srv/app' },
       trackCreateSequence: [
         { status: 409, statusText: 'Conflict', body: CONFLICT },
@@ -985,7 +946,7 @@ describe('the new-track page is a route reached from Area groups', () => {
 
   it('does not offer an owning-Area retry for an ancestor conflict that moving cannot resolve', async () => {
     harness({
-      templates: TEMPLATES,
+
       trackCreate: {
         status: 409,
         statusText: 'Conflict',
@@ -1003,7 +964,7 @@ describe('the new-track page is a route reached from Area groups', () => {
 
   it('uses the visible current draft when the owning-Area recovery is clicked', async () => {
     const { sent } = harness({
-      templates: TEMPLATES,
+
       otherAreaDefaults: { default_template_id: null, default_cwd: '/srv/app' },
       trackCreateSequence: [
         { status: 409, statusText: 'Conflict', body: CONFLICT },
@@ -1014,15 +975,11 @@ describe('the new-track page is a route reached from Area groups', () => {
     await findComposer();
     const field = screen.getByLabelText(TASK_LABEL);
     await userEvent.type(field, 'Old message');
-    await userEvent.click(screen.getByRole('button', { name: TEMPLATE_CHIP }));
-    await userEvent.click(await screen.findByRole('menuitem', { name: /^Small change/ }));
     await userEvent.click(screen.getByRole('button', { name: 'Create track' }));
 
     const alert = await within(await screen.findByRole('main')).findByRole('alert', {}, { timeout: 5_000 });
     await userEvent.clear(field);
     await userEvent.type(field, 'Current message');
-    await userEvent.click(screen.getByRole('button', { name: TEMPLATE_CHIP }));
-    await userEvent.click(await screen.findByRole('menuitem', { name: /^No template/ }));
     await userEvent.click(within(alert).getByRole('button', { name: 'Reuse directory in Reading' }));
 
     await waitFor(() => expect(createdTrackRequests(sent)).toHaveLength(2));
@@ -1037,7 +994,7 @@ describe('the new-track page is a route reached from Area groups', () => {
 
   it('withdraws the owning-Area recovery when the conflicting folder changes', async () => {
     const { sent } = harness({
-      templates: TEMPLATES,
+
       otherAreaDefaults: { default_template_id: null, default_cwd: '/srv/app' },
       trackCreateSequence: [
         { status: 409, statusText: 'Conflict', body: CONFLICT },
@@ -1062,55 +1019,11 @@ describe('the new-track page is a route reached from Area groups', () => {
     expect(retried?.body).not.toHaveProperty('attach_folder');
   });
 
-  it('carries the chosen template onto the create POST', async () => {
-    const { sent } = harness({ templates: TEMPLATES });
-    await userEvent.click(await screen.findByRole('button', { name: 'New track in Reading' }));
-    await findComposer();
-    await userEvent.type(screen.getByLabelText(TASK_LABEL), 'Fix the thing');
-    /* The option only exists once the template read has landed, so the wait is on the option, not the trigger. */
-    await userEvent.click(screen.getByRole('button', { name: TEMPLATE_CHIP }));
-    await userEvent.click(await screen.findByRole('menuitem', { name: /^Development/ }));
-    await userEvent.type(
-      await screen.findByLabelText('Issue URL'),
-      'https://github.com/keanji-x/neige-calm/issues/1209',
-    );
-    await userEvent.click(screen.getByRole('button', { name: 'Create track' }));
-    await waitFor(() => expect(createdTrackBodies(sent)).toHaveLength(1));
-    expect(createdTrackBodies(sent)[0]).toMatchObject({
-      area_id: 'c2',
-      template_id: 'dev',
-      template_input: {
-        issue_url: 'https://github.com/keanji-x/neige-calm/issues/1209',
-        repo: 'keanji-x/neige-calm',
-        issue_number: 1209,
-        merge_policy: 'ask',
-      },
-    });
-  });
-
-  it('sends an unbound template as an id with no template_input', async () => {
-    const { sent } = harness({ templates: TEMPLATES });
-    await userEvent.click(await screen.findByRole('button', { name: 'New track in Reading' }));
-    await findComposer();
-    await userEvent.type(screen.getByLabelText(TASK_LABEL), 'Tiny fix');
-    await userEvent.click(screen.getByRole('button', { name: TEMPLATE_CHIP }));
-    await userEvent.click(await screen.findByRole('menuitem', { name: /^Small change/ }));
-    await userEvent.click(screen.getByRole('button', { name: 'Create track' }));
-    await waitFor(() => expect(createdTrackBodies(sent)).toHaveLength(1));
-    const body = createdTrackBodies(sent)[0] as Record<string, unknown>;
-    expect(body).toMatchObject({ template_id: 'small-change', first_message: 'Tiny fix' });
-    expect(body).not.toHaveProperty('title');
-    expect(plannerInputTexts(sent)).toEqual([]);
-    expect(body).not.toHaveProperty('template_input');
-  });
-
-  it('still creates a track when the template read fails outright', async () => {
+  it('creates without reading template or recipe rosters', async () => {
     const { sent } = harness();
     await userEvent.click(await screen.findByRole('button', { name: 'New track in Reading' }));
     await findComposer();
-    /* Wait for the failure to land, not for the request to leave: waiting on `sent`
-           only proves the query started. */
-    await screen.findByText(/Could not load templates/);
+    expect(sent.some(request => request.path === '/api/track-templates' || request.path === '/api/track-recipes')).toBe(false);
     await userEvent.type(screen.getByLabelText(TASK_LABEL), 'Read it anyway');
     await userEvent.click(screen.getByRole('button', { name: 'Create track' }));
     await waitFor(() => expect(createdTrackBodies(sent)).toHaveLength(1));
@@ -1124,7 +1037,7 @@ describe('the new-track page is a route reached from Area groups', () => {
 
 describe('the route refuses an area id that no longer exists', () => {
   it('reports a deleted area instead of rendering a working composer', async () => {
-    harness({ templates: TEMPLATES, path: '/area/c9/new' });
+    harness({ path: '/area/c9/new' });
     const alert = await within(await screen.findByRole('main')).findByRole('alert');
     expect(alert.textContent).toContain('This area could not be found.');
     expect(screen.queryByLabelText(TASK_LABEL)).toBeNull();
@@ -1137,7 +1050,7 @@ describe('the route refuses an area id that no longer exists', () => {
   it('renders the composer for an area that does exist, and only once the list has landed', async () => {
     let releaseAreas = (): void => undefined;
     const held = new Promise<void>((resolve) => { releaseAreas = () => { resolve(); }; });
-    harness({ templates: TEMPLATES, path: '/area/c1/new', heldAreas: held });
+    harness({ path: '/area/c1/new', heldAreas: held });
 
     await screen.findByRole('button', { name: 'Go to Today' });
     expect(screen.queryByLabelText(TASK_LABEL)).toBeNull();
@@ -1153,7 +1066,7 @@ describe('the route refuses an area id that no longer exists', () => {
   it('renders neither a composer nor a verdict while the area list is still loading', async () => {
     let releaseAreas = (): void => undefined;
     const held = new Promise<void>((resolve) => { releaseAreas = () => { resolve(); }; });
-    harness({ templates: TEMPLATES, path: '/area/c9/new', heldAreas: held });
+    harness({ path: '/area/c9/new', heldAreas: held });
 
     /* Without this the absence checks below would pass against an app that had not rendered at all. */
     await screen.findByRole('button', { name: 'Go to Today' });
@@ -1169,7 +1082,7 @@ describe('the route refuses an area id that no longer exists', () => {
 
   /* `areas` falls back to `[]` on failure with `areasLoading` false, so "has loading stopped" would read a 500 as a landed list. */
   it('reports a failed area read instead of a composer or a deletion verdict', async () => {
-    harness({ templates: TEMPLATES, path: '/area/c1/new', areasFail: true });
+    harness({ path: '/area/c1/new', areasFail: true });
 
     /* Scoped to `main`: the rail reports the same failed read in its own ErrorBox.
            `waitFor`, because the failure needs a tick to land. */
@@ -1189,7 +1102,7 @@ describe('the route refuses an area id that no longer exists', () => {
 
 describe('the sentence is delivered by the create, and the track opens on it', () => {
   it('sends the sentence once, on the create, and by no second write', async () => {
-    const { sent } = harness({ templates: TEMPLATES });
+    const { sent } = harness({ });
     await userEvent.click(await screen.findByRole('button', { name: 'New track in Reading' }));
     await findComposer();
     await userEvent.click(screen.getByLabelText(TASK_LABEL));
@@ -1208,7 +1121,7 @@ describe('the sentence is delivered by the create, and the track opens on it', (
   });
 
   it('opens the track\'s planner conversation on arrival', async () => {
-    harness({ templates: TEMPLATES });
+    harness({ });
     await userEvent.click(await screen.findByRole('button', { name: 'New track in Reading' }));
     await findComposer();
     await userEvent.click(screen.getByLabelText(TASK_LABEL));
@@ -1224,7 +1137,7 @@ describe('the sentence is delivered by the create, and the track opens on it', (
        planner card's item read answers with it; nothing is minted on the client. */
   it('shows the sentence that made the track from the row the kernel writes at drain', async () => {
     const { sent } = harness({
-      templates: TEMPLATES,
+
       plannerItems: [{
         id: 1, worker_session_id: 'r', card_id: 'card-planner', track_id: 'w-new', thread_id: 't',
         turn_id: null, turn_error_text: null, item_uuid: 'entry-0001', item_type: 'userMessage', method: 'item/completed',
@@ -1254,7 +1167,7 @@ describe('the sentence is delivered by the create, and the track opens on it', (
   });
 
   it('shows nothing for the first sentence until the kernel has written its row', async () => {
-    harness({ templates: TEMPLATES });
+    harness({ });
     await userEvent.click(await screen.findByRole('button', { name: 'New track in Reading' }));
     await findComposer();
     await userEvent.click(screen.getByLabelText(TASK_LABEL));
@@ -1446,7 +1359,7 @@ describe('the sentence is delivered by the create, and the track opens on it', (
 describe('a refused create that names a field', () => {
   it('names the input field a refused create is about', async () => {
     /* The kernel's exact answer to a `template_input` missing a required key: the reason, with the field apart. */
-    harness({ templates: [], trackCreateSequence: [{ status: 400, statusText: 'Bad Request', body: {
+    harness({ trackCreateSequence: [{ status: 400, statusText: 'Bad Request', body: {
       error: 'required field is missing', code: 'bad_request', field: 'template_input.issue_url',
     } }] });
     await userEvent.click(await screen.findByRole('button', { name: 'New track in Work' }));
@@ -1456,4 +1369,23 @@ describe('a refused create that names a field', () => {
     expect((await within(await screen.findByRole('main')).findByRole('alert')).textContent)
       .toContain('template_input.issue_url: required field is missing');
   });
+});
+
+it.each([
+  { template_id: 'legacy-template', template_input: { ticket: 'old-input' } },
+  { recipe_id: 'legacy-recipe' },
+])('replays a restored unknown creation with its original starting point %j', async startingPoint => {
+  const request = { key: 'legacy-unconfirmed-key', body: {
+    area_id: 'c1', planner_provider: 'codex' as const, first_message: '  Legacy intent  ',
+    theme: { fg: [12, 34, 56] as [number, number, number], bg: [255, 255, 255] as [number, number, number] }, ...startingPoint,
+  } };
+  restored.request = request;
+  const { sent } = harness();
+  await userEvent.click(await screen.findByRole('button', { name: 'New track in Work' }));
+  await findComposer();
+  await waitFor(() => expect(screen.getByLabelText(TASK_LABEL).getAttribute('contenteditable')).toBe('false'));
+  await userEvent.click(screen.getByRole('button', { name: 'Create track' }));
+  await waitFor(() => expect(createdTrackRequests(sent)).toHaveLength(1));
+  expect(createdTrackRequests(sent)[0]?.body).toEqual(request.body);
+  expect(createdTrackRequests(sent)[0]?.headers?.['Idempotency-Key']).toBe(request.key);
 });

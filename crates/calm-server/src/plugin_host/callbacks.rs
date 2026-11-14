@@ -1196,6 +1196,7 @@ mod tests {
         assert_eq!(
             SERVER_OWNED_CARD_PAYLOAD_KEYS,
             [
+                "bound_session_cwd",
                 "terminal_signals",
                 "terminal_presentation",
                 "template_context",

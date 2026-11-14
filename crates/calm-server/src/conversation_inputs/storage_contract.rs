@@ -21,7 +21,31 @@ pub(crate) enum InputStorageContract {
 pub(crate) async fn require_recreatable_track_carriers_tx(
     connection: &mut SqliteConnection,
     track_id: &str,
+    preserved_cwd: Option<&str>,
 ) -> Result<()> {
+    // A same-locator isolation upgrade never replaces a carrier or moves its native cwd.
+    if let Some(cwd) = preserved_cwd {
+        let same_locator: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM tracks WHERE id=?1 AND workspace_kind='attached' AND workspace_worktree_path IS NULL AND workspace_path=?2)")
+            .bind(track_id).bind(cwd).fetch_one(&mut *connection).await?;
+        if same_locator {
+            return Ok(());
+        }
+    }
+    if has_canonical_track_carriers_tx(connection, track_id).await? {
+        return Err(CalmError::Conflict(
+            "This Track has saved work whose original execution must keep its workspace. \
+             Create another Track to use a different workspace."
+                .into(),
+        ));
+    }
+    Ok(())
+}
+
+/// The retained-storage fact belongs to the conversation owner, including settled cards.
+pub(crate) async fn has_canonical_track_carriers_tx(
+    connection: &mut SqliteConnection,
+    track_id: &str,
+) -> Result<bool> {
     let cards: Vec<String> =
         sqlx::query_scalar("SELECT id FROM cards WHERE track_id=?1 ORDER BY id")
             .bind(track_id)
@@ -29,14 +53,10 @@ pub(crate) async fn require_recreatable_track_carriers_tx(
             .await?;
     for card in cards {
         if crate::db::sqlite::conversation::card_has_canonical_storage(connection, &card).await? {
-            return Err(CalmError::Conflict(
-                "This Track has saved work whose original execution must keep its workspace. \
-                 Create another Track to use a different workspace."
-                    .into(),
-            ));
+            return Ok(true);
         }
     }
-    Ok(())
+    Ok(false)
 }
 
 pub(crate) async fn human_input_storage_contract(

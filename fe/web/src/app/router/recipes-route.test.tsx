@@ -37,12 +37,6 @@ function memoryStorage() {
 
 const AREA = { id: 'c1', name: 'Work', color: '#5B8DEF', sort: 1, kind: 'user', created_at: 1, updated_at: 1 };
 
-const TRACK_ROW = { workspace: { isolation: 'none' as const, kind: 'attached' as const, path: '/srv/managed', frozen_at: null },
-  id: 'w-new', area_id: 'c1', title: '', sort: 0, pinned_at: null,
-  cwd: '/srv/managed', template_id: null, plugin_scope: null,
-  purpose: null, template_input: null, closed_at: null, created_at: 1, updated_at: 1,
-};
-
 /* The body as the server holds it: already canonical, because the write
    boundary canonicalised it on the way in. */
 const STORED_BODY = '## Ship checklist\n\nWrite the change.\n';
@@ -58,7 +52,6 @@ type Options = Readonly<{
   recipes?: unknown;
   /** `GET /api/track-recipes`, answered per 0-based read index, so a test can say what the list held before a write and after its refetch. */
   recipeList?: (call: number) => ApiTransportResponse;
-  templates?: unknown;
   /** What `PUT /api/track-recipes/{id}` answers, or a function of each attempt that may lose the answer. */
   put?: ApiTransportResponse | (() => Promise<ApiTransportResponse>);
   /** What `POST /api/track-recipes` answers — the create. */
@@ -104,19 +97,6 @@ function harness(options: Options = {}) {
         if (options.recipeList !== undefined) return Promise.resolve(options.recipeList(call));
         return Promise.resolve({ status: 200, statusText: 'OK', body: options.recipes ?? [RECIPE] });
       }
-      if (request.path === '/api/track-templates') {
-        return Promise.resolve({ status: 200, statusText: 'OK', body: options.templates ?? [] });
-      }
-      if (request.method === 'POST' && request.path === '/api/tracks') {
-        return Promise.resolve({ status: 200, statusText: 'OK', body: TRACK_ROW });
-      }
-      if (request.method === 'GET' && request.path === '/api/tracks/w-new') {
-        return Promise.resolve({
-          status: 200,
-          statusText: 'OK',
-          body: { track: { ...TRACK_ROW }, planner_revision: 0, can_reopen: false, can_admin: false, can_close: true, cards: [], overlays: [] },
-        });
-      }
       const body = request.path === '/api/areas' ? [AREA] : [];
       return Promise.resolve({ status: 200, statusText: 'OK', body });
     },
@@ -139,11 +119,6 @@ function harness(options: Options = {}) {
 
 function atRecipes(options: Options = {}) {
   window.history.pushState({}, '', `${APP_BASEPATH}/recipes`);
-  return harness(options);
-}
-
-function atNewTrack(options: Options = {}) {
-  window.history.pushState({}, '', `${APP_BASEPATH}/area/c1/new`);
   return harness(options);
 }
 
@@ -538,34 +513,6 @@ describe('a recipe create that stopped part way', () => {
     expect(keyOf(creates(sent)[1])).not.toBe(keyOf(creates(sent)[0]));
   });
 });
-
-describe('creating a track from a recipe', () => {
-  /* `template_id` and `recipe_id` are mutually exclusive on the wire; the kernel
-     answers a request naming both with a 400. */
-  it('sends recipe_id and never template_id', async () => {
-    const user = userEvent.setup();
-    const { sent } = atNewTrack({
-      templates: [{ id: 'small-change', title: 'Small change', description: null, availability: { status: 'ready' as const }, tasks: [] }],
-    });
-    /* `combobox`: the route attaches the `@` menu, and a field with a trigger takes that role. */
-    const composer = await screen.findByRole('combobox', { name: 'What this track should do' });
-    await user.click(composer);
-    await user.keyboard('Ship it');
-    await user.click(await screen.findByRole('button', { name: /^Template: / }));
-    await user.click(await screen.findByRole('menuitem', { name: 'Ship checklist' }));
-    await user.click(screen.getByRole('button', { name: 'Create track' }));
-
-    await waitFor(() => expect(
-      sent.some((request) => request.method === 'POST' && request.path === '/api/tracks'),
-    ).toBe(true));
-    const posted = sent.find((request) => request.method === 'POST' && request.path === '/api/tracks');
-    const body = posted?.body as Record<string, unknown>;
-    expect(body.recipe_id).toBe('r-ship');
-    expect('template_id' in body).toBe(false);
-    expect('template_input' in body).toBe(false);
-  });
-});
-
 
 describe('recipe list recovery', () => {
   it('retries a failed list read from the page and shows the recovered recipes', async () => {

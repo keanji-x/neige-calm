@@ -10,6 +10,9 @@
 # Query changes edit their owning source/fixture and this existing baseline;
 # ordinary tests need no inventory entry. The existing scan and selftest each
 # run once per CI lint workflow; no scan rule or exclusion changes.
+# Implicit method binding adds storage predicates and writer-registry SQL literals.
+# Their owners and this aggregate baseline change together; ordinary test additions
+# need no name inventory. The rule and once-per-lint invocation stay unchanged.
 # F-released bounded declaration exception: long_literal 207 -> 209.
 # The two new matches are released.rs's flattened canonical/header field list
 # and its optional-field list. They describe the persisted owner contract,
