@@ -37,7 +37,7 @@ impl Owner {
     pub(crate) fn bind(&self, repo: Arc<dyn crate::db::Repo>) {
         let _ = self.repo.set(repo);
     }
-    pub(crate) fn request_progress(&self, worker: &String) {
+    pub(crate) fn request_progress(&self, worker: &str) {
         if let Some(registry) = self.registry.get() {
             registry.request_progress(worker);
         }
@@ -118,7 +118,7 @@ impl ProviderExecutionOwner for Owner {
             // Maintenance has neither an input receipt nor a durable turn outcome.
             // Only recovery projects loss; the live compact driver retains its result.
             if known.is_none()
-                && let Some(harness) = self.registry.get().and_then(|r| r.get(&session.to_owned()))
+                && let Some(harness) = self.registry.get().and_then(|r| r.get(session))
             {
                 harness
                     .complete_provider_execution(
@@ -191,7 +191,7 @@ impl ProviderExecutionOwner for Owner {
                 events,
                 turn,
             );
-        } else if let Some(harness) = self.registry.get().and_then(|r| r.get(&session.to_owned())) {
+        } else if let Some(harness) = self.registry.get().and_then(|r| r.get(session)) {
             // This clears only this execution's live slot. It never creates a
             // normally-joined cleanup observation for an aborted/panicked driver.
             harness
@@ -246,7 +246,7 @@ pub(super) async fn intent(
     .await
 }
 
-pub(super) fn process_launch(
+pub(crate) fn process_launch(
     registration: Registration<'_>,
     launch: &super::profile::ModeLaunch,
     card_env: impl IntoIterator<Item = (&'static str, String)>,
@@ -313,4 +313,19 @@ pub(super) fn process_launch(
             payload,
         },
     ))
+}
+
+impl crate::acp_session::host::HostServices for Owner {
+    fn repo(&self) -> Result<&Arc<dyn crate::db::Repo>> {
+        Owner::repo(self)
+    }
+    fn bind(&self, repo: Arc<dyn crate::db::Repo>) {
+        Owner::bind(self, repo)
+    }
+    fn bind_registry(&self, registry: crate::harness::HarnessRegistry) {
+        Owner::bind_registry(self, registry)
+    }
+    fn request_progress(&self, session: &str) {
+        Owner::request_progress(self, session)
+    }
 }

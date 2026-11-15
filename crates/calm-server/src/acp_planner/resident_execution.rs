@@ -21,7 +21,7 @@ fn generation_alias(backend: &str, id: &ExecutionId) -> String {
     format!("{CONSUMER}:{backend}:{}", id.as_str())
 }
 
-pub(super) struct ResidentExecution {
+pub(crate) struct ResidentExecution {
     id: ExecutionId,
     engine: ExecutionEngine,
     pool: SqliteDb,
@@ -29,7 +29,7 @@ pub(super) struct ResidentExecution {
 }
 
 impl ResidentExecution {
-    pub(super) async fn start(
+    pub(crate) async fn start(
         host: &AcpPlannerHost,
         registration: Registration<'_>,
         cwd: &Path,
@@ -105,11 +105,11 @@ impl ResidentExecution {
         Ok((owned, io))
     }
 
-    pub(super) fn id(&self) -> &ExecutionId {
+    pub(crate) fn id(&self) -> &ExecutionId {
         &self.id
     }
 
-    pub(super) async fn stop(&mut self) -> Result<()> {
+    pub(crate) async fn stop(&mut self) -> Result<()> {
         if !self.drained {
             drain(&self.pool, &self.engine, &self.id, false).await?;
             self.drained = true;
@@ -174,7 +174,7 @@ pub(crate) async fn stop_previous(
     Ok(())
 }
 
-pub(super) async fn workspace_generations(
+pub(crate) async fn workspace_generations(
     host: &AcpPlannerHost,
     workers: &[&str],
 ) -> Result<(SqliteDb, Vec<String>)> {
@@ -194,7 +194,7 @@ pub(super) async fn workspace_generations(
 
 /// The caller snapshots the generations before taking the live slot's locks,
 /// then checks those slots for routed siblings. A later mount cannot enter this stop.
-pub(super) async fn stop_detached_workspace(
+pub(crate) async fn stop_detached_workspace(
     host: &AcpPlannerHost,
     pool: &SqliteDb,
     previous: Vec<String>,

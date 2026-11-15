@@ -93,7 +93,7 @@ async fn answer(s: RouteState, track: TrackId, ask_id: i64, answers: Vec<AskAnsw
             };
             let harness = ask
                 .holding_session()
-                .and_then(|session| s.harness.get(&session.as_str().to_string()))
+                .and_then(|session| s.harness.get(session.as_str()))
                 .filter(|harness| harness.held_requests().contains(ask_id))
                 .ok_or_else(|| {
                     CalmError::Conflict(format!(

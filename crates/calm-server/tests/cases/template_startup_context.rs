@@ -213,7 +213,7 @@ async fn template_startup_historical_recipe_snapshot_survives_source_edits_and_r
     let harness = b
         .state
         .harness
-        .get(&sent["worker_session_id"].as_str().unwrap().to_owned())
+        .get(sent["worker_session_id"].as_str().unwrap())
         .expect("the reset harness is registered");
     let pending =
         serde_json::to_string(&harness.snapshot().await.unwrap().pending_observations()).unwrap();

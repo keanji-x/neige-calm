@@ -238,7 +238,7 @@ pub(crate) async fn transition_gate(
     repo: &dyn crate::db::Repo,
     host: &ClaudePlannerHost,
     registry: &crate::harness::HarnessRegistry,
-    session: &String,
+    session: &str,
 ) -> Result<()> {
     if let Some(handle) = registry.get(session) {
         return handle.provider_transition_gate().await;

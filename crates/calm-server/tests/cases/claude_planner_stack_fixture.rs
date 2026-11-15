@@ -513,7 +513,7 @@ impl Stack {
     pub fn harness(&self, worker_session_id: &str) -> PlannerHarness {
         self.state
             .harness
-            .get(&worker_session_id.to_string())
+            .get(worker_session_id)
             .expect("a registered harness")
     }
 

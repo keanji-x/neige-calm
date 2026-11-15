@@ -46,14 +46,14 @@ mod stack_fixture;
 
 use axum::http::StatusCode;
 use serde_json::{Value, json};
-use stack_fixture::{Root, Stack};
+pub(super) use stack_fixture::{Root, Stack};
 use std::time::Duration;
 
 const PEER: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/tests/fixtures/acp_planner/agent.py"
 );
-fn requests(root: &Root, method: &str) -> Vec<Value> {
+pub(super) fn requests(root: &Root, method: &str) -> Vec<Value> {
     std::fs::read_to_string(root.path().join("requests.jsonl"))
         .unwrap_or_default()
         .lines()
@@ -69,7 +69,12 @@ async fn boot_with(root: &Root, env: Value, min_agent_version: &str) -> Stack {
     boot_as(root, "opencode", env, min_agent_version).await
 }
 /// Boot with the fixture registered as `provider`.
-async fn boot_as(root: &Root, provider: &str, env: Value, min_agent_version: &str) -> Stack {
+pub(super) async fn boot_as(
+    root: &Root,
+    provider: &str,
+    env: Value,
+    min_agent_version: &str,
+) -> Stack {
     boot_as_with_creation_mode(root, provider, env, min_agent_version, None).await
 }
 async fn boot_as_with_creation_mode(
@@ -90,7 +95,28 @@ async fn boot_registration(
     mode: Option<&str>,
     auth_method: Option<&str>,
 ) -> Stack {
-    std::fs::write(root.path().join("scenario"), "reply").unwrap();
+    boot_as_scenario_with_auth_and_mode(
+        root,
+        provider,
+        env,
+        min_agent_version,
+        mode,
+        auth_method,
+        "reply",
+    )
+    .await
+}
+
+async fn boot_as_scenario_with_auth_and_mode(
+    root: &Root,
+    provider: &str,
+    env: Value,
+    min_agent_version: &str,
+    mode: Option<&str>,
+    auth_method: Option<&str>,
+    scenario: &str,
+) -> Stack {
+    std::fs::write(root.path().join("scenario"), scenario).unwrap();
     let config_path = root.path().join("acp.json");
     let mut env = env;
     env["ACP_FIXTURE_ROOT"] = json!(root.path());

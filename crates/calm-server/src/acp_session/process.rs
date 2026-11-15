@@ -1,5 +1,5 @@
-use super::config::{AcpPlannerHost, Registration};
-use super::resident_execution::ResidentExecution;
+use crate::acp_planner::resident_execution::ResidentExecution;
+use crate::acp_session::host::{AcpHost, Registration};
 use crate::db::sqlite::AcpSharedRestartOwner;
 use crate::error::{CalmError, Result};
 use plugin::child_process::{GroupChild, set_process_group_leader, spawn_within};
@@ -8,19 +8,19 @@ use serde_json::Value;
 use std::time::Duration;
 use tokio::process::Command;
 
-use super::start::StartFailure;
+use super::failure::SetupFailure as StartFailure;
 
 mod commands;
-pub(super) use commands::Commands;
+pub(crate) use commands::Commands;
 
 enum ProcessOwner {
     Native(GroupChild),
     Supervised(ResidentExecution),
 }
 
-pub(super) struct Process {
+pub(crate) struct Process {
     owner: ProcessOwner,
-    pub(super) restart_owner: Option<AcpSharedRestartOwner>,
+    pub(crate) restart_owner: Option<AcpSharedRestartOwner>,
     pub connection: Connection,
     pub capabilities: protocol::AgentCapabilities,
     pub commands: Commands,
@@ -30,7 +30,7 @@ pub(super) struct Process {
 }
 impl Process {
     pub async fn spawn(
-        host: &AcpPlannerHost,
+        host: &AcpHost,
         registration: Registration<'_>,
         worker: &str,
         cwd: &std::path::Path,
@@ -41,7 +41,7 @@ impl Process {
     }
 
     pub async fn spawn_shared(
-        host: &AcpPlannerHost,
+        host: &AcpHost,
         registration: Registration<'_>,
         cwd: &std::path::Path,
     ) -> std::result::Result<Self, StartFailure> {
@@ -65,7 +65,7 @@ impl Process {
     /// authenticate it when its profile names a method. Any refusal stops the process before a
     /// session operation.
     async fn spawn_control(
-        host: &AcpPlannerHost,
+        host: &AcpHost,
         registration: Registration<'_>,
         worker: &str,
         cwd: &std::path::Path,
@@ -119,7 +119,7 @@ impl Process {
     }
 
     async fn initialize(
-        host: &AcpPlannerHost,
+        host: &AcpHost,
         registration: Registration<'_>,
         connection: Connection,
         mut owner: ProcessOwner,
@@ -153,7 +153,7 @@ impl Process {
         }
     }
 
-    pub(super) fn supervision_id(&self) -> Option<&workspace_runtime::execution::ExecutionId> {
+    pub(crate) fn supervision_id(&self) -> Option<&workspace_runtime::execution::ExecutionId> {
         match &self.owner {
             ProcessOwner::Native(_) => None,
             ProcessOwner::Supervised(execution) => Some(execution.id()),
@@ -182,7 +182,7 @@ const STDERR_LIMIT: usize = 256 * 1024;
 
 /// The file the stderr of `worker`'s agent processes is kept in, under the host's data directory;
 /// each launch overwrites it.
-pub(super) fn worker_log_name(worker: &str) -> String {
+pub(crate) fn worker_log_name(worker: &str) -> String {
     let name: String = worker
         .chars()
         .map(|c| {
@@ -196,7 +196,7 @@ pub(super) fn worker_log_name(worker: &str) -> String {
     if name.is_empty() { "_".into() } else { name }
 }
 
-fn stderr_log(host: &AcpPlannerHost, worker: &str) -> std::path::PathBuf {
+fn stderr_log(host: &AcpHost, worker: &str) -> std::path::PathBuf {
     host.agent_logs
         .join(format!("{}.stderr.log", worker_log_name(worker)))
 }
@@ -246,12 +246,12 @@ async fn open_log(path: &std::path::Path) -> std::io::Result<tokio::fs::File> {
 
 /// `initialize`, then the profile's identity at the registered minimum version, then its
 /// authentication: the agent's capabilities, or why the launch is refused.
-pub(super) struct Negotiated {
+pub(crate) struct Negotiated {
     pub capabilities: protocol::AgentCapabilities,
     pub version: Option<semver::Version>,
 }
 
-pub(super) async fn negotiate(
+pub(crate) async fn negotiate(
     client: &provider::acp::Client,
     Registration { config, profile }: Registration<'_>,
     compaction: bool,
@@ -295,7 +295,7 @@ pub(super) async fn negotiate(
     })
 }
 
-pub(super) async fn reap(child: &mut GroupChild) -> Result<()> {
+pub(crate) async fn reap(child: &mut GroupChild) -> Result<()> {
     // Cancellation/timeout leaves GroupChild armed. A cleanup attempt alone is
     // not exit evidence for canonical Keep or generation retirement.
     let (status, group) =
@@ -308,7 +308,7 @@ pub(super) async fn reap(child: &mut GroupChild) -> Result<()> {
     status.map(drop).map_err(Into::into)
 }
 
-pub(super) async fn setup_request(
+pub(crate) async fn setup_request(
     connection: &mut Connection,
     commands: &Commands,
     method: &str,
@@ -411,7 +411,9 @@ mod setup_tests {
                 Err(error),
             )
             .await;
-            let outcome = super::super::start::start_result(result.map(|_| unreachable!()));
+            let outcome = crate::acp_planner::start::start_result(
+                result.map(|_| unreachable!()).map_err(Into::into),
+            );
             assert!(matches!(
                 outcome,
                 Ok(provider::control::TurnStartOutcome::Failed { error: CalmError::Conflict(message) })

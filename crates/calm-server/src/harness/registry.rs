@@ -56,13 +56,13 @@ pub struct HarnessRegistry(Arc<RegistryInner>);
 #[derive(Clone)]
 pub(crate) struct WeakHarnessRegistry(std::sync::Weak<RegistryInner>);
 impl WeakHarnessRegistry {
-    pub(crate) fn request_progress(&self, runtime: &String) {
+    pub(crate) fn request_progress(&self, runtime: &str) {
         if let Some(handle) = self.get(runtime) {
             handle.request_progress();
         }
     }
 
-    pub(crate) fn get(&self, runtime: &String) -> Option<PlannerHarness> {
+    pub(crate) fn get(&self, runtime: &str) -> Option<PlannerHarness> {
         HarnessRegistry(self.0.upgrade()?).get(runtime)
     }
 }
@@ -165,7 +165,7 @@ impl HarnessRegistry {
     /// Missing/dormant/reserved is not positive native-idle evidence.
     /// Caller holds the card start fence and drive lock while acquiring the owner proof.
     pub fn carrier_quiescence_owner(&self, worker: &str) -> crate::error::Result<PlannerHarness> {
-        self.get(&worker.to_owned()).ok_or_else(|| {
+        self.get(worker).ok_or_else(|| {
             crate::error::CalmError::Conflict("carrier has no live native owner".into())
         })
     }
@@ -232,7 +232,7 @@ impl HarnessRegistry {
     ) -> crate::error::Result<Option<PlannerHarness>> {
         let mut stopped = None;
         loop {
-            let Some(handle) = self.get(&worker_session_id.to_owned()) else {
+            let Some(handle) = self.get(worker_session_id) else {
                 if let Entry::Occupied(occupied) = self.0.map.entry(worker_session_id.to_owned())
                     && matches!(occupied.get().slot, Slot::Dormant)
                 {
@@ -352,7 +352,7 @@ impl HarnessRegistry {
         )
     }
 
-    pub fn get(&self, runtime_id: &String) -> Option<PlannerHarness> {
+    pub fn get(&self, runtime_id: &str) -> Option<PlannerHarness> {
         self.0
             .map
             .get(runtime_id)
@@ -736,7 +736,7 @@ mod carrier_replacement_publication_tests {
         next_handle.shutdown().await.unwrap();
         let live = registry.carrier_retirement_slot("old");
         registry.retire_carrier_slot("old", &live);
-        assert!(registry.get(&"old".into()).is_none());
+        assert!(registry.get("old").is_none());
         registry.canonical_sources("dormant", &TrackId::from("track"));
         let dormant = registry.carrier_retirement_slot("dormant");
         registry.retire_carrier_slot("dormant", &dormant);

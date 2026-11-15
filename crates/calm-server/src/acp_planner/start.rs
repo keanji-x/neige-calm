@@ -4,7 +4,7 @@ use crate::harness::backend::{StartDiagnostic, TurnStartFailure};
 use provider::control::*;
 
 #[derive(Debug)]
-pub(super) enum StartFailure {
+pub(crate) enum StartFailure {
     Host(TurnStartFailure),
     Failed(CalmError),
 }
@@ -18,7 +18,7 @@ impl From<TurnStartFailure> for StartFailure {
         Self::Host(error)
     }
 }
-pub(super) fn start_result(
+pub(crate) fn start_result(
     result: Result<String, StartFailure>,
 ) -> Result<TurnStartOutcome<CalmError, StartDiagnostic>, TurnStartFailure> {
     match result {
@@ -47,7 +47,7 @@ impl From<StartFailure> for CalmError {
 }
 
 /// Preserve the existing durable ACP receipt codec independently of native prompt encoding.
-pub(super) fn receipt_input(items: &[provider::InputItem]) -> serde_json::Value {
+pub(crate) fn receipt_input(items: &[provider::InputItem]) -> serde_json::Value {
     serde_json::Value::Array(
         items
             .iter()
@@ -64,7 +64,7 @@ pub(super) fn receipt_input(items: &[provider::InputItem]) -> serde_json::Value 
 }
 
 impl StartFailure {
-    pub(super) fn into_host(self) -> TurnStartFailure {
+    pub(crate) fn into_host(self) -> TurnStartFailure {
         match self {
             Self::Host(failure) => failure,
             Self::Failed(error) => error.into(),
@@ -73,7 +73,7 @@ impl StartFailure {
 }
 
 /// ACP continuation refusal facts are classified here, before reader mapping.
-pub(super) enum ContinuationRefusal {
+pub(crate) enum ContinuationRefusal {
     LoadUnsupported,
     RegistrationChanged,
     UnownedNative,
@@ -97,12 +97,23 @@ impl From<ContinuationRefusal> for StartFailure {
         })
     }
 }
-pub(super) fn registration_error(error: crate::db::sqlite::AcpRegistrationError) -> StartFailure {
+pub(crate) fn registration_error(error: crate::db::sqlite::AcpRegistrationError) -> StartFailure {
     use crate::db::sqlite::AcpRegistrationError;
     match error {
         AcpRegistrationError::Changed => ContinuationRefusal::RegistrationChanged.into(),
         AcpRegistrationError::UnownedNative => ContinuationRefusal::UnownedNative.into(),
         AcpRegistrationError::Storage(error) => StartFailure::from(CalmError::from(error)),
+    }
+}
+
+impl From<crate::acp_session::failure::SetupFailure> for StartFailure {
+    fn from(error: crate::acp_session::failure::SetupFailure) -> Self {
+        match error {
+            crate::acp_session::failure::SetupFailure::Failed(error) => Self::Failed(error),
+            crate::acp_session::failure::SetupFailure::LoadUnsupported => {
+                ContinuationRefusal::LoadUnsupported.into()
+            }
+        }
     }
 }
 
