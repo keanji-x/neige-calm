@@ -8,7 +8,6 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 #[cfg(test)]
-#[path = "config_authentication_tests.rs"]
 mod authentication_tests;
 
 pub const MARKER_KEY: &str = "NEIGE_ACP_PLANNER";
@@ -668,8 +667,8 @@ mod tests {
         assert!(message.contains("at line 1 column"), "{message}");
     }
 
-    /// A registration may not hand Grok an xAI API key: Neige runs it on its signed-in
-    /// subscription only. Every other provider keeps its environment as registered.
+    /// A default registration may not hand Grok an xAI API key: it uses the signed-in
+    /// subscription. Every other provider keeps its environment as registered.
     #[test]
     fn a_grok_registration_refuses_xai_api_keys() {
         let grok = |env: serde_json::Value| {
