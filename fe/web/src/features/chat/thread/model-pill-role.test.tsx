@@ -16,7 +16,16 @@ describe('PlannerRolePill', () => {
   it.each([['member', 'Role: Member'], ['admin', 'Role: Admin']] as const)(
     'names the chosen role (%s) on its trigger', (role, name) => {
       render(<PlannerRolePill value={role} onChange={vi.fn()} />);
-      expect(screen.getByRole('button', { name }).textContent).toBe(name);
+      const button = screen.getByRole('button', { name });
+      expect(button.textContent).toBe(name);
+      expect(button.getAttribute('data-variant')).toBe('ghost');
+      expect(button.querySelectorAll('svg')).toHaveLength(0);
+      const value = button.querySelector('span[data-nc-tone]');
+      expect(value?.textContent).toBe(name.split(': ')[1]);
+      expect(value?.parentElement?.firstChild?.textContent).toBe(name.split(': ')[0] + ': ');
+      expect(value?.parentElement?.hasAttribute('data-nc-tone')).toBe(false);
+      expect(value?.getAttribute('data-nc-tone')).toBe('neutral');
+      expect(button.getAttribute('data-nc-tone')).toBe('neutral');
     },
   );
 
