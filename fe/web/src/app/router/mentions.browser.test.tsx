@@ -11,6 +11,7 @@ import { cleanup, render } from '@testing-library/react';
 import { afterEach, expect, it } from 'vitest';
 import { page, userEvent } from 'vitest/browser';
 import type { ApiRequest, ApiTransportPort, ApiTransportResponse } from '../../../../core/api/types.ts';
+import type { TrackTemplate } from '../../../../core/domain/track.ts';
 import type { MentionCandidates } from '../../../../core/api/generated/wire.ts';
 import { createUnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import { createAppRouter } from './public.tsx';
@@ -30,7 +31,7 @@ const CANDIDATES: MentionCandidates = {
   blocks: [{ label: 'Rollback', block_id: 'b_1a2b', track_title: 'Deploy notes', track_id: 'w9', insert: BLOCK_INSERT }],
 };
 
-function mount(path: string, storedText: string | null = null, pluginDescription = 'Develop issues and publish changes.', running = false) {
+function mount(path: string, storedText: string | null = null, pluginDescription = 'Develop issues and publish changes.', running = false, templates: readonly TrackTemplate[] = []) {
   const requests: ApiRequest[] = [];
   const ok = (body: unknown): ApiTransportResponse => ({ status: 200, statusText: 'OK', body });
   const transport: ApiTransportPort = { send(request) {
@@ -48,6 +49,7 @@ function mount(path: string, storedText: string | null = null, pluginDescription
       manifest_name: 'development', manifest_description: pluginDescription,
       has_config: false, can_uninstall: false, can_disable: true,
     }]));
+    if (request.path === '/api/track-templates') return Promise.resolve(ok(templates));
     if (request.path === '/api/areas') return Promise.resolve(ok([AREA]));
     if (request.path === '/api/areas/c1/tracks') return Promise.resolve(ok([TRACK]));
     if (request.path === '/api/tracks/w1') return Promise.resolve(ok({ track: TRACK, planner_revision: 0, can_reopen: false, can_admin: false, can_close: true, cards: [PLANNER_CARD], overlays: [] }));
@@ -308,4 +310,29 @@ it('dismisses a native navigation preview before Escape can stop a working Plann
   expect(requests.filter(request => request.path.endsWith('/planner/interrupt'))).toHaveLength(0);
   await userEvent.keyboard('{Escape}');
   await expect.poll(() => requests.filter(request => request.path.endsWith('/planner/interrupt')).length).toBe(1);
+});
+
+it('loads templates only after @ and creates from the selected named template chip', async () => {
+  await page.viewport(1440, 900);
+  const { requests } = mount('/area/c1/new', null, '', false, [{
+    id: 'small-change', title: 'Small change', description: 'Implement a focused change',
+    availability: { status: 'ready' }, tasks: [],
+  }]);
+  const field = page.getByRole('combobox', { name: 'What this track should do' });
+  await expect.element(field).toBeVisible();
+  expect(requests.some(request => request.path === '/api/track-templates')).toBe(false);
+  await field.click();
+  await userEvent.keyboard('Use @');
+  await expect.element(menu().getByRole('option', { name: /^Templates/ })).toBeVisible();
+  await menu().getByRole('option', { name: /^Templates/ }).click();
+  await expect.element(field).toHaveTextContent('Use @:');
+  await expect.element(menu().getByRole('option', { name: /Small change/ })).toBeVisible();
+  await menu().getByRole('option', { name: /Small change/ }).click();
+  expect(field.element().querySelector('[data-astryx-token]')?.textContent).toBe('Small change');
+  await page.screenshot({ path: './__screenshots__/new-track-template-mention.png' });
+  await page.getByRole('button', { name: 'Create track' }).click();
+  await expect.poll(() => requests.filter(request => request.method === 'POST' && request.path === '/api/tracks').length).toBe(1);
+  expect(requests.find(request => request.method === 'POST' && request.path === '/api/tracks')!.body).toMatchObject({
+    template_id: 'small-change', first_message: 'Use @`template:small-change`\u00A0',
+  });
 });

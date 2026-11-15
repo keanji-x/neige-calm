@@ -28,7 +28,7 @@ it.each([1200])('shows readable type entrances and enters each filtered list by 
   await field.click();
   await userEvent.keyboard('@');
   await expect.element(page.getByRole('option', { name: /^Tags/ })).toBeVisible();
-  expect(document.querySelectorAll('[role="option"]')).toHaveLength(10);
+  expect(document.querySelectorAll('[role="option"]')).toHaveLength(11);
   const row = document.querySelector('[data-nc-mention-category="tag"]')!;
   const label = row.children[0].getBoundingClientRect();
   const description = row.children[1].getBoundingClientRect();
@@ -116,4 +116,27 @@ it.each(['light', 'dark'])('keeps %s selected menu captions readable', async the
     if (previousTheme === undefined) delete document.documentElement.dataset.theme;
     else document.documentElement.dataset.theme = previousTheme;
   }
+});
+
+it('opens Templates by mouse, shows its marker and sends the badge reference', async () => {
+  await page.viewport(1200, 900);
+  const onSend = vi.fn();
+  const search = vi.fn<MentionSearch>(() => Promise.resolve([{
+    id: 'template:deploy', kind: 'template', label: 'Deploy', chip: 'Deploy', detail: 'Ship a change', insert: '@`template:deploy`',
+  }]));
+  render(<Composer search={search} onSend={onSend} />);
+  const field = page.getByRole('combobox', { name: 'Message' });
+  await field.click();
+  await userEvent.keyboard('@');
+  await expect.element(page.getByRole('option', { name: /^Templates/ })).toBeVisible();
+  expect(document.querySelector('[data-nc-mention="template"]')!.children[0].textContent).toBe(':');
+  await page.getByRole('option', { name: /^Templates/ }).click();
+  await expect.element(field).toHaveTextContent('@:');
+  await expect.element(page.getByRole('option', { name: /Deploy/ })).toBeVisible();
+  expect(search).toHaveBeenLastCalledWith(':', expect.anything());
+  await page.getByRole('option', { name: /Deploy/ }).click();
+  expect(field.element().querySelector('[data-astryx-token]')?.textContent).toBe('Deploy');
+  await page.screenshot({ path: './__screenshots__/template-mention-chip.png' });
+  await userEvent.keyboard('{Enter}');
+  expect(onSend).toHaveBeenLastCalledWith('@`template:deploy`');
 });

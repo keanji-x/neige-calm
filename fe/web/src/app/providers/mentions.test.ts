@@ -36,7 +36,7 @@ it('keeps successful report candidates when the plugin catalog fails', async () 
 });
 
 it.each([
-  ['plugin-only', null, 'Report'],
+  ['plugin-only', null, '+Report'],
   ['report-only', 'area', '/Report'],
   ['plugin-filtered', 'area', '+Report'],
 ] as const)('preserves %s errors when its only actual source fails', async (_name, areaId, typed) => {
@@ -81,4 +81,34 @@ it('forwards canonical inserts without fetching their target', async () => {
   expect(suggestion.insert).toBe(insert);
   expect(requests.map(request => [request.method, request.path]))
     .toEqual([['GET', '/api/areas/area/mentions?q=Report&track=track']]);
+});
+
+it.each(['', 'deploy', ':deploy', '：deploy'])('loads templates on search %s and reports the latest catalog', async typed => {
+  const requests: ApiRequest[] = [];
+  const templates = [{ id: 'deploy', title: 'Deploy', description: null, availability: { status: 'ready' }, tasks: [] }];
+  const seen: unknown[] = [];
+  const transport: ApiTransportPort = { send(request) {
+    requests.push(request);
+    return Promise.resolve({ status: 200, statusText: 'OK', body: request.path === '/api/track-templates'
+      ? templates : request.path === '/api/plugins' ? [] : { tags: [], tracks: [], blocks: [] } });
+  } };
+  const search = mentionSearchOf(transport, createUnauthorizedChannel({ enqueue: task => task() }), 'area', null,
+    catalog => { seen.push(catalog); });
+  expect(requests).toEqual([]);
+  expect(await search(typed, new AbortController().signal)).toEqual([
+    { id: 'template:deploy', kind: 'template', label: 'Deploy', chip: 'Deploy', detail: null, insert: '@`template:deploy`' },
+  ]);
+  expect(seen).toEqual([templates]);
+  expect(requests.filter(request => request.path === '/api/track-templates')).toHaveLength(1);
+  if (typed.startsWith(':') || typed.startsWith('：')) expect(requests).toHaveLength(1);
+});
+
+it('retains templates when the other mention sources fail', async () => {
+  const transport: ApiTransportPort = { send(request) {
+    return Promise.resolve(request.path === '/api/track-templates'
+      ? { status: 200, statusText: 'OK', body: [{ id: 'deploy', title: 'Deploy', description: null, availability: { status: 'ready' }, tasks: [] }] }
+      : { status: 500, statusText: 'Error', body: { error: 'unavailable' } });
+  } };
+  const search = mentionSearchOf(transport, createUnauthorizedChannel({ enqueue: task => task() }), 'area', null);
+  expect((await search('deploy', new AbortController().signal)).map(item => item.kind)).toEqual(['template']);
 });

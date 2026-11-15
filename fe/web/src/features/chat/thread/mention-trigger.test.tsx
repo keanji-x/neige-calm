@@ -104,7 +104,7 @@ describe('createMentionSource', () => {
     calls[0].resolve([TAG, TRACK, BLOCK, { ...TAG, id: 'tag:two', label: '#two' }, { ...TAG, id: 'tag:three' }]);
     const items = await answer;
     expect(items.map((item) => item.label).toSorted()).toEqual(
-      ['Plugins', 'Tags', TAG.label, '#two', 'More Tags', 'Tracks', TRACK.label, 'More Tracks', 'Blocks', BLOCK.label, 'More Blocks'].toSorted(),
+      ['Templates', 'Plugins', 'Tags', TAG.label, '#two', 'More Tags', 'Tracks', TRACK.label, 'More Tracks', 'Blocks', BLOCK.label, 'More Blocks'].toSorted(),
     );
     const tagExamples = items.filter((item) => {
       const data = item.auxiliaryData!;
@@ -154,13 +154,32 @@ describe('the @ menu in the real composer', () => {
     else Object.defineProperty(Element.prototype, 'scrollIntoView', original);
   });
 
+  it('enters Templates from bare @ and inserts a named badge carrying the template reference', async () => {
+    const template: MentionSuggestion = { id: 'template:deploy', kind: 'template', label: 'Deploy',
+      detail: null, chip: 'Deploy', insert: '@`template:deploy`' };
+    const search = vi.fn<MentionSearch>(() => Promise.resolve([template]));
+    const onSend = vi.fn();
+    render(<MentionComposer search={search} onSend={onSend} />);
+    await userEvent.type(field(), 'use @');
+    const category = await screen.findByRole('option', { name: /^Templates/ });
+    expect(screen.getAllByRole('option')[0]).toBe(category);
+    await userEvent.click(category);
+    await screen.findByRole('option', { name: 'Deploy' });
+    expect(field().textContent).toBe('use @:');
+    expect(search).toHaveBeenLastCalledWith(':', expect.anything());
+    await userEvent.keyboard('{Enter}');
+    expect(field().querySelector('[data-astryx-token]')?.textContent).toBe('Deploy');
+    await userEvent.keyboard('{Enter}');
+    expect(onSend).toHaveBeenLastCalledWith('use @`template:deploy`');
+  });
+
   it('enters Tags with a plain @# prefix and searches only tags, then sends the selected mention', async () => {
     const search = vi.fn<MentionSearch>(() => Promise.resolve([TAG]));
     const onSend = vi.fn();
     render(<MentionComposer search={search} onSend={onSend} />);
     await userEvent.type(field(), 'see @');
     await screen.findByRole('option', { name: /^Tags/ });
-    expect(screen.getAllByRole('option')).toHaveLength(6);
+    expect(screen.getAllByRole('option')).toHaveLength(7);
     const tagIndex = screen.getAllByRole('option').indexOf(screen.getByRole('option', { name: /^Tags/ }));
     await userEvent.keyboard('{ArrowDown}'.repeat(tagIndex) + '{Enter}');
     await screen.findByRole('option', { name: /部署/ });

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { MentionCandidates } from '../api/generated/wire.js';
 import {
-  sentMentionParts, mentionCandidatesSchema, mentionQueryOf, mentionSuggestionsOf, mentionsOperation, type MentionQuery,
+  extractTemplateMentions, templateMentionSuggestions, sentMentionParts, mentionCandidatesSchema, mentionQueryOf, mentionSuggestionsOf, mentionsOperation, type MentionQuery,
 } from './mentions.js';
 
 const CANDIDATES: MentionCandidates = {
@@ -182,4 +182,32 @@ it('displays canonical server inserts without resolving identity or changing byt
   expect(sentMentionParts(report)).toEqual([{ text: report, label: '. notes `x`#~12345678 › b_1' }]);
   const empty = '@`/~area1234/~track123/report.md`';
   expect(sentMentionParts(empty)).toEqual([{ text: empty, label: '~track123' }]);
+});
+
+it.each([':plan', '：plan'])('recognizes template prefix %s', typed => {
+  expect(mentionQueryOf(typed)).toEqual({ kind: 'template', text: 'plan' });
+});
+
+it('finds template titles, IDs and descriptions with or without the prefix', () => {
+  const templates = [{ id: 'small-change', title: 'Small change', description: 'Review a patch',
+    availability: { status: 'ready' as const }, tasks: [] }];
+  for (const query of ['small', ':change', '：SMALL', 'patch']) {
+    expect(templateMentionSuggestions(templates, query)).toEqual([{
+      id: 'template:small-change', kind: 'template', label: 'Small change', chip: 'Small change',
+      detail: 'Review a patch', insert: '@`template:small-change`',
+    }]);
+  }
+  expect(templateMentionSuggestions(templates, '+small')).toEqual([]);
+  expect(templateMentionSuggestions(templates, 'missing')).toEqual([]);
+});
+
+it('recovers template chips and extracts only complete template references, including repetitions', () => {
+  expect(sentMentionParts('Use @`template:small-change`')).toEqual([
+    { text: 'Use ', label: null }, { text: '@`template:small-change`', label: 'small-change' },
+  ]);
+  expect(extractTemplateMentions('unfinished @`template:oops then @`template:first` @`` template:second `` @`template:first`'))
+    .toEqual(['first', 'second', 'first']);
+  for (const text of ['template:plain', '@:small', '@`template:`', '@`template:two words`', '@`template:unfinished', '@`tag:a`']) {
+    expect(extractTemplateMentions(text)).toEqual([]);
+  }
 });

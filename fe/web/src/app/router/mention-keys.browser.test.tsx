@@ -24,7 +24,7 @@ it('opens real plugin guides from their preview and sends a named documentation 
   const requests: ApiRequest[] = [];
   const transport: ApiTransportPort = { send(request) {
     requests.push(request);
-    return Promise.resolve({ status: 200, statusText: 'OK', body: request.path === '/api/plugins' ? [
+    return Promise.resolve({ status: 200, statusText: 'OK', body: request.path === '/api/track-templates' ? [] : request.path === '/api/plugins' ? [
       { id: 'dev.example', version: '1', enabled: false, state: 'disabled', manifest_name: 'Development',
         manifest_description: 'Develop issues and publish changes. '.repeat(20), has_config: false, can_uninstall: false, can_disable: true },
       { id: 'ui.example', version: '1', enabled: false, state: 'disabled', manifest_name: 'UI tools',
@@ -44,7 +44,7 @@ it('opens real plugin guides from their preview and sends a named documentation 
   await expect.element(field).toHaveTextContent('see @+');
   await expect.element(page.getByRole('option', { name: /Development/ })).toBeVisible();
   expect(requests.map(request => [request.method, request.path])).toEqual([
-    ['GET', '/api/areas/area/mentions?q=&track=track'], ['GET', '/api/plugins'], ['GET', '/api/plugins'],
+    ['GET', '/api/areas/area/mentions?q=&track=track'], ['GET', '/api/plugins'], ['GET', '/api/track-templates'], ['GET', '/api/plugins'],
   ]);
   expect(document.querySelectorAll('[role="option"]')).toHaveLength(2);
   await page.getByRole('option', { name: /Development/ }).click();
