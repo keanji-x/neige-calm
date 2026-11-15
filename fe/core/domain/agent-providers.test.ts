@@ -9,7 +9,8 @@ const READY = Object.freeze({
 it('preserves the selected authentication method and rejects missing or malformed declarations', () => {
   const answer = { ...READY.availability, provider: 'grok', authentication_method: 'xai.api_key' };
   expect(providerAvailabilitySchema.parse(answer)).toEqual(answer);
-  const { authentication_method: _method, ...missing } = answer;
+  const missing: Partial<typeof answer> = { ...answer };
+  delete missing.authentication_method;
   expect(providerAvailabilitySchema.safeParse(missing).success).toBe(false);
   expect(providerAvailabilitySchema.safeParse({ ...answer, authentication_method: 1 }).success).toBe(false);
   expect(providerAvailabilitySchema.parse({ ...answer, authentication_method: null }).authentication_method).toBeNull();
