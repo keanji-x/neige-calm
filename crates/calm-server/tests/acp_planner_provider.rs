@@ -79,6 +79,17 @@ async fn boot_as_with_creation_mode(
     min_agent_version: &str,
     mode: Option<&str>,
 ) -> Stack {
+    boot_registration(root, provider, env, min_agent_version, mode, None).await
+}
+
+async fn boot_registration(
+    root: &Root,
+    provider: &str,
+    env: Value,
+    min_agent_version: &str,
+    mode: Option<&str>,
+    auth_method: Option<&str>,
+) -> Stack {
     std::fs::write(root.path().join("scenario"), "reply").unwrap();
     let config_path = root.path().join("acp.json");
     let mut env = env;
@@ -86,6 +97,9 @@ async fn boot_as_with_creation_mode(
     let mut agent = json!({"provider":provider,"command":"/usr/bin/python3","args":["-u",PEER],"env":env,"min_agent_version":min_agent_version});
     if let Some(mode) = mode {
         agent["default_permission_mode"] = json!(mode);
+    }
+    if let Some(method) = auth_method {
+        agent["auth_method"] = json!(method);
     }
     std::fs::write(&config_path, json!({"agents":[agent]}).to_string()).unwrap();
     let mut config = root.config(false);

@@ -19,9 +19,9 @@ const authenticationNoticeSchema = z.object({
  * provider is not `ready`; `not_configured` is a backend this server was not started with.
  */
 export const providerAvailabilitySchema = z.discriminatedUnion('status', [
-  z.object({ provider: agentProviderSchema, status: z.literal('ready'), reason: z.null(), checked_at_ms: checkedAtSchema, authentication_notice: authenticationNoticeSchema }),
-  z.object({ provider: agentProviderSchema, status: z.literal('unavailable'), reason: z.string(), checked_at_ms: checkedAtSchema, authentication_notice: authenticationNoticeSchema }),
-  z.object({ provider: agentProviderSchema, status: z.literal('not_configured'), reason: z.string(), checked_at_ms: checkedAtSchema, authentication_notice: authenticationNoticeSchema }),
+  z.object({ provider: agentProviderSchema, status: z.literal('ready'), reason: z.null(), checked_at_ms: checkedAtSchema, authentication_method: z.string().nullable(), authentication_notice: authenticationNoticeSchema }),
+  z.object({ provider: agentProviderSchema, status: z.literal('unavailable'), reason: z.string(), checked_at_ms: checkedAtSchema, authentication_method: z.string().nullable(), authentication_notice: authenticationNoticeSchema }),
+  z.object({ provider: agentProviderSchema, status: z.literal('not_configured'), reason: z.string(), checked_at_ms: checkedAtSchema, authentication_method: z.string().nullable(), authentication_notice: authenticationNoticeSchema }),
 ]);
 
 export type ProviderAvailability = z.infer<typeof providerAvailabilitySchema>;

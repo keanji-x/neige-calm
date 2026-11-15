@@ -29,17 +29,26 @@ fn grok(env: Value) -> Value {
 /// A host reading a real registration file that registers the spy peer as `provider`, with `env`
 /// added to the peer's registered environment.
 fn host(root: &Path, provider: &AgentProvider, env: Value, min: &str) -> AcpPlannerHost {
+    host_with_auth(root, provider, env, min, None)
+}
+
+fn host_with_auth(
+    root: &Path,
+    provider: &AgentProvider,
+    env: Value,
+    min: &str,
+    auth: Option<&str>,
+) -> AcpPlannerHost {
     std::fs::write(root.join("scenario"), "reply").unwrap();
     let mut env = env;
     env["ACP_FIXTURE_ROOT"] = json!(root);
     let path = root.join("acp.json");
-    std::fs::write(
-        &path,
-        json!({"agents":[{"provider":provider,"command":"/usr/bin/python3",
-            "args":["-u",PEER,"prefix"],"env":env,"min_agent_version":min}]})
-        .to_string(),
-    )
-    .unwrap();
+    let mut agent = json!({"provider":provider,"command":"/usr/bin/python3",
+        "args":["-u",PEER,"prefix"],"env":env,"min_agent_version":min});
+    if let Some(auth) = auth {
+        agent["auth_method"] = json!(auth);
+    }
+    std::fs::write(&path, json!({"agents":[agent]}).to_string()).unwrap();
     AcpPlannerHost::new(
         Some(AcpPlannerConfig::read(&path).unwrap()),
         root,
@@ -48,6 +57,8 @@ fn host(root: &Path, provider: &AgentProvider, env: Value, min: &str) -> AcpPlan
     )
     .unwrap()
 }
+
+mod api_key_tests;
 
 fn lines(root: &Path, file: &str) -> Vec<Value> {
     std::fs::read_to_string(root.join(file))
@@ -82,7 +93,7 @@ async fn a_declared_method_authenticates_after_initialize_and_before_session_new
     let host = host(
         root.path(),
         &AgentProvider::Grok,
-        grok(json!({"ACP_FIXTURE_AUTH_METHODS":"browser,cached_token"})),
+        grok(json!({"ACP_FIXTURE_AUTH_METHODS":"browser,xai.api_key,cached_token"})),
         "1.0.62",
     );
     assert_eq!(verdict(&host, &AgentProvider::Grok).await, Verdict::Ready);
@@ -184,66 +195,72 @@ async fn an_unoffered_refused_or_unanswered_authentication_leaves_the_provider_u
 /// process before any session operation and revokes that context.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_failed_authentication_revokes_the_turns_issued_context() {
-    let root = tempfile::tempdir().unwrap();
-    let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
-    let row = owner(&repo, root.path(), AgentProvider::Grok).await;
-    let host = Arc::new(host(
-        root.path(),
-        &AgentProvider::Grok,
-        grok(json!({"ACP_FIXTURE_AUTH_METHODS":"cached_token","ACP_FIXTURE_AUTHENTICATE":"error"})),
-        "1.0.62",
-    ));
-    let execution = crate::test_support::execution::Fixture::new(repo.sqlite_db().unwrap()).await;
-    host.execution.bind(execution.engine.clone());
-    let session = AcpPlannerSession::open(SessionParams {
-        engine: host.execution.engine().cloned(),
-        host,
-        provider: AgentProvider::Grok,
-        repo: repo.clone(),
-        seals: Arc::new(crate::thread_seals::ThreadSeals::new()),
-        worker_session_id: row.worker.clone(),
-        card_id: row.card.clone(),
-        track_id: row.track.clone(),
-        cwd: root.path().into(),
-        instructions: String::new(),
-    });
-    let (held, _receiver) = crate::harness::held_requests::channel();
-    session.mark_installed(held);
-    let outcome = session
-        .start_turn(
-            &row.thread,
-            TurnRequest {
-                input: InputRequest {
-                    items: vec![provider::InputItem::text("signed out")],
-                    correlation: CorrelationKey("signed-out".into()),
+    for method in [None, Some("xai.api_key")] {
+        let root = tempfile::tempdir().unwrap();
+        let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+        let row = owner(&repo, root.path(), AgentProvider::Grok).await;
+        let host = Arc::new(host_with_auth(
+            root.path(),
+            &AgentProvider::Grok,
+            grok(
+                json!({"ACP_FIXTURE_VERSION":"1.0.70","ACP_FIXTURE_AUTH_METHODS":"cached_token,xai.api_key","ACP_FIXTURE_AUTHENTICATE":"error"}),
+            ),
+            "1.0.70",
+            method,
+        ));
+        let execution =
+            crate::test_support::execution::Fixture::new(repo.sqlite_db().unwrap()).await;
+        host.execution.bind(execution.engine.clone());
+        let session = AcpPlannerSession::open(SessionParams {
+            engine: host.execution.engine().cloned(),
+            host,
+            provider: AgentProvider::Grok,
+            repo: repo.clone(),
+            seals: Arc::new(crate::thread_seals::ThreadSeals::new()),
+            worker_session_id: row.worker.clone(),
+            card_id: row.card.clone(),
+            track_id: row.track.clone(),
+            cwd: root.path().into(),
+            instructions: String::new(),
+        });
+        let (held, _receiver) = crate::harness::held_requests::channel();
+        session.mark_installed(held);
+        let outcome = session
+            .start_turn(
+                &row.thread,
+                TurnRequest {
+                    input: InputRequest {
+                        items: vec![provider::InputItem::text("signed out")],
+                        correlation: CorrelationKey("signed-out".into()),
+                    },
+                    selection: provider::TurnModelSelection::inherit(),
+                    permission: PlannerPermissionMode::Never,
+                    edit: TurnEdit::NoEdit,
                 },
-                selection: provider::TurnModelSelection::inherit(),
-                permission: PlannerPermissionMode::Never,
-                edit: TurnEdit::NoEdit,
-            },
-            &[crate::harness::QueueEntry::user_message(
-                "signed out".into(),
-                None,
-                vec![],
-            )],
-            &session.handoff_for_test().await,
-        )
-        .await
-        .unwrap();
-    assert!(
-        matches!(&outcome, TurnStartOutcome::Failed { error } if error.to_string().contains("sign it in")),
-        "{outcome:?}"
-    );
-    let environment = lines(root.path(), "environment.jsonl");
-    assert_eq!(
-        environment.last().unwrap()["NEIGE_MCP_TOKEN"],
-        true,
-        "the failure must exercise an issued context"
-    );
-    assert_eq!(token(&repo, &row).await, None);
-    assert_eq!(methods(root.path()), ["initialize", "authenticate"]);
-    assert!(all_stopped(root.path()));
-    session.shutdown().await.unwrap();
+                &[crate::harness::QueueEntry::user_message(
+                    "signed out".into(),
+                    None,
+                    vec![],
+                )],
+                &session.handoff_for_test().await,
+            )
+            .await
+            .unwrap();
+        assert!(
+            matches!(&outcome, TurnStartOutcome::Failed { error } if error.to_string().contains(method.unwrap_or("cached_token"))),
+            "{outcome:?}"
+        );
+        let environment = lines(root.path(), "environment.jsonl");
+        assert_eq!(
+            environment.last().unwrap()["NEIGE_MCP_TOKEN"],
+            true,
+            "the failure must exercise an issued context"
+        );
+        assert_eq!(token(&repo, &row).await, None);
+        assert_eq!(methods(root.path()), ["initialize", "authenticate"]);
+        assert!(all_stopped(root.path()));
+        session.shutdown().await.unwrap();
+    }
 }
 
 /// argv is the registration's `args`, then the profile's entry with the turn mode's agent options

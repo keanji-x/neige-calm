@@ -20174,11 +20174,19 @@
         "required": [
           "provider",
           "status",
+          "authentication_method",
           "reason",
           "checked_at_ms",
           "authentication_notice"
         ],
         "properties": {
+          "authentication_method": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Effective ACP authentication method; no credentials or account identity."
+          },
           "authentication_notice": {
             "oneOf": [
               {

@@ -67,7 +67,8 @@ def cold_trace(event, request=None, response=None):
 cold_trace('start')
 with (root / 'environment.jsonl').open('a') as output:
     presence = {name: name in os.environ for name in [
-        'NEIGE_MCP_DAEMON_TOKEN', 'NEIGE_MCP_TOKEN', 'NEIGE_MCP_SOCKET', 'ACP_AMBIENT_SENTINEL']}
+        'NEIGE_MCP_DAEMON_TOKEN', 'NEIGE_MCP_TOKEN', 'NEIGE_MCP_SOCKET', 'ACP_AMBIENT_SENTINEL',
+        'XAI_API_KEY', 'GROK_CODE_XAI_API_KEY']}
     presence['_pid'] = os.getpid()
     presence['probe'] = {key: hashlib.sha256(os.environ.get(key, '').encode()).hexdigest() for key in os.environ.get('ACP_FIXTURE_PROBE_KEYS', '').split(',') if key}
     presence['opencode_config_content'] = os.environ.get('OPENCODE_CONFIG_CONTENT')
@@ -328,7 +329,9 @@ for line in sys.stdin:
         if behaviour == 'ok':
             result(request, {})
         elif behaviour == 'error':
-            emit({'jsonrpc': '2.0', 'id': request['id'], 'error': {'code': -32000, 'message': 'Authentication required'}})
+            emit({'jsonrpc': '2.0', 'id': request['id'], 'error': {'code': -32000, 'message': os.environ.get('ACP_FIXTURE_AUTH_ERROR', 'Authentication required')}})
+        elif behaviour == 'eof':
+            sys.exit(0)
     elif method == 'session/new':
         if (root / 'scenario').read_text().strip() == 'catalog_cancel':
             hold_catalog()

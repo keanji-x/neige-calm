@@ -42,6 +42,9 @@ pub enum ProviderStatus {
 pub struct ProviderAvailability {
     pub provider: AgentProvider,
     pub status: ProviderStatus,
+    /// Effective ACP authentication method; no credentials or account identity.
+    #[schema(required = true)]
+    pub authentication_method: Option<String>,
     /// neige's own sentence naming the failed check and its fix; `null` exactly when `ready`.
     #[schema(required = true)]
     pub reason: Option<String>,
@@ -65,6 +68,7 @@ pub enum Verdict {
 pub struct Checked {
     pub provider: AgentProvider,
     pub verdict: Verdict,
+    pub authentication_method: Option<String>,
     /// Wall-clock ms at which the check started.
     pub checked_at_ms: i64,
     pub authentication_notice: Option<crate::codex_authentication::AuthenticationNotice>,
@@ -93,6 +97,7 @@ impl From<Checked> for ProviderAvailability {
         Self {
             provider: checked.provider,
             status,
+            authentication_method: checked.authentication_method,
             reason,
             checked_at_ms: checked.checked_at_ms,
             authentication_notice: checked.authentication_notice,
@@ -243,6 +248,7 @@ impl ProviderAvailabilityCache {
                     .map(|notice| notice.text.clone());
                 Checked {
                     provider: AgentProvider::Codex,
+                    authentication_method: None,
                     verdict: if let Some(reason) = hold {
                         Verdict::Unavailable(reason)
                     } else {
@@ -267,6 +273,7 @@ impl ProviderAvailabilityCache {
         let Some(slot) = self.acp.get(provider.wire_name()) else {
             return Checked {
                 provider: provider.clone(),
+                authentication_method: None,
                 verdict: Verdict::NotConfigured(format!(
                     "{} does not speak ACP",
                     provider.wire_name()
@@ -288,6 +295,11 @@ impl ProviderAvailabilityCache {
             .await;
         Checked {
             provider: provider.clone(),
+            authentication_method: host
+                .configured(provider)
+                .ok()
+                .and_then(|config| config.authentication().ok().flatten())
+                .map(|method| method.id.to_owned()),
             verdict: stamped.outcome,
             checked_at_ms: stamped.checked_at_ms,
             authentication_notice: None,

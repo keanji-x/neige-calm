@@ -48,10 +48,10 @@ const NO_CLAUDE = {
 /** What `routes/agent_providers.rs` answers alongside each catalog (#1817). */
 function availability(claude: 'ready' | 'not_configured') {
   return [
-    { provider: 'codex', status: 'ready', reason: null, authentication_notice: null, checked_at_ms: 1 },
+    { provider: 'codex', status: 'ready', reason: null, authentication_method: null, authentication_notice: null, checked_at_ms: 1 },
     claude === 'ready'
-      ? { provider: 'claude', status: 'ready', reason: null, authentication_notice: null, checked_at_ms: 1 }
-      : { provider: 'claude', status: 'not_configured', reason: 'calm-server was started without --claude-planner-config', authentication_notice: null, checked_at_ms: 1 },
+      ? { provider: 'claude', status: 'ready', reason: null, authentication_method: null, authentication_notice: null, checked_at_ms: 1 }
+      : { provider: 'claude', status: 'not_configured', reason: 'calm-server was started without --claude-planner-config', authentication_method: null, authentication_notice: null, checked_at_ms: 1 },
   ];
 }
 
@@ -70,7 +70,7 @@ function mount(claude: unknown, opencode = false, opencodeCatalog: unknown = NO_
     if (request.path === '/api/models?provider=opencode') return Promise.resolve(ok(opencodeCatalog));
     if (request.path === '/api/agent-providers' || request.path === '/api/agent-providers/managed') {
       const answers = [...availability(claude === NO_CLAUDE ? 'not_configured' : 'ready'),
-        { provider: 'opencode', status: opencode ? 'ready' : 'not_configured', reason: opencode ? null : 'Configure the agent', checked_at_ms: 1, authentication_notice: null }];
+        { provider: 'opencode', status: opencode ? 'ready' : 'not_configured', reason: opencode ? null : 'Configure the agent', checked_at_ms: 1, authentication_method: null, authentication_notice: null }];
       return Promise.resolve(ok(request.path.endsWith('/managed') ? answers.map((entry) => ({
         availability: entry, accepts_unavailable_blank_track: true,
         capabilities: { managed_conversation: true, steer: false, images: false, manual_compact: false,

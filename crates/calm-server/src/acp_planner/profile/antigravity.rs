@@ -34,10 +34,9 @@ pub(super) const PROFILE: AcpAgentProfile = AcpAgentProfile {
     // authorize only this turn's requests; a CLI skip-permissions flag would affect every card.
     full_requests: provider::acp::approvals::FullPermissionRequests::AllowOnce,
     full: NOTHING,
-    authentication: None,
+    authentication: &[],
     mcp_tool_request: None,
     decline_ends_turn: true,
-    refused_env: &[],
 };
 
 // AGY 1.5.3 drops business parameters above 64 bytes in its documented

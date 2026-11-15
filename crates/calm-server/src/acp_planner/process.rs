@@ -227,27 +227,29 @@ pub(super) async fn negotiate(
     .await
     .map_err(|error| format!("ACP initialize failed: {error}"))?;
     profile.admit_identity(&response, &config.min_agent_version)?;
-    if let Some(method) = profile.authentication {
+    if let Some(method) = config.authentication().map_err(|error| error.to_string())? {
         // Only the agent's own report: never its private credential files.
         let signed_out = |cause: String| {
             format!(
-                "{} did not authenticate ({cause}); sign it in with its own CLI under the environment \
-                 its ACP registration declares, then retry",
-                config.provider.wire_name()
+                "{} did not authenticate with `{}` ({cause}); {}",
+                config.provider.wire_name(),
+                method.id,
+                method.recovery
             )
         };
         if !response
             .auth_methods
             .iter()
-            .any(|offered| offered.id == method)
+            .any(|offered| offered.id == method.id)
         {
             return Err(signed_out(format!(
-                "it does not offer authentication method `{method}`"
+                "it does not offer authentication method `{}`",
+                method.id
             )));
         }
-        protocol::authenticate(client, method)
+        protocol::authenticate(client, method.id)
             .await
-            .map_err(|error| signed_out(format!("authenticate `{method}`: {error}")))?;
+            .map_err(|error| signed_out(format!("authenticate `{}`: {error}", method.id)))?;
     }
     Ok(Negotiated {
         version: profile.reported_version(&response),

@@ -36,9 +36,9 @@ afterEach(() => {
 
 function answer(claude: Readonly<{ status: string; reason: string | null }>) {
   return [
-    { availability: { provider: 'codex', status: 'ready', reason: null, authentication_notice: null, checked_at_ms: 1_760_000_000_000 },
+    { availability: { provider: 'codex', status: 'ready', reason: null, authentication_method: null, authentication_notice: null, checked_at_ms: 1_760_000_000_000 },
       accepts_unavailable_blank_track: true, capabilities: { managed_conversation: true, steer: true, images: true, manual_compact: true, history_replacement: true, requires_ready_availability: false } },
-    { availability: { provider: 'claude', ...claude, authentication_notice: null, checked_at_ms: 1_760_000_000_000 },
+    { availability: { provider: 'claude', ...claude, authentication_method: null, authentication_notice: null, checked_at_ms: 1_760_000_000_000 },
       accepts_unavailable_blank_track: true, capabilities: { managed_conversation: true, steer: false, images: true, manual_compact: true, history_replacement: true, requires_ready_availability: true } },
   ];
 }
@@ -315,7 +315,7 @@ it('shares Settings availability with the shell notice through Recheck and Codex
     if (request.path.endsWith('refresh=true')) signedIn = true;
     const entries = answer({ status: 'ready', reason: null });
     if (!signedIn) Object.assign(entries[0].availability, { status: 'unavailable', reason: 'outage reason',
-      authentication_notice: { kind: 'sign_in_required', text: confirmed, revision: '7' } });
+      authentication_method: null, authentication_notice: { kind: 'sign_in_required', text: confirmed, revision: '7' } });
     return Promise.resolve(providerResponse(request, entries));
   });
   await screen.findByRole('button', { name: 'Retry queued messages after server sign-in' });

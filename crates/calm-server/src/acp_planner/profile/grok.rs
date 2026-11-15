@@ -1,14 +1,17 @@
 //! Grok Build's ACP agent profile (1.0.62). It serves ACP as `grok agent --no-leader stdio`: its
 //! agent options go after `agent`, and `--no-leader` starts this process's own agent instead of
 //! joining a shared leader. Its `initialize` reports no `agentInfo`, only `_meta.agentVersion`, and
-//! every launch authenticates with `cached_token`, the sign-in `grok login` stored under the
-//! registration's `GROK_HOME`. Its permission flags (`--allow`, `--deny`, `--permission-mode`)
+//! launches default to `cached_token`, the sign-in `grok login` stored under the registration's
+//! `GROK_HOME`; an explicit `xai.api_key` selection uses Grok's native API key configuration.
+//! Its permission flags (`--allow`, `--deny`, `--permission-mode`)
 //! are the TUI's and headless mode's: a stdio agent does not apply them. What a stdio agent does
 //! apply is `--always-approve`, an agent option, so each turn's process runs under that turn's mode.
 //!
 //! `never` adds nothing: Grok asks, every request but one for Neige's own tools is answered
 //! `cancelled`, and Grok then ends its turn, which says why ([`AcpAgentProfile::decline_ends_turn`]).
-use super::{AcpAgentProfile, AgentEntry, AgentIdentity, ModeLaunch, NOTHING};
+use super::{
+    AcpAgentProfile, AgentEntry, AgentIdentity, AuthenticationMethod, ModeLaunch, NOTHING,
+};
 use provider::acp::approvals::McpToolRequest;
 
 pub(super) const PROFILE: AcpAgentProfile = AcpAgentProfile {
@@ -30,7 +33,18 @@ pub(super) const PROFILE: AcpAgentProfile = AcpAgentProfile {
     versions: None,
     owned_env: &[],
     never: NOTHING,
-    authentication: Some("cached_token"),
+    authentication: &[
+        AuthenticationMethod {
+            id: "cached_token",
+            recovery: "sign it in with its own CLI under the environment its ACP registration declares, then retry",
+            refused_env: &["XAI_API_KEY", "GROK_CODE_XAI_API_KEY"],
+        },
+        AuthenticationMethod {
+            id: "xai.api_key",
+            recovery: "configure its native API key under the environment its ACP registration declares, then retry",
+            refused_env: &[],
+        },
+    ],
     // Grok's default mode asks before edits, shell commands that write and MCP tool calls; a shell
     // command its own classifier reads as read-only runs without asking, and with no sandbox.
     ask: NOTHING,
@@ -49,9 +63,6 @@ pub(super) const PROFILE: AcpAgentProfile = AcpAgentProfile {
     }),
     // Any answer but an allow, `reject_once` included, ends Grok's turn `cancelled`.
     decline_ends_turn: true,
-    // An xAI API key would bill the API instead of the signed-in subscription (Grok reads
-    // `GROK_CODE_XAI_API_KEY` as a former name of `XAI_API_KEY`).
-    refused_env: &["XAI_API_KEY", "GROK_CODE_XAI_API_KEY"],
 };
 
 #[cfg(test)]

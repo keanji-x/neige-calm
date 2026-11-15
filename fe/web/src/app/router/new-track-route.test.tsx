@@ -179,9 +179,9 @@ function harness(options: {
             : { status: 'unavailable', reason: options.claudeUnavailable };
         return Promise.resolve({ status: 200, statusText: 'OK', body: [
           options.codexUnavailable === undefined
-            ? { provider: 'codex', status: 'ready', reason: null, authentication_notice: null, checked_at_ms: 1 }
-            : { provider: 'codex', status: 'unavailable', reason: options.codexUnavailable, authentication_notice: null, checked_at_ms: 1 },
-          { provider: 'claude', ...claude, authentication_notice: null, checked_at_ms: 1 },
+            ? { provider: 'codex', status: 'ready', reason: null, authentication_method: null, authentication_notice: null, checked_at_ms: 1 }
+            : { provider: 'codex', status: 'unavailable', reason: options.codexUnavailable, authentication_method: null, authentication_notice: null, checked_at_ms: 1 },
+          { provider: 'claude', ...claude, authentication_method: null, authentication_notice: null, checked_at_ms: 1 },
         ].map((availability) => request.path.endsWith('/managed')
           ? { availability, accepts_unavailable_blank_track: true, capabilities: { managed_conversation: true,
             steer: false, images: true, manual_compact: true, history_replacement: true, requires_ready_availability: true } }

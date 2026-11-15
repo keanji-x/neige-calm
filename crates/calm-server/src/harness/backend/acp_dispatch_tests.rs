@@ -189,6 +189,7 @@ fn session_for_command_with_options(
                     ],
                     env,
                     default_permission_mode: None,
+                    auth_method: None,
                     min_agent_version: semver::Version::new(1, 0, 0),
                 }],
             }),

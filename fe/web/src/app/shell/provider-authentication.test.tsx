@@ -13,8 +13,8 @@ const REQUIRED = 'Codex sign-in needs renewal. Sign in again for this server, th
 const REPORTED = 'Codex reported a sign-in renewal error. This does not confirm that your current sign-in has failed.';
 function entry(kind: 'sign_in_required' | 'refresh_error_reported' | null): ProviderAvailability {
   return kind === 'sign_in_required'
-    ? { provider: 'codex', status: 'unavailable', reason: REQUIRED, checked_at_ms: 1, authentication_notice: { kind, revision: '1', text: REQUIRED } }
-    : { provider: 'codex', status: 'ready', reason: null, checked_at_ms: 1, authentication_notice: kind === null ? null : { kind, revision: '1', text: REPORTED } };
+    ? { provider: 'codex', status: 'unavailable', reason: REQUIRED, checked_at_ms: 1, authentication_method: null, authentication_notice: { kind, revision: '1', text: REQUIRED } }
+    : { provider: 'codex', status: 'ready', reason: null, checked_at_ms: 1, authentication_method: null, authentication_notice: kind === null ? null : { kind, revision: '1', text: REPORTED } };
 }
 function mount(initial: ProviderAvailability) {
   let answer = initial;
@@ -55,7 +55,7 @@ it('retains confirmed warning when a read fails', async () => {
   expect(screen.getByText(REQUIRED)).toBeTruthy();
 });
 it('does not invent authentication evidence from ordinary unavailability', async () => {
-  const app = mount({ provider: 'codex', status: 'unavailable', reason: 'daemon starting', checked_at_ms: 1, authentication_notice: null });
+  const app = mount({ provider: 'codex', status: 'unavailable', reason: 'daemon starting', checked_at_ms: 1, authentication_method: null, authentication_notice: null });
   await waitFor(() => expect(app.client.getQueryData(queryKeys.agentProviders())).toBeDefined());
   expect(screen.queryByRole('alert')).toBeNull();
 });

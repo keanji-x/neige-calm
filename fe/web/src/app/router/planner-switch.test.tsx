@@ -295,7 +295,7 @@ it.each(['detail-first', 'list-first'])('history deduplicates roles through %s a
 
 it('uses the listed Assistant provider through model, capabilities and side', async () => {
   const fixture = renderAssistantProviderFixture({ existingProvider: 'claude', runAttachmentsSupported: true, answers: [{
-    availability: { provider: 'claude', status: 'ready', reason: null, checked_at_ms: 1, authentication_notice: null },
+    availability: { provider: 'claude', status: 'ready', reason: null, checked_at_ms: 1, authentication_method: null, authentication_notice: null },
     accepts_unavailable_blank_track: true, capabilities: { managed_conversation: true, steer: false, images: false,
       manual_compact: false, history_replacement: false, requires_ready_availability: true },
   }] });

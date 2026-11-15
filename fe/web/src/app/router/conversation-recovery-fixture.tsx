@@ -48,7 +48,7 @@ export function renderRecoveryFixture({ accepted = false, holdReads = false, sto
       if (capabilitiesUnavailable) return { status: 500, statusText: 'Error', body: { error: 'Capabilities unavailable.' } };
       if (holdCapabilities) await new Promise<void>(finish => { heldCapabilities.push(finish); });
       return ok([{
-      availability: { provider: 'codex', status: 'ready', reason: null, checked_at_ms: 1, authentication_notice: null },
+      availability: { provider: 'codex', status: 'ready', reason: null, checked_at_ms: 1, authentication_method: null, authentication_notice: null },
       accepts_unavailable_blank_track: true, capabilities: { managed_conversation: true, steer: true, images: true, manual_compact: true, history_replacement: true, requires_ready_availability: false },
       }]);
     }

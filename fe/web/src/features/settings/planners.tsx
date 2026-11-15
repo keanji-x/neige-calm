@@ -108,7 +108,11 @@ export function PlannersPane({
                 key={entry.provider}
                 title={PROVIDER_LABELS[entry.provider]}
                 /* A node, not a string: a string description is cut to one line, and a reason is a fix to read whole. */
-                description={<span className={styles.plannerReason}>{describe({ availability: entry, accepts_unavailable_blank_track })}</span>}
+                description={<span className={styles.plannerReason}>
+                  {entry.authentication_method !== null && <span>Authentication: {entry.authentication_method}</span>}
+                  {entry.authentication_method !== null && <br />}
+                  {describe({ availability: entry, accepts_unavailable_blank_track })}
+                </span>}
                 control={<>
                   <AstryxBadge className={styles.pluginStateChip}
                     variant={STATUS_BADGES[entry.status].variant} label={STATUS_BADGES[entry.status].label} />

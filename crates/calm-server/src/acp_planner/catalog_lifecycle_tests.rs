@@ -36,6 +36,7 @@ for line in sys.stdin:
                 env: Default::default(),
                 min_agent_version: "1.0.62".parse().unwrap(),
                 default_permission_mode: None,
+                auth_method: None,
             }],
         }),
         root.path(),
