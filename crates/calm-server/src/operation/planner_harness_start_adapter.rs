@@ -2910,7 +2910,7 @@ mod tests {
                 .contains("Before report edits, read affected sections with `neige_report_read`"),
             "base prompt must require the report read before direct edits"
         );
-        assert!(expected.contains("Selected Template snapshot"));
+        assert!(expected.contains("selected Template snapshot"));
         assert!(expected.contains("not to reproduce a template checklist"));
     }
 

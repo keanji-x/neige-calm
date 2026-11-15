@@ -1,4 +1,32 @@
 #!/usr/bin/env bash
+# Gemini Worker v2 bounded SQL/syntax exception: long_literal 213 -> 240.
+# The new independent task-block prose oracle lives in tests/goldens/ and is
+# embedded through the existing golden mechanism, not split into Rust strings.
+# Twenty new matches describe literal storage queries/fixtures:
+# 1-2. acp_planner/{config,lifecycle}.rs select native Worker sessions for cleanup.
+# 3. acp_worker/admission.rs proves operation/card/attempt/lease/session ownership.
+# 4-8. acp_worker/lifecycle.rs reads pending settlement and applicable sessions,
+#      settles the captured turn, enumerates reboot rows and fences reboot cleanup.
+# 9. acp_worker/session.rs records native attachment only before turn admission.
+# 10-11. decision_sink/read_only.rs captures and rechecks the sampler's lease witness.
+# 12-13. operation/terminal_disposal.rs selects typed Worker operations and
+#        requires confirmed native cleanup before shared disposal.
+# 14. operation/terminal_launch.rs resolves terminal ownership through typed operations.
+# 15-16. task_control/mod.rs admits real User control and captures cancel identity.
+# 17. calm-truth/sqlite/acp_worker.rs performs the exact raw-state/turn CAS.
+# 18. calm-truth/sqlite/task.rs proves dispatcher ownership via typed operations.
+# 19-20. tasks_kind_compact_migration.rs seeds nonempty old history and tests
+#        new request freeze against the real rebuilt schema.
+# One old terminal_disposal query is replaced, so the SQL delta is +19.
+# Eight additional scanner matches start at a closing quote and extend into Rust
+# syntax, not prose: lifecycle.rs's two query bind chains and failed-event tuple;
+# session.rs's message-header call; read_only.rs's diagnostic bind chain;
+# track_report_blocks/contracts.rs's typed provider enumeration; and the two
+# routes/task_control.rs OpenAPI declarations. Keep those real contracts intact.
+# Thus 20 SQL + 8 syntax - 1 replaced SQL = +27. No scan pattern, scope,
+# exclusion or allowlist changes. Later query/schema changes edit their owner
+# and this existing baseline; ordinary tests need no inventory entry. The existing
+# scan and its separate selftest each still run once per CI lint workflow.
 # #3633 bounded SQL exception: long_literal/crates/**/*.rs 208 -> 213.
 # Five SQL statements describe real storage contracts:
 # 1. conversation/messages.rs inserts explicit Human or LinkGuest attribution.

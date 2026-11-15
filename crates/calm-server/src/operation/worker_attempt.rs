@@ -34,3 +34,30 @@ pub(crate) async fn current_running_attempt_tx(tx: &mut Tx<'_>, task: &Task) -> 
     }
     Ok(())
 }
+
+/// Native Worker messages can arrive after card publication and before the scheduler observes spawn.
+pub(crate) async fn current_message_attempt_tx(tx: &mut Tx<'_>, task: &Task) -> Result<()> {
+    let native = task
+        .agent_provider()
+        .map_err(CalmError::BadRequest)?
+        .and_then(calm_types::provider_worker::ProviderWorkerCapabilities::for_provider)
+        .is_some_and(|cap| {
+            cap.message_transport
+                == calm_types::provider_worker::WorkerMessageTransport::NativeSession
+        });
+    if !native {
+        return current_running_attempt_tx(tx, task).await;
+    }
+    let current = task_attempt_current_tx(tx, &task.track_id, &task.key).await?;
+    if !matches!(task.status, TaskStatus::Dispatched | TaskStatus::Running)
+        || current
+            .as_ref()
+            .map(|allocation| allocation.attempt_id.as_str())
+            != Some(task.id.as_str())
+    {
+        return Err(CalmError::Conflict(
+            "native Worker is no longer accepting messages".into(),
+        ));
+    }
+    Ok(())
+}

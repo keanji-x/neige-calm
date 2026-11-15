@@ -26,9 +26,19 @@ impl From<Version> for u64 {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Purpose {
-    Turn { turn_id: String },
-    Compaction { turn_id: String },
+    Turn {
+        turn_id: String,
+    },
+    Compaction {
+        turn_id: String,
+    },
     RewindCheck,
+    /// A task-owned native ACP round; its carrier is the shared ACP process, not an Engine execution.
+    WorkerTurn {
+        attempt_id: String,
+        turn_id: String,
+        native_session_id: String,
+    },
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Release {

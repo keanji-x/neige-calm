@@ -16,7 +16,7 @@ pub async fn pending_checkout_blocker(
     if task.status != TaskStatus::Dispatched || !task.runs_in_track_checkout() {
         return Ok(None);
     }
-    let Some(kind) = task.kind.worker_operation_kind() else {
+    let Some(kind) = task.worker_operation_kind() else {
         return Ok(None);
     };
     #[derive(sqlx::FromRow)]

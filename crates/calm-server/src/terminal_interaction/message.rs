@@ -23,8 +23,23 @@ const PASTE_END: &[u8] = b"\x1b[201~";
 /// The kernel's first line of every message: the inserted text never starts with the caller's
 /// `/` or `!`, and it names the attempt it was written for.
 pub fn message_header(attempt_id: &str, message_id: &str) -> String {
+    message_header_from(
+        attempt_id,
+        message_id,
+        calm_types::track_fs_dto::TaskMessageSource::Planner,
+    )
+}
+pub fn message_header_from(
+    attempt_id: &str,
+    message_id: &str,
+    source: calm_types::track_fs_dto::TaskMessageSource,
+) -> String {
+    let author = match source {
+        calm_types::track_fs_dto::TaskMessageSource::Planner => "Planner",
+        calm_types::track_fs_dto::TaskMessageSource::User => "User",
+    };
     format!(
-        "[neige] Planner message {message_id} for attempt {attempt_id}: read it with neige_message_read"
+        "[neige] {author} message {message_id} for attempt {attempt_id}: read it with neige_message_read"
     )
 }
 
@@ -221,6 +236,37 @@ impl TerminalInteraction {
                 "action \"message\" is the Planner's; its header names the Planner".into(),
             )
             .into());
+        }
+        if let Target::Attempt(attempt) = target
+            && let Some(task) = self.repo.task_get(attempt).await?
+        {
+            let native = task
+                .agent_provider()
+                .map_err(crate::error::CalmError::BadRequest)?
+                .and_then(calm_types::provider_worker::ProviderWorkerCapabilities::for_provider)
+                .is_some_and(|cap| {
+                    cap.message_transport
+                        == calm_types::provider_worker::WorkerMessageTransport::NativeSession
+                });
+            if native {
+                let worker = task.worker_card_id.as_deref().ok_or_else(|| {
+                    crate::error::CalmError::Conflict(
+                        "native Worker has not published its card yet".into(),
+                    )
+                })?;
+                let message = crate::decision_sink::CardDecisionSink::commit_planner_message(
+                    &self.repo,
+                    identity,
+                    attempt,
+                    worker,
+                    idempotency_key,
+                    text,
+                )
+                .await?;
+                return Ok(
+                    json!({"attempt_id":attempt,"message_id":message,"idempotency_key":idempotency_key,"outcome":"queued","transport":"native_session"}),
+                );
+            }
         }
         let key = idempotency_key.to_owned();
         let fingerprint =

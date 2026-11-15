@@ -320,3 +320,45 @@ async fn task_recovery_domain_deletion_removes_allocations_after_rows() {
 }
 
 mod followup;
+
+#[tokio::test]
+async fn task_attempt_agent_requests_follow_pending_then_freeze_and_recover_from_predecessor() {
+    let repo = setup().await;
+    let mut task = block("b", &[]);
+    task.payload = json!({"key":"b","kind":"agent","provider":"antigravity","model":"model-1","reasoning_effort":"high","goal":"inspect","access":"read_only","ready":true,"declared_by":"spec"});
+    project(&repo, &[task.clone()]).await;
+    task.payload["model"] = json!("model-2");
+    project(&repo, &[task.clone()]).await;
+    assert_eq!(
+        repo.task_get("w:b")
+            .await
+            .unwrap()
+            .unwrap()
+            .model
+            .as_deref(),
+        Some("model-2")
+    );
+    fail(&repo, &task).await;
+    task.payload["model"] = json!("later-report");
+    let new_attempt = recover(&repo, &task).await;
+    project(&repo, &[task]).await;
+    let frozen = repo.task_get(&new_attempt).await.unwrap().unwrap();
+    assert_eq!(frozen.provider.as_deref(), Some("antigravity"));
+    assert_eq!(frozen.model.as_deref(), Some("model-2"));
+    assert!(
+        repo.db()
+            .writer()
+            .execute(sqlx::query(
+                "UPDATE tasks SET model='changed' WHERE id='w:b'"
+            ))
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM pragma_foreign_key_check")
+            .fetch_one(repo.pool())
+            .await
+            .unwrap(),
+        0
+    );
+}

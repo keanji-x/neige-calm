@@ -13,7 +13,6 @@ mod server;
 mod setup;
 use cancellation::IssueGuard;
 use input::InputContract;
-pub(super) use server::Server;
 pub(crate) use server::detach_worker;
 mod execution_end;
 use super::{config::AcpPlannerHost, execution::Process, process::setup_request};
@@ -57,14 +56,8 @@ pub struct SessionParams {
     pub cwd: std::path::PathBuf,
     pub instructions: String,
 }
-#[derive(Clone, Copy)]
-pub(super) enum CancelRequest {
-    Running,
-    Requested,
-    /// The external control owner finished its attempt, with any outcome.
-    /// Bound the original driver without writing a second native cancel.
-    Attempted,
-}
+pub(super) use crate::acp_session::driver::CancelRequest;
+
 struct Active {
     thread: String,
     turn: String,
@@ -328,7 +321,10 @@ async fn bind_native(params: &SessionParams, thread: &str, native: &str) -> Resu
             if super::profile::AcpAgentProfile::of(&provider)
                 .is_some_and(|profile| profile.shared_server)
             {
-                server::ensure_native_owner(&mut **tx, &provider, &worker, &native).await?;
+                crate::acp_session::server::ensure_native_owner(
+                    &mut **tx, &provider, &worker, &native,
+                )
+                .await?;
             }
             crate::db::sqlite::session_bind_attribution_tx(
                 tx,
@@ -370,12 +366,10 @@ async fn mint_token(params: &SessionParams) -> Result<String> {
     .await
 }
 async fn revoke(params: &SessionParams) -> Result<()> {
-    revoke_worker(params.repo.as_ref(), &params.worker_session_id).await
-}
-
-async fn revoke_worker(repo: &dyn Repo, worker: &str) -> Result<()> {
-    let worker = worker.to_owned();
-    write_in_tx_typed(repo, move |tx| {
+    // Planner policy revokes the session-wide grant; shared-generation cleanup below
+    // instead uses the hash captured when that generation minted its attachment.
+    let worker = params.worker_session_id.clone();
+    write_in_tx_typed(params.repo.as_ref(), move |tx| {
         Box::pin(async move {
             sqlx::query("UPDATE worker_sessions SET mcp_token_hash=NULL WHERE id=?1")
                 .bind(worker)
@@ -386,6 +380,7 @@ async fn revoke_worker(repo: &dyn Repo, worker: &str) -> Result<()> {
     })
     .await
 }
+
 fn cancel_outcome(
     result: std::result::Result<(), tokio::sync::watch::error::SendError<bool>>,
 ) -> provider::control::InterruptOutcome<tokio::sync::watch::error::SendError<bool>> {

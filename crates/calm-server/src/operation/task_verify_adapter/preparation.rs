@@ -232,6 +232,11 @@ async fn read_facts(tx: &mut Tx<'_>, input: &Value, op: &Operation) -> Result<(F
             "task-verify idempotency key does not match payload".into(),
         ));
     }
+    if crate::acp_worker::pending_finalize_tx(tx, &payload.task_id).await? {
+        return Err(CalmError::Conflict(
+            "ACP Worker round must settle before Gate preparation".into(),
+        ));
+    }
     let attempt = payload.attempt;
     super::execution::require_prior_settled(tx, &payload.task_id, attempt).await?;
 

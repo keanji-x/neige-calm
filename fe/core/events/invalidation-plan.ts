@@ -55,7 +55,7 @@ export type TrackFilesDerivedKind =
   | 'worker_session.started' | 'worker_session.status_changed' | 'worker_session.superseded'
   | 'terminal.deleted' | 'codex.hook' | 'claude.hook'
   | 'codex.worker_requested' | 'terminal.worker_requested'
-  | 'task.completed' | 'task.failed' | 'task.git_delivery_settled' | 'task.dispatched' | 'task.gate_result'
+  | 'task.completed' | 'task.report_settled' | 'task.failed' | 'task.git_delivery_settled' | 'task.dispatched' | 'task.gate_result'
   | 'task.regate_requested';
 
 /** Every kind that can change what a track's workspace looks like. */
@@ -64,7 +64,7 @@ export const TRACK_FILES_DERIVED_KINDS = Object.freeze([
   'worker_session.started', 'worker_session.status_changed', 'worker_session.superseded',
   'terminal.deleted', 'codex.hook', 'claude.hook',
   'codex.worker_requested', 'terminal.worker_requested',
-  'task.completed', 'task.failed', 'task.git_delivery_settled', 'task.dispatched', 'task.gate_result',
+  'task.completed', 'task.report_settled', 'task.failed', 'task.git_delivery_settled', 'task.dispatched', 'task.gate_result',
 ] as const);
 
 /**
@@ -240,6 +240,10 @@ function policies(): PolicyMap {
   'codex.worker_requested': plan((event, context) => result(taskVerdicts(derivedTrackId(event.data, context)))),
   'terminal.worker_requested': plan((event, context) => result(taskVerdicts(derivedTrackId(event.data, context)))),
   'task.completed': plan((event, context) => result(taskVerdicts(derivedTrackId(event.data, context)))),
+  'task.report_settled': plan((event, context) => {
+    const track = derivedTrackId(event.data, context);
+    return result([...taskVerdicts(track), track === null ? eventKeys.trackDetailPrefix() : eventKeys.trackDetail(track)]);
+  }),
   'task.failed': plan((event, context) => result(taskVerdicts(derivedTrackId(event.data, context)))),
   'task.git_delivery_settled': plan((event, context) => result(taskVerdicts(derivedTrackId(event.data, context)))),
   'plan.updated': plan((event) => result(

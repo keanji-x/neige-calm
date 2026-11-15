@@ -288,6 +288,7 @@ pub struct NewPlugin {
 #[sqlx(rename_all = "lowercase")]
 #[serde(rename_all = "lowercase")]
 pub enum TaskKind {
+    Agent,
     Codex,
     Claude,
     Terminal,
@@ -295,26 +296,42 @@ pub enum TaskKind {
 }
 
 impl TaskKind {
-    const CHECKOUT_WORKERS: [(Self, &'static str); 3] = [
-        (Self::Codex, "codex-worker"),
-        (Self::Claude, "claude-worker"),
-        (Self::Terminal, "terminal-worker"),
-    ];
-
-    /// The operation whose preparation owns a task's checkout admission.
-    /// Compact and child-track lifecycle work do not acquire worker checkouts.
-    pub fn worker_operation_kind(self) -> Option<&'static str> {
-        Self::CHECKOUT_WORKERS
-            .iter()
-            .find(|(kind, _)| *kind == self)
-            .map(|(_, operation)| *operation)
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Agent => "agent",
+            Self::Codex => "codex",
+            Self::Claude => "claude",
+            Self::Terminal => "terminal",
+            Self::Compact => "compact",
+        }
     }
-
+    /// Compatibility helper for historical kinds. Canonical tasks use Task::worker_operation_kind.
+    pub fn worker_operation_kind(self) -> Option<&'static str> {
+        use calm_types::provider_worker::{
+            ProviderWorkerCapabilities, WorkerOperationKind, task_provider,
+        };
+        if self == Self::Terminal {
+            return Some(WorkerOperationKind::TerminalWorker.as_str());
+        }
+        task_provider(self.as_str(), None)
+            .ok()
+            .flatten()
+            .and_then(ProviderWorkerCapabilities::for_provider)
+            .map(|cap| cap.operation.as_str())
+    }
     pub fn from_worker_operation_kind(operation: &str) -> Option<Self> {
-        Self::CHECKOUT_WORKERS
+        use calm_types::provider_worker::{PROVIDER_WORKER_CAPABILITIES, WorkerOperationKind};
+        if WorkerOperationKind::parse(operation) == Some(WorkerOperationKind::TerminalWorker) {
+            return Some(Self::Terminal);
+        }
+        PROVIDER_WORKER_CAPABILITIES
             .iter()
-            .find(|(_, name)| *name == operation)
-            .map(|(kind, _)| *kind)
+            .find(|cap| cap.operation.as_str() == operation)
+            .map(|cap| match cap.provider {
+                calm_types::runtime::AgentProvider::Codex => Self::Codex,
+                calm_types::runtime::AgentProvider::Claude => Self::Claude,
+                _ => Self::Agent,
+            })
     }
 }
 
@@ -380,6 +397,9 @@ pub struct Task {
     pub track_id: String,
     pub key: String,
     pub kind: TaskKind,
+    pub provider: Option<String>,
+    pub model: Option<String>,
+    pub reasoning_effort: Option<String>,
     /// Stored in `tasks.goal`; public surfaces call it `goal` for agent kinds and
     /// `command` for terminal.
     pub goal: String,
@@ -419,6 +439,19 @@ pub struct Task {
 }
 
 impl Task {
+    pub fn agent_provider(&self) -> Result<Option<calm_types::runtime::AgentProvider>, String> {
+        calm_types::provider_worker::task_provider(self.kind.as_str(), self.provider.as_deref())
+    }
+    pub fn worker_operation_kind(&self) -> Option<&'static str> {
+        if self.kind == TaskKind::Terminal {
+            return self.kind.worker_operation_kind();
+        }
+        self.agent_provider()
+            .ok()
+            .flatten()
+            .and_then(calm_types::provider_worker::ProviderWorkerCapabilities::for_provider)
+            .map(|cap| cap.operation.as_str())
+    }
     /// The writer always stores a sorted, deduped JSON array, so a parse failure
     /// means tampering — surface as empty rather than panicking.
     pub fn depends_on(&self) -> Vec<String> {
@@ -427,13 +460,7 @@ impl Task {
 
     /// #1830 S2 D5: [`calm_types::task_execution::runs_in_track_checkout`] on this row.
     pub fn runs_in_track_checkout(&self) -> bool {
-        let kind = match self.kind {
-            TaskKind::Codex => "codex",
-            TaskKind::Claude => "claude",
-            TaskKind::Terminal => "terminal",
-            TaskKind::Compact => "compact",
-        };
-        calm_types::task_execution::runs_in_track_checkout(kind, &self.spawn)
+        calm_types::task_execution::runs_in_track_checkout(self.kind.as_str(), &self.spawn)
     }
 }
 

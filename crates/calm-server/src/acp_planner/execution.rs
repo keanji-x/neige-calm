@@ -22,6 +22,7 @@ pub const CONSUMER: &str = "acp-planner";
 pub(crate) struct Owner {
     repo: OnceLock<Arc<dyn crate::db::Repo>>,
     registry: OnceLock<crate::harness::registry::WeakHarnessRegistry>,
+    host: OnceLock<std::sync::Weak<crate::acp_session::host::AcpHost>>,
 }
 impl std::fmt::Debug for Owner {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -37,7 +38,7 @@ impl Owner {
     pub(crate) fn bind(&self, repo: Arc<dyn crate::db::Repo>) {
         let _ = self.repo.set(repo);
     }
-    pub(crate) fn request_progress(&self, worker: &String) {
+    pub(crate) fn request_progress(&self, worker: &str) {
         if let Some(registry) = self.registry.get() {
             registry.request_progress(worker);
         }
@@ -74,6 +75,15 @@ impl ProviderExecutionOwner for Owner {
     fn alias(&self, session: &str, id: &str) -> String {
         self.alias_prefix().alias(session, id)
     }
+    fn owns_native_workers(&self) -> bool {
+        true
+    }
+    async fn reconcile_native_worker(&self, session: &str, claim: &Claim) -> Result<()> {
+        let Some(host) = self.host.get().and_then(std::sync::Weak::upgrade) else {
+            return Ok(());
+        };
+        host.native_workers.reconcile(&host, session, claim).await
+    }
     async fn complete(
         &self,
         session: &str,
@@ -81,9 +91,22 @@ impl ProviderExecutionOwner for Owner {
         evidence: CompletionEvidence,
         known: Option<KnownEnd>,
     ) -> Result<()> {
+        if matches!(record.purpose, Purpose::WorkerTurn { .. }) {
+            let host = self
+                .host
+                .get()
+                .and_then(std::sync::Weak::upgrade)
+                .ok_or_else(|| conflict("ACP host unavailable"))?;
+            return host
+                .native_workers
+                .complete(session, record, evidence, known)
+                .await;
+        }
         let turn_id = match &record.purpose {
             Purpose::Turn { turn_id } | Purpose::Compaction { turn_id } => turn_id,
-            Purpose::RewindCheck => return Err(conflict("wrong ACP purpose")),
+            Purpose::RewindCheck | Purpose::WorkerTurn { .. } => {
+                return Err(conflict("wrong ACP purpose"));
+            }
         };
         // Validate purpose and result before any credential, receipt or harness effect.
         match (&record.purpose, &known) {
@@ -118,7 +141,7 @@ impl ProviderExecutionOwner for Owner {
             // Maintenance has neither an input receipt nor a durable turn outcome.
             // Only recovery projects loss; the live compact driver retains its result.
             if known.is_none()
-                && let Some(harness) = self.registry.get().and_then(|r| r.get(&session.to_owned()))
+                && let Some(harness) = self.registry.get().and_then(|r| r.get(session))
             {
                 harness
                     .complete_provider_execution(
@@ -191,7 +214,7 @@ impl ProviderExecutionOwner for Owner {
                 events,
                 turn,
             );
-        } else if let Some(harness) = self.registry.get().and_then(|r| r.get(&session.to_owned())) {
+        } else if let Some(harness) = self.registry.get().and_then(|r| r.get(session)) {
             // This clears only this execution's live slot. It never creates a
             // normally-joined cleanup observation for an aborted/panicked driver.
             harness
@@ -286,4 +309,22 @@ pub(super) async fn intent(
         calm_session::control::execution::AmbientEnvironment::None,
     )
     .await
+}
+
+impl crate::acp_session::host::HostServices for Owner {
+    fn repo(&self) -> Result<&Arc<dyn crate::db::Repo>> {
+        Owner::repo(self)
+    }
+    fn bind(&self, repo: Arc<dyn crate::db::Repo>) {
+        Owner::bind(self, repo)
+    }
+    fn bind_registry(&self, registry: crate::harness::HarnessRegistry) {
+        Owner::bind_registry(self, registry)
+    }
+    fn request_progress(&self, session: &str) {
+        Owner::request_progress(self, session)
+    }
+    fn bind_host(&self, host: std::sync::Weak<crate::acp_session::host::AcpHost>) {
+        let _ = self.host.set(host);
+    }
 }

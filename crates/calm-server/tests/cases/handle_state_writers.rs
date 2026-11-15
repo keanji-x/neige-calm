@@ -109,6 +109,18 @@ fn writers_in_files(files: Vec<PathBuf>) -> BTreeSet<String> {
 /// `carried` (queue that did not come from the row; needs an argument beside the entry),
 /// `not-a-queue` (writes the column without touching `pending_queue`).
 const FROZEN_WRITERS: &[(&str, &str)] = &[
+    (
+        "crates/calm-server/src/acp_worker/lifecycle.rs::fail_and_finalize",
+        "not-a-queue",
+    ),
+    (
+        "crates/calm-truth/src/db/sqlite/acp_worker.rs::acp_worker_state_cas_tx",
+        "not-a-queue",
+    ),
+    (
+        "crates/calm-server/src/acp_worker/lifecycle.rs::recover_after_boot",
+        "not-a-queue",
+    ),
     // Boot-only canonical conversion reads the exact row under BEGIN IMMEDIATE,
     // preserves its pending references, and writes only against that same raw
     // snapshot. No carried operation output or historical body queue is adopted.

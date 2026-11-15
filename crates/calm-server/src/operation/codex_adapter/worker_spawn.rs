@@ -87,6 +87,18 @@ pub(crate) async fn spawn_codex_worker_via_shared_daemon(
             let shared = Arc::clone(ctx.shared_codex_appserver);
             let launch_thread = thread_id.clone();
             let items = vec![InputItem::text(ctx.rendered_prompt.trim())];
+            let selection = if let Some(task_id) = ctx.launch.operation().idempotency_key.as_deref()
+            {
+                match ctx.spawn_ctx.repo.task_get(task_id).await? {
+                    Some(task) => TurnModelSelection {
+                        model: task.model,
+                        effort: task.reasoning_effort,
+                    },
+                    None => TurnModelSelection::inherit(),
+                }
+            } else {
+                TurnModelSelection::inherit()
+            };
             let started = ctx
                 .launch
                 .clone()
@@ -95,7 +107,7 @@ pub(crate) async fn spawn_codex_worker_via_shared_daemon(
                         .turn_start(
                             &launch_thread,
                             items,
-                            &TurnModelSelection::inherit(),
+                            &selection,
                             TurnApprovals::Unchanged,
                             None,
                         )

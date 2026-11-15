@@ -112,6 +112,23 @@ pub(crate) fn card_runtime_from_session(
     last_turn_completed_ms: Option<i64>,
 ) -> Result<WorkerSessionProjection> {
     let kind = runtime_kind_from_session_identity(ws.provider, ws.contract)?;
+    // Runtime/card/files projections are public. A revoked grant's generation witness is
+    // retained only on the internal session row and never mirrored into display JSON.
+    let mut handle_state_json = ws.handle_state_json.clone();
+    let worker = AgentProvider::try_from(ws.provider)
+        .ok()
+        .and_then(calm_types::provider_worker::ProviderWorkerCapabilities::for_provider)
+        .is_some_and(|cap| {
+            cap.operation == calm_types::provider_worker::WorkerOperationKind::AcpWorker
+                && cap.admits(ws.contract, ws.mode)
+        });
+    if worker
+        && let Some(object) = handle_state_json
+            .as_mut()
+            .and_then(serde_json::Value::as_object_mut)
+    {
+        object.remove("credential_generation");
+    }
     Ok(WorkerSessionProjection {
         id: ws.id.as_str().to_string(),
         card_id,
@@ -122,7 +139,7 @@ pub(crate) fn card_runtime_from_session(
         thread_id: ws.thread_id.clone(),
         session_id: ws.agent_session_id.clone(),
         active_turn_id: ws.active_turn_id.clone(),
-        handle_state_json: ws.handle_state_json.clone(),
+        handle_state_json,
         created_at_ms: ws.created_at_ms,
         updated_at_ms: ws.updated_at_ms,
         completed_at_ms: ws.completed_at_ms,
@@ -151,11 +168,27 @@ fn runtime_kind_from_session_identity(
             Ok(WorkerSessionKind::ManagedAssistant)
         }
         (WorkerProviderKind::Terminal, WorkerContract::Executor) => Ok(WorkerSessionKind::Terminal),
-        (WorkerProviderKind::Codex, WorkerContract::Executor) => Ok(WorkerSessionKind::CodexCard),
+        (provider, WorkerContract::Executor | WorkerContract::Validator)
+            if AgentProvider::try_from(provider)
+                .ok()
+                .and_then(calm_types::provider_worker::ProviderWorkerCapabilities::for_provider)
+                .is_some() =>
+        {
+            let capability = AgentProvider::try_from(provider)
+                .ok()
+                .and_then(calm_types::provider_worker::ProviderWorkerCapabilities::for_provider)
+                .expect("registered worker");
+            // The historical card kind describes the container, never its provider.
+            Ok(match capability.operation {
+                calm_types::provider_worker::WorkerOperationKind::ClaudeWorker => {
+                    WorkerSessionKind::ClaudeCard
+                }
+                _ => WorkerSessionKind::CodexCard,
+            })
+        }
         (provider, WorkerContract::Planner) if provider.protocol().is_some() => {
             Ok(WorkerSessionKind::SharedPlanner)
         }
-        (WorkerProviderKind::Claude, WorkerContract::Executor) => Ok(WorkerSessionKind::ClaudeCard),
         _ => Err(WorkerSessionProjectionRepoError::Message {
             message: format!(
                 "unmappable session identity (provider={provider:?}, contract={contract:?})"
@@ -259,6 +292,32 @@ mod tests {
             assert!(sql.contains("c.id AS card_id"), "{sql}");
         }
         assert!(LAST_TURN_COMPLETED_MS_SUBQUERY.contains("<> 'interrupted'"));
+    }
+
+    #[test]
+    fn acp_worker_projection_redacts_credential_generation_without_changing_internal_row() {
+        let mut ws = worker_session(
+            WorkerProviderKind::Antigravity,
+            WorkerContract::Validator,
+            WorkerSessionState::Running,
+        );
+        ws.handle_state_json = Some(
+            json!({"credential_generation":"captured-private-hash", "turn_phase":"submitting", "effective_model":"fixture/model-a"}),
+        );
+        let public = card_runtime_from_session(&ws, "card-1".into(), None).unwrap();
+        assert_eq!(
+            public.handle_state_json,
+            Some(json!({"turn_phase":"submitting", "effective_model":"fixture/model-a"}))
+        );
+        assert_eq!(
+            ws.handle_state_json.as_ref().unwrap()["credential_generation"],
+            "captured-private-hash"
+        );
+        assert!(
+            !serde_json::to_string(&public)
+                .unwrap()
+                .contains("captured-private-hash")
+        );
     }
 
     #[test]

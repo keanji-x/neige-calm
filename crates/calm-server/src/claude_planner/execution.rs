@@ -24,7 +24,7 @@ impl Owner {
     pub(crate) fn bind(&self, repo: Arc<dyn crate::db::Repo>) {
         let _ = self.repo.set(repo);
     }
-    pub(crate) fn request_progress(&self, worker: &String) {
+    pub(crate) fn request_progress(&self, worker: &str) {
         if let Some(registry) = self.registry.get() {
             registry.request_progress(worker);
         }
@@ -81,6 +81,11 @@ impl ProviderExecutionOwner for Owner {
     ) -> Result<()> {
         let id = execution_id(record)?;
         match &record.purpose {
+            Purpose::WorkerTurn { .. } => {
+                return Err(conflict(
+                    "native ACP Worker purpose belongs to the ACP owner",
+                ));
+            }
             Purpose::RewindCheck => match known {
                 None | Some(KnownEnd::RewindCheck) => {}
                 Some(
@@ -89,7 +94,8 @@ impl ProviderExecutionOwner for Owner {
                     | KnownEnd::ClaudeWorkerTurn(_)
                     | KnownEnd::AcpTurn(_)
                     | KnownEnd::AcpRefused
-                    | KnownEnd::AcpCompaction,
+                    | KnownEnd::AcpCompaction
+                    | KnownEnd::AcpWorkerTurn(_),
                 ) => {
                     return Err(conflict("wrong Claude completion purpose"));
                 }
@@ -233,7 +239,8 @@ impl ProviderExecutionOwner for Owner {
                         | KnownEnd::ClaudeWorkerTurn(_)
                         | KnownEnd::AcpRefused
                         | KnownEnd::AcpTurn(_)
-                        | KnownEnd::AcpCompaction,
+                        | KnownEnd::AcpCompaction
+                        | KnownEnd::AcpWorkerTurn(_),
                     ) => {
                         return Err(conflict("wrong Claude completion purpose"));
                     }
@@ -297,7 +304,7 @@ impl ProviderExecutionOwner for Owner {
                         if let Some(harness) = self
                             .registry
                             .get()
-                            .and_then(|registry| registry.get(&session.to_owned()))
+                            .and_then(|registry| registry.get(session))
                         {
                             harness
                                 .complete_provider_execution(&id, turn_id, &record.purpose, turn)

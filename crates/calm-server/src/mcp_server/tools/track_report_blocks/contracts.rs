@@ -293,7 +293,7 @@ fn task_result_contracts() -> Value {
 
 /// Keep this schema in sync with `report_blocks::validate_payload`'s task validation.
 fn task_kind() -> Value {
-    json!({
+    let mut descriptor = json!({
         "kind": "task",
         "schema": {
             "type": "object",
@@ -456,7 +456,27 @@ fn task_kind() -> Value {
             "description": "Non-tombstones use the required fields above. Tombstones are the closed shape {key,tombstone,declared_by,tombstoned_by}."
         },
         "usage": "Task declaration block. `ready: true` lets the kernel project and schedule it. Use `goal` for codex/claude and `command` for terminal; the two fields are mutually exclusive. The terminal runner passes `command` verbatim to `/bin/sh -c`. Every string nested anywhere in `context` is limited to 2048 characters."
-    })
+    });
+    let schema = &mut descriptor["schema"];
+    schema["properties"]["kind"]["enum"] =
+        json!(["agent", "codex", "claude", "terminal", "compact"]);
+    schema["oneOf"][0]["properties"]["kind"]["enum"] = json!(["agent", "codex", "claude"]);
+    schema["properties"]["provider"] = json!({"type":"string","enum": calm_types::provider_worker::PROVIDER_WORKER_CAPABILITIES.iter().map(|cap| cap.provider.wire_name()).collect::<Vec<_>>()});
+    for field in ["model", "reasoning_effort"] {
+        schema["properties"][field] = json!({"type":"string","minLength":1,"pattern":"\\S","maxLength":report_blocks::MAX_STRING_CHARS});
+    }
+    let rules = schema["allOf"].as_array_mut().expect("task schema rules");
+    rules.push(json!({"if":{"required":["kind"],"properties":{"kind":{"const":"agent"}}},"then":{"required":["provider"]}}));
+    rules.push(json!({"if":{"anyOf":[{"required":["provider"]},{"required":["model"]},{"required":["reasoning_effort"]}]},"then":{"required":["kind"],"properties":{"kind":{"enum":["agent","codex","claude"]}},"not":{"required":["spawn"],"properties":{"spawn":{"const":"sub-track"}}}}}));
+    for provider in calm_types::runtime::AgentProvider::ALL {
+        let alias = provider.wire_name();
+        if calm_types::provider_worker::legacy_task_provider(alias).is_some() {
+            rules.push(json!({"if":{"required":["kind","provider"],"properties":{"kind":{"const":alias}}},"then":{"properties":{"provider":{"const":alias}}}}));
+        }
+    }
+    rules.push(json!({"if":{"required":["spawn"],"properties":{"spawn":{"const":"sub-track"}}},"then":{"required":["kind"],"properties":{"kind":{"const":"codex"}}}}));
+    rules.push(json!({"if":{"required":["result_contract"],"properties":{"result_contract":{"const":"review-v1"}}},"then":{"required":["access"],"properties":{"access":{"const":"read_only"}},"not":{"required":["gate"]}}}));
+    descriptor
 }
 
 /// Keep this schema in sync with `report_blocks::validate_payload`'s preview validation.

@@ -1,3 +1,4 @@
+import type { NativeWorkerPort } from '../../../../core/domain/native-worker.ts';
 import type { RecoveryAccess } from '../../../../core/domain/recovery/access.ts';
 import {
   createCardLifecycleStore,
@@ -49,6 +50,7 @@ export interface CardHostOptions {
    * and say so (see `CardHostCapabilities.files`).
    */
   files?: CardFilesPort;
+  nativeWorker?: NativeWorkerPort;
   recovery?: RecoveryAccess;
   /** A Claude card's Update and Resume (#2516); omitted, Claude cards offer neither. */
   claude?: ClaudeCardPort;
@@ -145,6 +147,7 @@ export function createCardHost(registry: CardRegistry, options: CardHostOptions 
         lifecycle,
         slots,
         files: options.files ?? null,
+        nativeWorker: options.nativeWorker ?? null,
         recovery: options.recovery ?? null,
         claude: options.claude ?? null,
         emit(command: CardRuntimeCommand) {

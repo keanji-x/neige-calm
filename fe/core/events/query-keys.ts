@@ -11,6 +11,7 @@ export const initialInput = (trackId: string, cardId: string) => ['conversation-
 export const areas = () => ['areas'] as const;
 export const trackLists = () => ['tracks'] as const;
 export const tracksInArea = (areaId: string) => ['tracks', areaId] as const;
+export const trackDetailPrefix = () => ['track'] as const;
 export const trackDetail = (trackId: string) => ['track', trackId] as const;
 export const trackBacklinksPrefix = () => ['track-backlinks'] as const;
 export const trackBacklinks = (trackId: string) => ['track-backlinks', trackId] as const;

@@ -33,8 +33,9 @@ fn unresolved_query(scope: &Scope) -> (String, &str) {
         Scope::Area(id) => ("t.area_id", id),
     };
     // Column is selected exclusively from the static scope above.
+    let worker_kinds = calm_types::provider_worker::WorkerOperationKind::sql_list();
     let sql = format!(
-        "SELECT o.* FROM operations o JOIN cards c ON o.target_type='card' AND o.target_id=c.id JOIN tracks t ON t.id=c.track_id WHERE o.kind IN ('terminal-worker','claude-worker','codex-worker') AND {column}=?1 ORDER BY o.id"
+        "SELECT o.* FROM operations o JOIN cards c ON o.target_type='card' AND o.target_id=c.id JOIN tracks t ON t.id=c.track_id WHERE o.kind IN ({worker_kinds}) AND {column}=?1 ORDER BY o.id"
     );
     (sql, id)
 }
@@ -51,6 +52,25 @@ async fn unresolved_tx(tx: &mut Tx<'_>, scope: &Scope) -> Result<Vec<Unresolved>
             .is_some_and(super::terminal_adapter::pipe_worker::is_pipe)
         {
             continue;
+        }
+        let kind = calm_types::provider_worker::WorkerOperationKind::parse(&op.kind)
+            .ok_or_else(|| CalmError::Conflict("Worker cleanup owner is unavailable".into()))?;
+        let data = op.tx_output.as_ref().map(|output| &output.data);
+        match crate::db::sqlite::worker_operation_cleanup_tx(
+            tx,
+            kind,
+            data.and_then(|data| data["runtime_id"].as_str()),
+            data.and_then(|data| data["attempt_id"].as_str()),
+        )
+        .await?
+        {
+            crate::db::sqlite::WorkerCleanupVerdict::Confirmed => continue,
+            crate::db::sqlite::WorkerCleanupVerdict::Pending => {
+                return Err(CalmError::Conflict(
+                    "Worker cleanup is unconfirmed; retain rows and workspace".into(),
+                ));
+            }
+            crate::db::sqlite::WorkerCleanupVerdict::Terminal => {}
         }
         let started = super::worker_cleanup::may_have_started(&op)?;
         if !started {
@@ -432,6 +452,14 @@ mod tests {
             .execute(sqlx::raw_sql(include_str!(concat!(
                 env!("CARGO_MANIFEST_DIR"),
                 "/../calm-truth/migrations/0207_operations_terminal_lookup.sql"
+            ))))
+            .await
+            .unwrap();
+        (repo.db())
+            .writer()
+            .execute(sqlx::raw_sql(include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../calm-truth/migrations/0219_operations_terminal_identity_lookup.sql"
             ))))
             .await
             .unwrap();

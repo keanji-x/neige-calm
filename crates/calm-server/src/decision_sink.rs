@@ -1,6 +1,7 @@
 //! MCP identity decision-write sink for the MCP tool paths.
 
 mod planner_message;
+mod read_only;
 mod worker_report;
 pub(crate) use worker_report::admit_worker_write_tx;
 
@@ -32,6 +33,7 @@ pub struct CardDecisionSink {
     write: WriteContext,
     /// Read-only, for the post-commit `report_sources` lookup behind the receipt warnings; `None` means no warnings are computed.
     sqlite_db: Option<crate::db::sqlite::SqliteDb>,
+    native_runtime: Option<Arc<crate::operation::OperationRuntime>>,
 }
 
 /// The updated card, the block-level outcome where the op has one, and the unresolved `neige://source/` links of the prose the write touched.
@@ -52,6 +54,7 @@ impl CardDecisionSink {
             events: ctx.events.clone(),
             write: ctx.write.clone(),
             sqlite_db: ctx.sqlite_db.clone(),
+            native_runtime: ctx.operation_runtime.get().cloned(),
         }
     }
 
@@ -60,6 +63,11 @@ impl CardDecisionSink {
         identity: &ToolCallIdentity,
         report: WorkerTaskReport,
     ) -> Result<(), CalmError> {
+        let read_only = if matches!(report, WorkerTaskReport::Completed { .. }) {
+            read_only::check(self.repo.clone(), identity, report.attempt_id()).await?
+        } else {
+            None
+        };
         let identity_for_tx = identity.clone();
         let actor = identity.to_actor_id();
         let card_id_str = identity.card_id.clone();
@@ -107,7 +115,7 @@ impl CardDecisionSink {
                 let track_id = track_id.clone();
                 let worker_card_id = worker_card_id_for_tx.clone();
                 Box::pin(async move {
-                    admit_worker_write_tx(tx, &identity, &track_id).await?;
+                    worker_report::admit_worker_identity_tx(tx, &identity, &track_id).await?;
                     // Admission, task CAS and report event share one transaction; same-outcome repeats roll back as idempotent success.
                     let now = crate::model::now_ms();
                     let task_id = report.attempt_id().to_string();
@@ -138,6 +146,7 @@ impl CardDecisionSink {
                     {
                         return Err(CalmError::Conflict(worker_report::REPEATED.into()));
                     }
+                    if let Some(checked)=&read_only {checked.recheck(tx).await?;}
                     if success {
                         let unread = crate::db::sqlite::planner_messages_unread_tx(tx, &task_id).await?;
                         if !unread.is_empty() {
@@ -194,12 +203,13 @@ impl CardDecisionSink {
                     // completion that carries one) lands with it when the card's lease is a
                     // kernel-delivery lease. A REPEATED report never reaches here, so a second report
                     // never writes a second row; a crash can no longer leave the lease `held`.
-                    let released = release_workspace_lease_for_card_tx(
+                    let deferred=crate::acp_worker::lifecycle::defer_report_tx(tx,&identity.session_id,&task_id,&report).await?;
+                    let released = if deferred {notification=calm_types::event::PlannerNotification::Suppress;vec![]} else {release_workspace_lease_for_card_tx(
                         tx,
                         &worker_card_id,
                         delivery,
                     )
-                    .await?;
+                    .await?};
 
                     if success && crate::git_candidate::delivery::delivery_latest_for_attempt_tx(tx, &task_id).await?.is_some() {
                         notification = calm_types::event::PlannerNotification::Suppress;
@@ -217,6 +227,9 @@ impl CardDecisionSink {
             Err(error) => return Err(error),
         }
 
+        if let Some(runtime) = &self.native_runtime {
+            runtime.fence_worker_input(&identity.session_id).await?;
+        }
         Ok(())
     }
 
@@ -589,6 +602,7 @@ mod tests {
                         events: EventBus::new(),
                         write: WriteContext::new(card_role_cache, track_area_cache),
                         sqlite_db: repo.sqlite_db(),
+                        native_runtime: None,
                     };
                     let identity = ToolCallIdentity {
                         card_id: worker_card.id.as_str().to_string(),
@@ -725,6 +739,7 @@ mod tests {
             events: EventBus::new(),
             write: WriteContext::new(card_role_cache, track_area_cache),
             sqlite_db: repo.sqlite_db(),
+            native_runtime: None,
         };
         let identity = ToolCallIdentity {
             card_id: planner_card.id.as_str().to_string(),
@@ -867,6 +882,7 @@ mod tests {
             events: EventBus::new(),
             write: WriteContext::new(card_role_cache, track_area_cache),
             sqlite_db: repo.sqlite_db(),
+            native_runtime: None,
         };
         let identity = ToolCallIdentity {
             card_id: planner_card.id.as_str().to_string(),

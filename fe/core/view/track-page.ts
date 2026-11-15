@@ -1,6 +1,8 @@
 // The track page's panel view model, derived once for every viewport; the desktop and mobile
 // painters render from it and this file is the authority on the rules and the action wording.
 
+import { taskProvider } from '../domain/provider-presentation.js';
+import { workerSelectionDescription } from '../domain/task-selection.js';
 import { terminalPresentation } from '../domain/terminal-presentation.js';
 import { agentProviderSchema } from '../api/schemas.js';
 import { groupPanelRows, progressRowFinished } from './panel-groups.js';
@@ -90,7 +92,7 @@ function cardRow(card: CardWire, task: PanelRow | null, activity: TrackPageActiv
   return {
     id: card.id,
     title: name,
-    kind: title !== null || card.kind === 'terminal' || agentProviderSchema.safeParse(card.kind).success ? card.kind : null,
+    kind: card.runtime?.provider ?? (title !== null || card.kind === 'terminal' || agentProviderSchema.safeParse(card.kind).success ? card.kind : null),
     badges,
     status,
     activity: rowActivity(activity, card.id),
@@ -149,6 +151,11 @@ function taskRow(task: ReportTaskRow, activity: TrackPageActivity, openableCards
   const badges: RowBadge[] = task.execution === undefined && task.declaration !== null
     ? [{ id: 'declaration', text: task.declaration, struck: task.state === 'withdrawn' }]
     : [];
+  const selection = task.execution?.workerSelection;
+  if (selection !== undefined) {
+    badges.push({ id: 'selection', text: workerSelectionDescription(selection), struck: false });
+    if (selection.cleanup_pending) badges.push({ id: 'cleanup', text: selection.turn_phase === 'unknown' ? 'Unknown · cleanup pending' : 'Cancel / report awaiting settlement', struck: false });
+  }
   const reason = task.execution === undefined ? task.pendingReason?.message ?? null : task.execution.blockingReason;
   const sourceDetail = task.execution === undefined ? task.statusDetail : boundedStatusDetail(task.execution.statusDetail);
   const detail = [sourceDetail, reason].filter(Boolean).join(' — ') || null;
@@ -178,7 +185,7 @@ function taskRow(task: ReportTaskRow, activity: TrackPageActivity, openableCards
   return {
     id: task.blockId,
     title: task.key,
-    kind: task.kind,
+    kind: selection?.provider ?? taskProvider(task.kind, task.provider) ?? task.kind,
     badges,
     status,
     /* Keyed by the worker card's identity, never the openable subset: a worker the board cannot draw

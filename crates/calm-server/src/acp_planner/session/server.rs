@@ -2,65 +2,14 @@
 use super::super::{config::Registration, process};
 use super::dispatch::{self, Carrier, Driver, PreparedTurn, TurnInput};
 use super::*;
-use provider::acp::{configuration::Configuration, usage::UsageTracker};
-use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicBool, Ordering};
+use provider::acp::configuration::Configuration;
 
 mod maintenance;
 mod prepare;
 pub(super) use maintenance::compact;
 
-#[derive(Debug)]
-struct Binding {
-    native: String,
-    configuration: Configuration,
-    closing: bool,
-    mcp_key: String,
-    closed: Arc<AtomicBool>,
-}
-
-struct Generation {
-    id: uuid::Uuid,
-    /// Set only after revoking this generation's grants, confirming the ACP
-    /// service process exited, and executing the existing process-group cleanup.
-    /// This is not the execution owner's descendants-complete quiescence proof.
-    stopped: AtomicBool,
-}
-
-struct CleanupWitness {
-    generation: Arc<Generation>,
-    /// One attachment instance; resuming the same native id gets a fresh witness.
-    closed: Arc<AtomicBool>,
-}
-impl CleanupWitness {
-    fn confirmed(&self) -> bool {
-        self.closed.load(Ordering::Acquire) || self.generation.stopped.load(Ordering::Acquire)
-    }
-}
-
-pub(in crate::acp_planner) struct Server {
-    process: process::Process,
-    bindings: HashMap<String, Binding>,
-    credential_owners: HashSet<String>,
-    generation: Arc<Generation>,
-    provider: AgentProvider,
-}
-impl std::fmt::Debug for Server {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SharedAcpServer")
-            .field("bindings", &self.bindings.len())
-            .finish()
-    }
-}
-
-struct AttachmentGuard(Option<provider::acp::Client>);
-impl Drop for AttachmentGuard {
-    fn drop(&mut self) {
-        if let Some(client) = &self.0 {
-            client.retire_shared_when_idle();
-        }
-    }
-}
+pub(crate) use crate::acp_session::server::detach_worker;
+use crate::acp_session::server::*;
 
 pub(super) struct Turn {
     pub client: provider::acp::Client,
@@ -86,9 +35,12 @@ pub(super) async fn issue(
         || Box::pin(async { Ok(()) }),
     );
     let source = input.contract.admission(&source);
-    let mut owned = params.host.shared_server.lock().await;
-    let (native, usage) = prepare::prepare(
-        &mut owned,
+    let crate::acp_session::attachment::Attached {
+        mut owned,
+        native,
+        usage,
+        ..
+    } = prepare::prepare(
         shared,
         registration,
         original_native,
@@ -336,28 +288,6 @@ async fn settle(
     }
 }
 
-pub(super) async fn ensure_native_owner<'e>(
-    executor: impl sqlx::SqliteExecutor<'e>,
-    provider: &AgentProvider,
-    worker: &str,
-    native: &str,
-) -> Result<()> {
-    let collision: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM worker_sessions WHERE provider=?1 AND agent_session_id=?2 AND id<>?3)",
-    )
-    .bind(provider.wire_name())
-    .bind(native)
-    .bind(worker)
-    .fetch_one(executor)
-    .await?;
-    if collision {
-        return Err(CalmError::Conflict(
-            "Shared ACP native session belongs to another worker".into(),
-        ));
-    }
-    Ok(())
-}
-
 async fn cleanup_unknown(
     params: &SessionParams,
     receipt: &AcpSubmission,
@@ -376,156 +306,4 @@ async fn cleanup_unknown(
             false
         }
     }
-}
-
-pub(crate) async fn detach_worker(host: &AcpPlannerHost, worker: &str) -> Result<()> {
-    detach_worker_with_witness(host, worker, None).await
-}
-
-async fn detach_worker_with_witness(
-    host: &AcpPlannerHost,
-    worker: &str,
-    expected: Option<(&str, &CleanupWitness)>,
-) -> Result<()> {
-    let mut owned = host.shared_server.lock().await;
-    if expected.is_some_and(|(_, witness)| witness.confirmed()) {
-        return Ok(());
-    }
-    let Some(server) = owned.as_mut() else {
-        return if expected.is_none() {
-            Ok(())
-        } else {
-            Err(CalmError::Conflict(
-                "Original ACP generation stop is unconfirmed".into(),
-            ))
-        };
-    };
-    if let Some((native, witness)) = expected {
-        let matches = server.generation.id == witness.generation.id
-            && server.bindings.get(worker).is_some_and(|binding| {
-                binding.native == native && Arc::ptr_eq(&binding.closed, &witness.closed)
-            });
-        if !matches {
-            return Err(CalmError::Conflict(
-                "Original ACP attachment changed before cleanup".into(),
-            ));
-        }
-    }
-    if server.process.connection.client.terminal_error().is_some() {
-        // EOF is not process-stop evidence. Retire and confirm the original
-        // process before any driver may claim the generation is quiescent.
-        return retire(host, &mut owned).await;
-    }
-    if let Some(binding) = server.bindings.get_mut(worker) {
-        binding.closing = true;
-    }
-    if server.credential_owners.contains(worker) {
-        revoke_worker(host.completion.repo()?.as_ref(), worker).await?;
-        server.credential_owners.remove(worker);
-    }
-    let Some(binding) = server.bindings.get(worker) else {
-        return Ok(());
-    };
-    let gate = provider::send_boundary::PreSendGate::new(|| Box::pin(async { Ok(()) }));
-    if let Err(error) = setup_request(
-        &mut server.process.connection,
-        &server.process.commands,
-        "session/close",
-        protocol::encode_close_session(&binding.native),
-        &gate,
-    )
-    .await
-    {
-        server.process.connection.client.retire_shared_when_idle();
-        return Err(error.into());
-    }
-    // Credential revocation and the matching native close both succeeded.
-    binding.closed.store(true, Ordering::Release);
-    server.process.commands.forget(&binding.native);
-    server.bindings.remove(worker);
-    Ok(())
-}
-
-/// Drain unsolicited traffic while the setup owner is idle, and retire a failed generation
-/// under the same lock that admits attachment and mints credentials.
-async fn supervise(host: std::sync::Weak<AcpPlannerHost>, generation: uuid::Uuid) {
-    loop {
-        tokio::time::sleep(Duration::from_millis(25)).await;
-        let Some(host) = host.upgrade() else { return };
-        let Ok(mut owned) = host.shared_server.try_lock() else {
-            continue;
-        };
-        let Some(server) = owned
-            .as_mut()
-            .filter(|server| server.generation.id == generation)
-        else {
-            return;
-        };
-        let orphaned: Vec<_> = server
-            .credential_owners
-            .iter()
-            .filter(|worker| {
-                server
-                    .bindings
-                    .get(*worker)
-                    .is_none_or(|binding| binding.closing)
-            })
-            .cloned()
-            .collect();
-        for worker in orphaned {
-            let revoked = match host.completion.repo() {
-                Ok(repo) => revoke_worker(repo.as_ref(), &worker).await,
-                Err(error) => Err(error),
-            };
-            if let Err(error) = revoked {
-                tracing::error!(%error, "Shared ACP orphan credential revocation failed");
-            } else {
-                server.credential_owners.remove(&worker);
-            }
-        }
-        if server.process.connection.client.terminal_error().is_some()
-            || server.process.connection.client.can_recycle_shared()
-        {
-            if let Err(error) = retire(&host, &mut owned).await {
-                tracing::error!(%error, "Shared ACP server retirement failed");
-                continue;
-            }
-            return;
-        }
-        for _ in 0..64 {
-            let Ok(message) = server.process.connection.incoming.try_recv() else {
-                break;
-            };
-            if let Incoming::Notification { params, .. } = &message
-                && server
-                    .bindings
-                    .values()
-                    .any(|binding| Some(binding.native.as_str()) == params["sessionId"].as_str())
-            {
-                server.process.commands.observe(&message);
-            }
-            if let Incoming::Request { id, method, .. } = message
-                && provider::acp::approvals::refuse(&server.process.connection.client, id, &method)
-                    .await
-                    .is_err()
-            {
-                server.process.connection.client.retire_shared_when_idle();
-                break;
-            }
-        }
-    }
-}
-
-async fn retire(host: &AcpPlannerHost, owned: &mut Option<Server>) -> Result<()> {
-    if let Some(server) = owned.as_ref() {
-        for worker in &server.credential_owners {
-            revoke_worker(host.completion.repo()?.as_ref(), worker).await?;
-        }
-    }
-    if let Some(server) = owned.take() {
-        let generation = server.generation.clone();
-        server.process.stop().await?;
-        generation.stopped.store(true, Ordering::Release);
-    }
-    Ok(())
 }

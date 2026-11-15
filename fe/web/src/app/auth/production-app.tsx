@@ -29,6 +29,7 @@ import { createBrowserCursorStore } from '../events/browser-cursor-store.ts';
 import { AppProviders, WEB_COMPAT_VERSION, type ProviderRuntime } from '../providers/public.tsx';
 import { logoutOperation, runOperation, serverVersionOperation } from '../providers/queries.ts';
 import { createFetchTransport } from '../providers/transport.ts';
+import { createNativeWorkerPort } from '../providers/native-worker.ts';
 import { createCardFilesPort } from '../providers/directory.ts';
 import { createClaudeCardPort } from '../providers/claude-card.ts';
 import { createAppRouter } from '../router/public.tsx';
@@ -87,6 +88,7 @@ export function mountProductionApp(root: HTMLElement, browser: Readonly<{
   // Built from this app's transport and 401 channel so a card's read hits the same session handling as every other read.
   const host = createCardHost(registry, {
     files: createCardFilesPort(transport, unauthorized),
+    nativeWorker: createNativeWorkerPort(transport, unauthorized, client),
     claude: createClaudeCardPort(transport, unauthorized, client),
     ...(__NC_BUNDLED__ ? { recovery: access } : {}),
   });

@@ -57,6 +57,10 @@ pub mod worktree_events;
 pub use session_conversation::{
     PLANNER_START_CARD_KEY, PLANNER_START_OPERATION_KIND, TERMINAL_OPERATION_PHASES,
 };
+mod acp_worker;
+mod worker_cleanup;
+pub use acp_worker::{acp_worker_state_cas_tx, acp_worker_state_tx};
+pub use worker_cleanup::{WorkerCleanupVerdict, worker_operation_cleanup_tx};
 mod acp_cleanup;
 mod acp_submission;
 pub use acp_cleanup::{AcpCleanupObservation, AcpCleanupVersion, AcpKeptCleanup};
@@ -496,8 +500,8 @@ mod track_detail_sort_precision_tests;
 
 mod task_planner_messages;
 pub use task_planner_messages::{
-    planner_message_insert_tx, planner_messages_for_attempt, planner_messages_for_attempt_tx,
-    planner_messages_read_tx, planner_messages_unread_tx,
+    planner_message_insert_tx, planner_message_insert_with_source_tx, planner_messages_for_attempt,
+    planner_messages_for_attempt_tx, planner_messages_read_tx, planner_messages_unread_tx,
 };
 
 #[cfg(test)]

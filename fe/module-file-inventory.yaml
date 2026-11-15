@@ -169,3 +169,5 @@
 - { path: fe/web/src/ui/explanation-badge, type: directory, owner: ui/explanation-badge, readonly: false, basis: "#2666 domain-free status chip with keyboard and touch explanation; features supply copy" }
 
 - { path: fe/web/src/ui/card-frame, type: directory, owner: ui/card-frame, readonly: false, basis: "#2951 shared conversation and workspace card shell" }
+
+- { path: fe/web/src/ui/activity-card, type: directory, owner: ui/activity-card, readonly: false, basis: "Domain-free metadata, activity and control slots for native Worker cards" }

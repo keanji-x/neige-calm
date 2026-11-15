@@ -381,12 +381,31 @@ pub async fn build_claude_env(
     Ok(Value::Object(env_map))
 }
 
+#[cfg(test)]
 fn build_claude_worker_command_line(
     claude_bin: &str,
     settings_path: &Path,
     claude_session_id: &str,
     track_id: &str,
     prompt: &str,
+) -> Result<String> {
+    build_claude_worker_command_line_selected(
+        claude_bin,
+        settings_path,
+        claude_session_id,
+        track_id,
+        prompt,
+        &provider::TurnModelSelection::inherit(),
+    )
+}
+
+fn build_claude_worker_command_line_selected(
+    claude_bin: &str,
+    settings_path: &Path,
+    claude_session_id: &str,
+    track_id: &str,
+    prompt: &str,
+    selection: &provider::TurnModelSelection,
 ) -> Result<String> {
     let worker_system_prompt = crate::planner_card::render_system_prompt(
         crate::planner_card::SeededCardRole::WorkerClaude.prompt_template(),
@@ -400,6 +419,15 @@ fn build_claude_worker_command_line(
         sh_single_quote(claude_session_id),
         sh_single_quote(&worker_system_prompt),
     );
+    for (name, value) in [
+        ("model", selection.model.as_deref()),
+        ("effort", selection.effort.as_deref()),
+    ] {
+        if let Some(value) = value {
+            command_line.push(' ');
+            command_line.push_str(&sh_single_quote(&format!("--{name}={value}")));
+        }
+    }
     command_line.push_str(&worker_mcp::mcp_flags(&worker_mcp::mcp_config_path(
         settings_path,
     )?));

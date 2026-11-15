@@ -51,6 +51,7 @@ pub mod settings;
 pub mod share_input;
 pub mod share_links;
 pub mod share_reads;
+pub mod task_control;
 pub mod task_recovery;
 pub mod terminal;
 pub mod terminal_cards;
@@ -98,6 +99,7 @@ pub fn protected_router() -> Router<AppState> {
         .merge(track_report_series::router())
         .merge(track_sources::router())
         .merge(task_recovery::router())
+        .merge(task_control::router())
         .merge(track_recipes::router())
         .merge(track_templates::router())
         .merge(cards::router())

@@ -1,4 +1,19 @@
 #!/usr/bin/env bash
+# Gemini Worker v2 bounded released-contract exception:
+# wave/crates 667 -> 668 preserves 0218's historical in-wave spawn default.
+# spec/crates 535 -> 538 preserves 0218's historical declaration-author default
+# and two independent task-request fixture inputs (SQLite claim/recovery and
+# canonical provider declaration validation). spec/fe 65 -> 67 preserves that
+# same released author in the independent positive/negative declaration fixtures.
+# The Planner paragraph, its independent golden and its full rendered golden keep
+# their existing author references; moving the paragraph oracle out of Rust is net zero.
+# runtime_id/crates 1125 -> 1129 reuses the existing operation output/cleanup
+# field: ACP Worker snapshot write, snapshot read, compensation argument read,
+# and shared native-worker disposal read. No new domain identifier is introduced.
+# Later wire/schema changes update their owning source/fixture and this existing
+# baseline. Ordinary files/tests need no roster entry. Patterns, scopes and
+# exclusions are unchanged; the existing scan and separate selftest each run
+# once per CI lint workflow, with no additional invocation.
 # #3633 bounded guest-conversation contract exception: spec/crates 532 -> 535
 # preserves the released 'spec' profile in 0217 and the required 'shared-spec'
 # API kind in its producer and independent HTTP assertion. spec/docs 0 -> 1

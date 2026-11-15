@@ -14346,6 +14346,282 @@
         }
       }
     },
+    "/api/tracks/{id}/tasks/{key}/cancel": {
+      "post": {
+        "tags": [
+          "tracks"
+        ],
+        "operationId": "cancel_task_worker",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskCancelRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskCancelResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthorized`: no valid session cookie.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "`payload_too_large`: the body is over the request size limit.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "`unsupported_media_type`: the request does not say `Content-Type: application/json`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`invalid_body`: the JSON is not the body's shape (a field missing or of the wrong type).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tracks/{id}/tasks/{key}/messages": {
+      "post": {
+        "tags": [
+          "tracks"
+        ],
+        "operationId": "message",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskMessageRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskMessageResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthorized`: no valid session cookie.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "`payload_too_large`: the body is over the request size limit.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "`unsupported_media_type`: the request does not say `Content-Type: application/json`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`invalid_body`: the JSON is not the body's shape (a field missing or of the wrong type).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/tracks/{track_id}/cards": {
       "get": {
         "tags": [
@@ -21013,6 +21289,41 @@
           "not_configured"
         ]
       },
+      "ProviderWorkerCapabilities": {
+        "type": "object",
+        "required": [
+          "provider",
+          "operation",
+          "message_transport",
+          "cancel_strategy",
+          "resumable",
+          "executor",
+          "validator"
+        ],
+        "properties": {
+          "cancel_strategy": {
+            "$ref": "#/components/schemas/WorkerCancelStrategy"
+          },
+          "executor": {
+            "type": "boolean"
+          },
+          "message_transport": {
+            "$ref": "#/components/schemas/WorkerMessageTransport"
+          },
+          "operation": {
+            "$ref": "#/components/schemas/WorkerOperationKind"
+          },
+          "provider": {
+            "$ref": "#/components/schemas/AgentProvider"
+          },
+          "resumable": {
+            "type": "boolean"
+          },
+          "validator": {
+            "type": "boolean"
+          }
+        }
+      },
       "QueuedMessageRequest": {
         "type": "object",
         "required": [
@@ -22626,8 +22937,79 @@
               "string",
               "null"
             ]
+          },
+          "worker_selection": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/TaskWorkerSelection"
+              }
+            ]
           }
         }
+      },
+      "TaskCancelRequest": {
+        "type": "object",
+        "required": [
+          "attempt_id"
+        ],
+        "properties": {
+          "attempt_id": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "TaskCancelResponse": {
+        "type": "object",
+        "required": [
+          "ok"
+        ],
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          }
+        }
+      },
+      "TaskMessageRequest": {
+        "type": "object",
+        "required": [
+          "attempt_id",
+          "idempotency_key",
+          "text"
+        ],
+        "properties": {
+          "attempt_id": {
+            "type": "string"
+          },
+          "idempotency_key": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "TaskMessageResponse": {
+        "type": "object",
+        "required": [
+          "message_id"
+        ],
+        "properties": {
+          "message_id": {
+            "type": "string"
+          }
+        }
+      },
+      "TaskMessageSource": {
+        "type": "string",
+        "enum": [
+          "planner",
+          "user"
+        ]
       },
       "TaskPendingReason": {
         "oneOf": [
@@ -22737,6 +23119,16 @@
             "type": "integer",
             "format": "int64"
           },
+          "source": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/TaskMessageSource"
+              }
+            ]
+          },
           "text": {
             "type": "string"
           }
@@ -22769,6 +23161,80 @@
           },
           "key": {
             "type": "string"
+          }
+        }
+      },
+      "TaskWorkerSelection": {
+        "type": "object",
+        "description": "Frozen request plus provider-confirmed selection; absent actuals never imply an explicit default.",
+        "required": [
+          "mechanism",
+          "provider",
+          "requested_model",
+          "requested_effort",
+          "effective_model",
+          "effective_effort",
+          "selection_source",
+          "capabilities",
+          "turn_phase",
+          "cleanup_pending"
+        ],
+        "properties": {
+          "capabilities": {
+            "$ref": "#/components/schemas/ProviderWorkerCapabilities"
+          },
+          "cleanup_pending": {
+            "type": "boolean"
+          },
+          "effective_effort": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "effective_model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "mechanism": {
+            "type": "string"
+          },
+          "provider": {
+            "$ref": "#/components/schemas/AgentProvider"
+          },
+          "requested_effort": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "requested_model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "selection_source": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/WorkerSelectionSources"
+              }
+            ]
+          },
+          "turn_phase": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/WorkerTurnPhase"
+              }
+            ]
           }
         }
       },
@@ -24675,6 +25141,53 @@
           }
         }
       },
+      "WorkerCancelStrategy": {
+        "type": "string",
+        "enum": [
+          "provider_stop",
+          "acp_cancel"
+        ]
+      },
+      "WorkerMessageTransport": {
+        "type": "string",
+        "enum": [
+          "terminal",
+          "native_session"
+        ]
+      },
+      "WorkerOperationKind": {
+        "type": "string",
+        "enum": [
+          "codex-worker",
+          "claude-worker",
+          "acp-worker",
+          "terminal-worker"
+        ]
+      },
+      "WorkerSelectionSource": {
+        "type": "string",
+        "enum": [
+          "explicit",
+          "provider_default_reported",
+          "provider_default_unreported"
+        ]
+      },
+      "WorkerSelectionSources": {
+        "type": "object",
+        "required": [
+          "model",
+          "effort"
+        ],
+        "properties": {
+          "effort": {
+            "$ref": "#/components/schemas/WorkerSelectionSource"
+          },
+          "model": {
+            "$ref": "#/components/schemas/WorkerSelectionSource"
+          }
+        },
+        "additionalProperties": false
+      },
       "WorkerSessionKind": {
         "type": "string",
         "enum": [
@@ -24696,6 +25209,15 @@
           "exited",
           "failed",
           "superseded"
+        ]
+      },
+      "WorkerTurnPhase": {
+        "type": "string",
+        "enum": [
+          "prepared",
+          "submitting",
+          "settled",
+          "unknown"
         ]
       },
       "WorkspaceIsolation": {

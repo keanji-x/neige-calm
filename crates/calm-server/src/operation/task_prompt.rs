@@ -12,7 +12,7 @@ use crate::mcp_server::tools::emit::TOOL_TASK_DONE;
 use crate::mcp_server::tools::task_gate::TOOL_TASK_GATE;
 use calm_types::task_result::ResultContract;
 
-/// The prompt both worker adapters freeze in their prepare transaction: the attempt's lease plan
+/// The prompt all task worker adapters freeze in their prepare transaction: the attempt's lease plan
 /// and its declared gate are read here, from the `tasks` row, never from the op payload. Both
 /// workers call the kernel's tools over its MCP server (#2479, #2509); `gate_run` is the
 /// configured wait of one gate-run call.
@@ -39,8 +39,8 @@ pub(crate) async fn render_task_worker_prompt_tx(
     ))
 }
 
-/// The task prompt both worker adapters render. A read-only task (#1917) is told it shares the
-/// checkout, which nothing enforces, and is given its repo, checkout, head and base (#1933). A
+/// The task prompt all worker adapters render. Read-only tasks share a checkout and receive its
+/// repo, checkout, head and base. ACP additionally denies permission grants and samples completion. A
 /// catch-up (#2058 D7) is told where it starts and what to replay. A gated task is shown its gate
 /// steps (#2404) and, when the kernel commits its checkout, how to have the kernel run them (#2464).
 /// A task with a result contract (#2599) is told the shape its report is refused without.

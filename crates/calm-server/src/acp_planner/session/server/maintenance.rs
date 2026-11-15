@@ -23,9 +23,7 @@ pub(in crate::acp_planner::session) async fn compact(
     }
     let params = &shared.params;
     let permission = PlannerPermissionMode::Never;
-    let mut owned = params.host.shared_server.lock().await;
-    prepare::prepare(
-        &mut owned,
+    let crate::acp_session::attachment::Attached { mut owned, .. } = prepare::prepare(
         shared,
         registration,
         Some(native.to_owned()),

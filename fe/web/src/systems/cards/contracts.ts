@@ -1,3 +1,4 @@
+import type { NativeWorkerPort } from '../../../../core/domain/native-worker.ts';
 import type { RecoveryAccess } from '../../../../core/domain/recovery/access.ts';
 import type { CardFilesPort } from '../../../../core/domain/fs.ts';
 import type { ClaudeCardPort } from '../../../../core/domain/claude-card.ts';
@@ -56,6 +57,8 @@ export interface CardHostCapabilities {
   readonly slots: CardSlotStore;
   /** Filesystem reads injected by `app/composition`, or `null`; a card that needs them must render a reason rather than throw. */
   readonly files: CardFilesPort | null;
+  /** Native Worker flow and User actions; omitted hosts render read-only unavailable feedback. */
+  readonly nativeWorker?: NativeWorkerPort | null;
   readonly recovery: RecoveryAccess | null;
   /** A Claude card's installed-version read and restart (#2516), injected by `app/composition`, or `null`: without it a Claude card offers no Update or Resume. */
   readonly claude: ClaudeCardPort | null;

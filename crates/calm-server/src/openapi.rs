@@ -119,6 +119,8 @@ use utoipa::{Modify, OpenApi, ToSchema};
         crate::routes::area_folders::resolve_path,
         crate::mentions::list_mentions,
         crate::routes::task_recovery::get_attempts,
+        crate::routes::task_control::message,
+        crate::routes::task_control::cancel,
         crate::routes::track_templates::list_track_templates,
         crate::routes::track_templates::get_track_template,
         crate::routes::track_templates::get_template_plugin_guides,

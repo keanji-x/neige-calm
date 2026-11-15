@@ -635,6 +635,15 @@ fn build_operation_adapters(
             terminal_worker_adapter,
             codex_adapter,
             codex_worker_adapter,
+            Arc::new(
+                crate::acp_worker::AcpWorkerAdapter::new(
+                    input.route_repo.clone(),
+                    input.acp_planner.clone(),
+                    input.card_role_cache.clone(),
+                    input.workspace_root.clone(),
+                )
+                .with_gate_run_wait(input.gate_run_wait),
+            ),
             claude_adapter,
             claude_worker_adapter,
             claude_restart_adapter,
@@ -1131,7 +1140,8 @@ impl AppState {
                 &daemon,
                 shared_codex_appserver.clone(),
                 harness.clone(),
-            ),
+            )
+            .with_native_workers(acp_planner.clone(), harness.clone()),
         ));
         let worker_flow = WorkerFlowDriver::from_backend_parts(
             repo.clone(),
@@ -1632,7 +1642,8 @@ impl AppState {
             &daemon,
             codex_backends.clone(),
             harness.clone(),
-        );
+        )
+        .with_native_workers(acp_planner.clone(), harness.clone());
         mcp_server
             .terminal_interaction
             .set(Arc::new(

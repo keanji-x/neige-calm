@@ -88,6 +88,47 @@ pub fn cancelled() -> Value {
     json!({"outcome": {"outcome": "cancelled"}})
 }
 
+/// Explicit per-role policy supplied by the caller. The protocol never infers authority from
+/// a provider or tool title. Implementations order every grant write with their cancel fence.
+#[async_trait::async_trait]
+pub trait PermissionHandler: Send + Sync {
+    async fn request(&self, id: Value, method: &str, params: Value) -> Result<(), Error>;
+    async fn cancel(
+        &self,
+        native: &str,
+        gate: &crate::send_boundary::PreSendGate<'_>,
+    ) -> Result<(), Error>;
+    async fn close(&self);
+    fn declined(&self) -> Option<String> {
+        None
+    }
+    fn declined_permission(&self) -> Option<super::approvals::DeclinedPermission> {
+        None
+    }
+}
+#[async_trait::async_trait]
+impl PermissionHandler for super::approvals::Approvals {
+    async fn request(&self, id: Value, method: &str, params: Value) -> Result<(), Error> {
+        self.request(id, method, params).await
+    }
+    async fn cancel(
+        &self,
+        native: &str,
+        gate: &crate::send_boundary::PreSendGate<'_>,
+    ) -> Result<(), Error> {
+        self.cancel(native, gate).await
+    }
+    async fn close(&self) {
+        self.close().await;
+    }
+    fn declined(&self) -> Option<String> {
+        self.declined()
+    }
+    fn declined_permission(&self) -> Option<super::approvals::DeclinedPermission> {
+        self.declined_permission()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -164,6 +205,31 @@ mod tests {
         ] {
             assert!(PermissionRequest::decode(params).is_err());
         }
+    }
+
+    #[test]
+    fn allow_once_requires_one_nonempty_unambiguous_option_and_tool_identity() {
+        let mut params = opencode_shell();
+        let request = PermissionRequest::decode(params.clone()).unwrap();
+        assert_eq!(request.allow_once(), Some("once"));
+        for options in [
+            json!([]),
+            json!([{"optionId":"always","kind":"allow_always","name":"Always"}]),
+            json!([{"optionId":"","kind":"allow_once","name":"Once"}]),
+            json!([{"optionId":"same","kind":"allow_once","name":"Once"},{"optionId":"same","kind":"reject_once","name":"Reject"}]),
+            json!([{"optionId":"a","kind":"allow_once","name":"Once"},{"optionId":"b","kind":"allow_once","name":"Once again"}]),
+        ] {
+            params["options"] = options;
+            assert_eq!(
+                PermissionRequest::decode(params.clone())
+                    .unwrap()
+                    .allow_once(),
+                None
+            );
+        }
+        let mut missing_identity = request;
+        missing_identity.tool_call.tool_call_id.clear();
+        assert_eq!(missing_identity.allow_once(), None);
     }
 
     #[test]

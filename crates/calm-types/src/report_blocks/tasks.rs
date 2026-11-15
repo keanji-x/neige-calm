@@ -259,6 +259,9 @@ pub struct TaskDeclaration {
     pub block_id: String,
     pub key: String,
     pub kind: String,
+    pub provider: Option<String>,
+    pub model: Option<String>,
+    pub reasoning_effort: Option<String>,
     pub goal: String,
     pub acceptance: Option<String>,
     pub gate: Option<GateInput>,
@@ -422,7 +425,7 @@ fn render_diagnostic_message(code: &str, args: &BTreeMap<String, Value>) -> Stri
             "task requires a gate, a no_gate_reason or access: \"read_only\"".into()
         }
         "gate_cwd_on_agent_task" => {
-            "codex/claude tasks do not take gate.cwd: the gate runs in the worker's lease worktree; \
+            "agent tasks do not take gate.cwd: the gate runs in the worker's lease worktree; \
              write a sub-directory gate as `cd <subdir> && …` inside the step"
                 .into()
         }
@@ -703,7 +706,7 @@ pub fn unknown_deps(
 
 /// Shared agent guidance owned beside the gate admission rule below. Both the
 /// Planner prompt and gate guide render this text, rather than restating exemptions.
-pub const TASK_GATE_GUIDANCE: &str = "With `require_task_gates`, a codex/claude task in this \
+pub const TASK_GATE_GUIDANCE: &str = "With `require_task_gates`, an agent task in this \
     checkout needs a `gate`, a `no_gate_reason`, or `access: \"read_only\"`. Read-only tasks \
     (including writes only to ignored build output) and `spawn: \"sub-track\"` tasks need no gate.";
 
@@ -731,7 +734,7 @@ pub fn gate_rule_violations(declarations: &[TaskDeclaration], require_gates: boo
         .iter()
         .filter(|declaration| !declaration.tombstone)
         .filter(|declaration| {
-            matches!(declaration.kind.as_str(), "codex" | "claude")
+            crate::provider_worker::is_agent_task_kind(&declaration.kind)
                 && crate::task_execution::runs_in_track_checkout(
                     &declaration.kind,
                     &declaration.spawn,
@@ -753,7 +756,7 @@ pub fn gate_cwd_violations(declarations: &[TaskDeclaration]) -> Vec<String> {
         .iter()
         .filter(|declaration| !declaration.tombstone)
         .filter(|declaration| {
-            matches!(declaration.kind.as_str(), "codex" | "claude")
+            crate::provider_worker::is_agent_task_kind(&declaration.kind)
                 && declaration
                     .gate
                     .as_ref()
@@ -936,6 +939,18 @@ pub fn project_task_declarations(
             ));
         }
         let declaration = TaskDeclaration {
+            provider: payload
+                .get("provider")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            model: payload
+                .get("model")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            reasoning_effort: payload
+                .get("reasoning_effort")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
             source: TaskDeclarationSource::Report {
                 root_hash_preimage: crate::task_recovery::task_root_hash_preimage(&block.payload),
             },
@@ -1235,6 +1250,9 @@ mod tests {
     fn declaration(key: &str, dependencies: &[&str]) -> TaskDeclaration {
         TaskDeclaration {
             source: TaskDeclarationSource::ValidationOnly,
+            provider: None,
+            model: None,
+            reasoning_effort: None,
             block_index: None,
             block_id: key.into(),
             key: key.into(),

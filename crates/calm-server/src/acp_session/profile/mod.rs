@@ -206,6 +206,18 @@ impl AcpAgentProfile {
         }
     }
 
+    /// Keep a shared session's registration stable across attachment and short enough for
+    /// provider tool-name budgets. Name-based approvals still require a fresh launch key.
+    pub(crate) fn shared_mcp_server_key(&self, worker_session_id: &str) -> String {
+        use sha2::Digest as _;
+        if self.mcp_tool_request.is_some() {
+            return self.mcp_server_key();
+        }
+        let digest = sha2::Sha256::digest(worker_session_id.as_bytes());
+        let digest12 = hex::encode(&digest[..6]);
+        format!("{}-{digest12}", crate::mcp_server::wiring::MCP_SERVER_KEY)
+    }
+
     /// How this agent asks, for one turn whose launch registered Neige's server as `server`, which
     /// lists the session `tools`.
     pub(crate) fn asks<T: AsRef<str>>(
@@ -346,10 +358,10 @@ mod tests {
 
     #[test]
     fn antigravity_shim_budget_includes_the_actual_shared_server_key() {
-        let server = "neige-0123456789ab";
         let antigravity = AcpAgentProfile::of(&AgentProvider::Antigravity).unwrap();
+        let server = antigravity.shared_mcp_server_key("worker-session");
         assert_eq!(
-            antigravity.mcp_shim_args(server),
+            antigravity.mcp_shim_args(&server),
             [
                 "--structured-content-as-text",
                 "--max-tool-name-bytes",
@@ -360,10 +372,30 @@ mod tests {
             assert_eq!(
                 AcpAgentProfile::of(&provider)
                     .unwrap()
-                    .mcp_shim_args(server),
+                    .mcp_shim_args(&server),
                 ["--structured-content-as-text"],
             );
         }
+    }
+
+    #[test]
+    fn shared_mcp_keys_reuse_session_identity_except_for_name_based_approvals() {
+        for provider in [AgentProvider::Antigravity, AgentProvider::OpenCode] {
+            let profile = AcpAgentProfile::of(&provider).unwrap();
+            let server = profile.shared_mcp_server_key("worker-session");
+            assert!(server.starts_with("neige-"));
+            assert_eq!(server.len(), 18);
+            assert_eq!(server, profile.shared_mcp_server_key("worker-session"));
+            assert_ne!(
+                server,
+                profile.shared_mcp_server_key("another-worker-session")
+            );
+        }
+        let grok = AcpAgentProfile::of(&AgentProvider::Grok).unwrap();
+        let server = grok.shared_mcp_server_key("worker-session");
+        assert!(server.starts_with("neige-"));
+        assert_eq!(server.len(), 18);
+        assert_ne!(server, grok.shared_mcp_server_key("worker-session"));
     }
 
     #[test]

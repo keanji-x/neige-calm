@@ -31,6 +31,9 @@ pub(crate) async fn stop_session(
 ) -> Result<()> {
     let repo = host.completion.repo()?;
     let pool = repo.sqlite_db().ok_or(CalmError::ExecutionUnavailable)?;
+    if host.native_workers.stop_if_owned(host, session).await? {
+        return Ok(());
+    }
     host.provider_execution
         .stop_session(
             &pool,

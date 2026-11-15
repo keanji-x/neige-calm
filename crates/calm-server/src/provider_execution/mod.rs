@@ -66,12 +66,19 @@ pub enum KnownEnd {
     AcpTurn(Box<crate::acp_planner::execution::End>),
     AcpRefused,
     AcpCompaction,
+    AcpWorkerTurn(Box<crate::acp_worker::WorkerEnd>),
 }
 #[async_trait]
 pub trait ProviderExecutionOwner: Send + Sync {
     fn consumer(&self) -> &'static str;
     fn alias_prefix(&self) -> AliasPrefix;
     fn alias(&self, session: &str, id: &str) -> String;
+    fn owns_native_workers(&self) -> bool {
+        false
+    }
+    async fn reconcile_native_worker(&self, _session: &str, _claim: &Claim) -> Result<()> {
+        Err(conflict("provider does not own native Worker rounds"))
+    }
     /// A captured record may no longer own the session. Guard session-wide
     /// writes by exact execution ownership inside their writer transaction;
     /// scope other effects to this execution or its turn.

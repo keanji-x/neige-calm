@@ -294,7 +294,7 @@ async fn invalid_read_only_declarations_are_refused_at_the_write() {
         ),
         (
             with(json!({"kind": "terminal", "goal": null, "command": "true"})),
-            "access: \"read_only\" requires kind \"codex\" or \"claude\"",
+            "access: \"read_only\" requires an agent task",
         ),
         (
             with(json!({"spawn": calm_types::task_recovery::TASK_CHILD_TRACK_ROUTE})),
@@ -323,4 +323,219 @@ async fn invalid_read_only_declarations_are_refused_at_the_write() {
     )
     .await
     .expect("a gate-less read-only codex task is a valid declaration");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn message_read_preserves_mixed_sources_on_repeated_reads() {
+    use calm_types::track_fs_dto::TaskMessageSource;
+    let w = world().await;
+    let fx = &w.fx;
+    declare_reader(fx, "messages").await;
+    let worker = wait_running(fx, "messages").await;
+    let attempt = worker.task.id.clone();
+    let ids = calm_server::db::write_in_tx_typed(fx.boot.repo.as_ref(), move |tx| {
+        Box::pin(async move {
+            let planner = calm_server::db::sqlite::planner_message_insert_tx(
+                tx,
+                &attempt,
+                "planner",
+                "Planner instruction",
+            )
+            .await?;
+            let user = calm_server::db::sqlite::planner_message_insert_with_source_tx(
+                tx,
+                &attempt,
+                "user",
+                "User clarification",
+                TaskMessageSource::User,
+            )
+            .await?;
+            Ok::<_, calm_server::error::CalmError>((planner, user))
+        })
+    })
+    .await
+    .unwrap();
+    let read = || {
+        call_tool(
+            &fx.boot,
+            "neige_message_read",
+            worker.identity.clone(),
+            json!({"attempt_id":worker.task.id}),
+        )
+    };
+    let first = read().await.unwrap();
+    let messages = first["messages"].as_array().unwrap();
+    assert_eq!(messages.len(), 2);
+    assert_eq!(messages[0]["message_id"], ids.0);
+    assert_eq!(messages[0]["seq"], 1);
+    assert_eq!(messages[0]["text"], "Planner instruction");
+    assert!(
+        messages[0].get("source").is_none(),
+        "historical Planner shape remains optional"
+    );
+    assert_eq!(messages[1]["message_id"], ids.1);
+    assert_eq!(messages[1]["seq"], 2);
+    assert_eq!(messages[1]["text"], "User clarification");
+    assert_eq!(messages[1]["source"], "user");
+    assert!(messages.iter().all(|m| m["read_at"].is_string()));
+    assert_eq!(
+        read().await.unwrap(),
+        first,
+        "repeat reads preserve sources and read timestamps"
+    );
+    worker.complete(fx).await;
+    let reported = read().await.unwrap();
+    assert_eq!(reported["status"], "messages_are_not_work");
+    assert_eq!(reported["messages"], first["messages"]);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn read_only_pre_upgrade_output_completes_without_sampling_checkout() {
+    for kind in ["codex", "claude"] {
+        for common_dir in [None, Some(json!("")), Some(json!(null))] {
+            let w = world().await;
+            let fx = &w.fx;
+            declare_task(fx, "legacy", json!({"kind":kind,"access":"read_only"})).await;
+            let mut worker = wait_running(fx, "legacy").await;
+            worker.identity.provider = if kind == "codex" {
+                calm_server::session_projection_repo::AgentProvider::Codex
+            } else {
+                calm_server::session_projection_repo::AgentProvider::Claude
+            };
+            let no_base: bool = sqlx::query_scalar(
+                "SELECT base_sha IS NULL AND base_source IS NULL AND base_attempt_id IS NULL \
+                 AND canonical_path IS NULL AND git_common_dir IS NULL FROM workspace_leases WHERE lease_id=?1",
+            ).bind(&worker.lease_id).fetch_one(&fx.pool()).await.unwrap();
+            assert!(no_base, "pre-upgrade read-only leases have no LeaseBase");
+            // Both pre-upgrade adapters persisted canonical_path/base_sha but no git_common_dir.
+            let output: String = sqlx::query_scalar(
+                "SELECT tx_output_json FROM operations WHERE idempotency_key=?1",
+            )
+            .bind(&worker.task.id)
+            .fetch_one(&fx.pool())
+            .await
+            .unwrap();
+            let mut output: serde_json::Value = serde_json::from_str(&output).unwrap();
+            output["data"]
+                .as_object_mut()
+                .unwrap()
+                .remove("git_common_dir");
+            if let Some(value) = common_dir {
+                output["data"]["git_common_dir"] = value;
+            }
+            fx.db()
+                .writer()
+                .execute(
+                    sqlx::query("UPDATE operations SET tx_output_json=?1 WHERE idempotency_key=?2")
+                        .bind(output.to_string())
+                        .bind(&worker.task.id),
+                )
+                .await
+                .unwrap();
+            let moved = worker.cwd.with_extension("unavailable");
+            std::fs::rename(&worker.cwd, &moved).unwrap();
+            let result = call_tool(
+                &fx.boot,
+                "neige_task_done",
+                worker.identity.clone(),
+                json!({"attempt_id":worker.task.id}),
+            )
+            .await;
+            std::fs::rename(&moved, &worker.cwd).unwrap();
+            assert_eq!(result.unwrap()["status"], "report_received", "{kind}");
+            assert_eq!(current(&fx.boot, "legacy").await.status, TaskStatus::Done);
+            assert_eq!(lease_state(fx, &worker.lease_id).await, "released");
+            assert_eq!(delivery_outcome(fx, &worker.task.id).await, None);
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn read_only_post_upgrade_output_still_samples_without_lease_base() {
+    for kind in ["codex", "claude"] {
+        let w = world().await;
+        let fx = &w.fx;
+        declare_task(fx, "modern", json!({"kind":kind,"access":"read_only"})).await;
+        let mut worker = wait_running(fx, "modern").await;
+        worker.identity.provider = if kind == "codex" {
+            calm_server::session_projection_repo::AgentProvider::Codex
+        } else {
+            calm_server::session_projection_repo::AgentProvider::Claude
+        };
+        assert!(worker.base_sha.is_empty());
+        let dirty = worker.cwd.join("untracked.txt");
+        std::fs::write(&dirty, "must refuse completion").unwrap();
+        let result = call_tool(
+            &fx.boot,
+            "neige_task_done",
+            worker.identity.clone(),
+            json!({"attempt_id":worker.task.id}),
+        )
+        .await;
+        std::fs::remove_file(dirty).unwrap();
+        let error = result.unwrap_err();
+        assert!(
+            error.message.contains("worker-read-only-changed"),
+            "{error:?}"
+        );
+        assert_eq!(
+            current(&fx.boot, "modern").await.status,
+            TaskStatus::Running
+        );
+        assert_eq!(lease_state(fx, &worker.lease_id).await, "held");
+        worker.complete(fx).await;
+        assert_eq!(current(&fx.boot, "modern").await.status, TaskStatus::Done);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn read_only_recorded_base_does_not_take_pre_upgrade_bypass() {
+    let w = world().await;
+    let fx = &w.fx;
+    declare_reader(fx, "recorded-base").await;
+    let worker = wait_running(fx, "recorded-base").await;
+    let output: String =
+        sqlx::query_scalar("SELECT tx_output_json FROM operations WHERE idempotency_key=?1")
+            .bind(&worker.task.id)
+            .fetch_one(&fx.pool())
+            .await
+            .unwrap();
+    let mut value: serde_json::Value = serde_json::from_str(&output).unwrap();
+    let data = &value["data"];
+    fx.db().writer().execute(sqlx::query(
+        "UPDATE workspace_leases SET base_sha=?1,base_source='commit',canonical_path=?2,git_common_dir=?3 WHERE lease_id=?4",
+    ).bind(data["base_sha"].as_str().unwrap())
+        .bind(data["canonical_path"].as_str().unwrap())
+        .bind(data["git_common_dir"].as_str().unwrap())
+        .bind(&worker.lease_id)).await.unwrap();
+    value["data"]
+        .as_object_mut()
+        .unwrap()
+        .remove("git_common_dir");
+    fx.db()
+        .writer()
+        .execute(
+            sqlx::query("UPDATE operations SET tx_output_json=?1 WHERE idempotency_key=?2")
+                .bind(value.to_string())
+                .bind(&worker.task.id),
+        )
+        .await
+        .unwrap();
+    let error = call_tool(
+        &fx.boot,
+        "neige_task_done",
+        worker.identity.clone(),
+        json!({"attempt_id":worker.task.id}),
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        error.message.contains("worker-read-only-unsampled"),
+        "{error:?}"
+    );
+    assert_eq!(
+        current(&fx.boot, "recorded-base").await.status,
+        TaskStatus::Running
+    );
+    assert_eq!(lease_state(fx, &worker.lease_id).await, "held");
 }

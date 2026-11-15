@@ -7,17 +7,18 @@ use utoipa::ToSchema;
 mod pending;
 pub use pending::{PendingBlocker, PendingBlockerClass, PendingRetryOwner};
 
-/// #1830 S2 D5, #2139 R2: whether a task runs in its track's checkout — a codex, claude or terminal
+/// #1830 S2 D5, #2139 R2: whether a task runs in its track's checkout — an agent or terminal
 /// task that is not on the child-track route. Such tasks share the checkout, so a task that changes
 /// it runs alone.
 pub fn runs_in_track_checkout(kind: &str, spawn: &str) -> bool {
-    matches!(kind, "codex" | "claude" | "terminal")
+    (crate::provider_worker::is_agent_task_kind(kind) || kind == "terminal")
         && spawn != crate::task_recovery::TASK_CHILD_TRACK_ROUTE
 }
 
 /// #1917: what a task declares it does to the track's checkout (`tasks.access`, the task block's
 /// `access`; absent = `read_write`). Read-only tasks may run beside each other; a task that changes
-/// the checkout runs alone. Declared, not enforced: no sandbox changes with it.
+/// the checkout runs alone. ACP Workers additionally deny all permission grants for read-only tasks
+/// and sample Git before completion. This does not provide OS isolation for every provider.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskAccess {
@@ -65,12 +66,13 @@ pub(crate) fn validate_task_access(map: &Map<String, Value>, errors: &mut Vec<St
     match access {
         Some(Ok(TaskAccess::ReadWrite)) => {}
         Some(Ok(TaskAccess::ReadOnly)) => {
-            if !matches!(
-                map.get("kind").and_then(Value::as_str),
-                Some("codex" | "claude")
-            ) {
+            if !map
+                .get("kind")
+                .and_then(Value::as_str)
+                .is_some_and(crate::provider_worker::is_agent_task_kind)
+            {
                 errors.push(
-                    "access: \"read_only\" requires kind \"codex\" or \"claude\"; a terminal task \
+                    "access: \"read_only\" requires an agent task; a terminal task \
                      takes \"read_write\""
                         .into(),
                 );
@@ -148,12 +150,13 @@ pub(crate) fn validate_task_start(map: &Map<String, Value>, errors: &mut Vec<Str
     match start {
         Some(Ok(TaskStart::Checkout)) => {}
         Some(Ok(TaskStart::Upstream)) => {
-            if !matches!(
-                map.get("kind").and_then(Value::as_str),
-                Some("codex" | "claude")
-            ) {
+            if !map
+                .get("kind")
+                .and_then(Value::as_str)
+                .is_some_and(crate::provider_worker::is_agent_task_kind)
+            {
                 errors.push(
-                    "start: \"upstream\" requires kind \"codex\" or \"claude\"; a terminal task \
+                    "start: \"upstream\" requires an agent task; a terminal task \
                      takes \"checkout\""
                         .into(),
                 );
@@ -204,7 +207,7 @@ pub(crate) fn validate_reader_commits(map: &Map<String, Value>, errors: &mut Vec
         }
         if !read_only {
             errors.push(format!(
-                "{field}: applies only to a codex or claude task with access: \"read_only\""
+                "{field}: applies only to an agent task with access: \"read_only\""
             ));
         }
     }

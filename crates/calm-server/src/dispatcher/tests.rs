@@ -732,6 +732,9 @@ async fn gated_self_report_predicate() {
         start: crate::model::TaskStart::Checkout,
         result_contract: None,
         child_track_json: None,
+        provider: None,
+        model: None,
+        reasoning_effort: None,
         created_at_ms: 1,
         updated_at_ms: 1,
         finished_at_ms: None,
@@ -923,6 +926,9 @@ async fn stale_worker_stop_hook_consultation_per_task_status() {
         start: crate::model::TaskStart::Checkout,
         result_contract: None,
         child_track_json: None,
+        provider: None,
+        model: None,
+        reasoning_effort: None,
         created_at_ms: 1,
         updated_at_ms: 1,
         finished_at_ms: None,
@@ -3143,6 +3149,41 @@ async fn planner_push_wiring_table() -> PlannerPushWiringTable {
         ),
     ];
 
+    // Native settlement keeps both outcomes push-capable; notification is qualified separately.
+    for outcome in [
+        calm_types::acp_worker::WorkerReportOutcome::Completed {
+            result: serde_json::json!({"summary": "settled"}),
+            artifacts: Vec::new(),
+        },
+        calm_types::acp_worker::WorkerReportOutcome::Failed {
+            reason: "native round interrupted".into(),
+        },
+    ] {
+        for notification in [
+            calm_types::event::PlannerNotification::Notify,
+            calm_types::event::PlannerNotification::Suppress,
+        ] {
+            for (actor, expect_push) in [
+                (ActorId::Kernel, true),
+                (ActorId::KernelDispatcher, true),
+                (ActorId::AiCodex(worker.clone()), true),
+                (ActorId::AiPlanner(planner.clone()), false),
+                (ActorId::AiPlannerSession("planner-session".into()), false),
+            ] {
+                rows.push(row(
+                    Event::TaskReportSettled {
+                        idempotency_key: "w:k".into(),
+                        notification,
+                        outcome: outcome.clone(),
+                    },
+                    actor,
+                    expect_push,
+                    true,
+                ));
+            }
+        }
+    }
+
     // #1727 S4: pure arm — actor ∈ {Kernel, KernelDispatcher} ∧ wake_reason != deferred_to_gate.
     // The mapping is row-backed (tasks row + lease), so every row expects an observation.
     let (delivery_repo, delivery_event) = planner_push_delivery_fixture().await;
@@ -3198,6 +3239,14 @@ async fn planner_push_predicate_and_observation_mapping_agree() {
             "push predicate mismatch for {kind} (actor {})",
             row.actor
         );
+        if let Event::TaskReportSettled { notification, .. } = &row.event {
+            assert_eq!(
+                task_event_pushes_planner(&delivery_repo, &write, &row.event, &row.actor).await,
+                row.expect_push && *notification == calm_types::event::PlannerNotification::Notify,
+                "settled report notification mismatch for {notification:?} (actor {})",
+                row.actor
+            );
+        }
         let observation = if let Event::AskAnswered { .. } = &row.event {
             assert!(harness_observation_from_event(&track, &row.event, None).is_none());
             resolve_harness_observation(&delivery_repo, &track, &row.event)
@@ -3657,6 +3706,9 @@ async fn legacy_delivery_failed_task_failed_is_not_a_wake() {
         start: crate::model::TaskStart::Checkout,
         result_contract: None,
         child_track_json: None,
+        provider: None,
+        model: None,
+        reasoning_effort: None,
         created_at_ms: 1,
         updated_at_ms: 1,
         finished_at_ms: Some(2),
@@ -3862,6 +3914,7 @@ async fn deferred_settlement_is_silent_live_and_on_replay() {
                 start: crate::model::TaskStart::Checkout,
                 result_contract: None,
                 child_track_json: None,
+        provider: None, model: None, reasoning_effort: None,
                 created_at_ms: 1,
                 updated_at_ms: 1,
                 finished_at_ms: None,

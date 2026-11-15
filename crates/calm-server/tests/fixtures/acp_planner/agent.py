@@ -21,6 +21,7 @@ import uuid
 import time
 import hashlib
 import socket
+import threading
 
 root = pathlib.Path(os.environ['ACP_FIXTURE_ROOT'])
 # A statusLine invocation is a separate public CLI entry, not an ACP prompt.
@@ -77,19 +78,90 @@ with (root / 'argv.jsonl').open('a') as output:
 current, pending, permission, cancel_seen = None, None, None, False
 mcp_servers = []
 shared_pending = {}
+worker_pending = {}
+worker_permissions = {}
 agy_permissions = {}
 xai = os.environ.get('ACP_FIXTURE_VENDOR') == 'xai'
 always_approve = '--always-approve' in sys.argv
 model, effort = 'fixture/model-a', 'normal'
 compaction = False
 
+def worker_permission_trace(direction, value):
+    try:
+        if not (root / 'trace-worker-permissions').exists(): return
+        params = value.get('params', {})
+        record = {'direction':direction,'id':value.get('id'),'method':value.get('method'),'session':params.get('sessionId'),'kind':params.get('toolCall',{}).get('kind'),'result':value.get('result',{}).get('outcome'),'error':bool(value.get('error'))}
+        with pathlib.Path('/tmp/gemini-permission-wire-' + str(os.getpid()) + '.jsonl').open('a') as output: output.write(json.dumps(record)+'\n')
+    except OSError: pass
+
+emit_lock = threading.Lock()
 def emit(value):
-    print(json.dumps(value, ensure_ascii=False), flush=True)
+    with emit_lock:
+        worker_permission_trace("out",value)
+        print(json.dumps(value, ensure_ascii=False), flush=True)
 
 def result(request, value):
     if request.get('method') == 'session/new':
         cold_trace('result', request, value)
     emit({'jsonrpc': '2.0', 'id': request['id'], 'result': value})
+
+def worker_finish(native, request, stop='end_turn'):
+    emit({'jsonrpc':'2.0','method':'session/update','params':{'sessionId':native,'update':{'sessionUpdate':'agent_message_chunk','content':{'type':'text','text':'controlled worker activity'}}}})
+    result(request, {'stopReason':stop})
+
+def worker_wait_round(native, request):
+    release = root / ('worker-release-' + native)
+    while native in worker_pending:
+        if release.exists():
+            release.unlink()
+            if worker_pending.pop(native, None) is request:
+                worker_finish(native, request)
+            return
+        time.sleep(0.01)
+
+def worker_settle(native, request):
+    (root / ('worker-cancel-' + native)).write_text('cancelled')
+    while not (root / ('worker-settle-' + native)).exists():
+        time.sleep(0.01)
+    if not (root / ('worker-drop-cancel-' + native)).exists():
+        worker_finish(native, request, 'cancelled')
+
+def worker_ask(native, prompt, cwd, index=0):
+    cases = [
+        ('read', [str(pathlib.Path(cwd) / 'inside')], [{'optionId':'once','kind':'allow_once'}]),
+        ('edit', [str(pathlib.Path(cwd) / 'inside')], [{'optionId':'once','kind':'allow_once'}]),
+        ('execute', [str(pathlib.Path(cwd) / 'inside')], [{'optionId':'once','kind':'allow_once'}]),
+        ('edit', [str(root / 'outside')], [{'optionId':'once','kind':'allow_once'}]),
+        ('read', [], [{'optionId':'once','kind':'allow_once'}]),
+        ('read', [str(pathlib.Path(cwd) / 'inside')], [{'optionId':'duplicate','kind':'allow_once'},{'optionId':'duplicate','kind':'allow_always'}]),
+        ('read', [str(pathlib.Path(cwd) / 'inside')], [{'optionId':'a','kind':'allow_once'},{'optionId':'b','kind':'allow_once'}]),
+        ('other', [str(pathlib.Path(cwd) / 'inside')], [{'optionId':'once','kind':'allow_once'}]),
+        ('read', [''], [{'optionId':'once','kind':'allow_once'}]),
+        ('read', [str(pathlib.Path(cwd) / '..' / 'outside')], [{'optionId':'once','kind':'allow_once'}]),
+        ('read', [str(pathlib.Path(cwd) / 'inside')], [{'optionId':'','kind':'allow_once'}]),
+        ('read', [str(pathlib.Path(cwd) / 'inside')], [{'optionId':'always','kind':'allow_always'}]),
+        ('BypassSandbox', [str(pathlib.Path(cwd) / 'inside')], [{'optionId':'once','kind':'allow_once'}]),
+        ('edit', [str(pathlib.Path(cwd) / 'outside-link' / 'new-file')], [{'optionId':'once','kind':'allow_once'}]),
+        (None, [str(pathlib.Path(cwd) / 'inside')], [{'optionId':'once','kind':'allow_once'}]),
+    ]
+    if index == 0:
+        link = pathlib.Path(cwd) / 'outside-link'
+        if not link.exists(): link.symlink_to(root, target_is_directory=True)
+    if index == len(cases):
+        link = pathlib.Path(cwd) / 'outside-link'
+        if link.is_symlink(): link.unlink()
+        if (root / 'scenario').read_text().strip() == 'worker-permissions-silent':
+            result(prompt, {'stopReason': 'end_turn'})
+        else:
+            worker_finish(native, prompt)
+        return
+    kind, locations, options = cases[index]
+    for option in options: option.setdefault("name", option["optionId"])
+    key = 'worker-permission-' + native + '-' + str(index)
+    worker_permissions[key] = (native, prompt, cwd, index)
+    if index == len(cases) - 1 and (root / 'scenario').read_text().strip() == 'worker-permissions-silent':
+        emit({'jsonrpc':'2.0','method':'session/update','params':{'sessionId':native,'update':{'sessionUpdate':'tool_call','toolCallId':key,'title':'Task permission probe','status':'pending'}}})
+    emit({'jsonrpc':'2.0','id':key,'method':'session/request_permission','params':{'sessionId':native,'toolCall':{'toolCallId':key,'kind':kind,'title':kind,'locations':[{'path':path} for path in locations]},'options':options}})
 
 def hold_catalog():
     helper = subprocess.Popen(['/bin/sleep', '300'], stdin=subprocess.DEVNULL,
@@ -105,6 +177,11 @@ def config():
              {'value': 'fixture/model-a', 'name': 'Fixture A'}, {'value': 'fixture/model-b', 'name': 'Fixture B'}]}]},
         {'id': 'declared-effort-key', 'type': 'select', 'category': 'thought_level', 'currentValue': effort,
          'options': [{'value': 'normal', 'name': 'Normal'}, {'value': 'deep', 'name': 'Deep'}]}]}
+    scenario = (root / 'scenario').read_text().strip()
+    if scenario == 'worker-default-unreported':
+        result = {}
+    if scenario == 'worker-model-options-change' and model == 'fixture/model-a':
+        result['configOptions'][1]['options'] = [{'value':'normal','name':'Normal'}]
     if xai:
         result['models'] = {'currentModelId': model, 'availableModels': [
             {'modelId': name, 'name': name, '_meta': {'totalContextTokens': 200000}}
@@ -275,6 +352,7 @@ for line in sys.stdin:
             variable['value'] = '[redacted]'
         for header in server.get('headers', []):
             header['value'] = '[redacted]'
+    worker_permission_trace("in",request)
     with (root / 'requests.jsonl').open('a') as output:
         output.write(json.dumps(logged) + '\n')
     method, params = request.get('method'), request.get('params', {})
@@ -346,6 +424,9 @@ for line in sys.stdin:
             while True:
                 time.sleep(0.01)
         attach_updates()
+        if (root / 'worker-drop-new').exists():
+            (root / 'worker-new-lost').write_text(current)
+            continue
         result(request, {'sessionId': current, **config()})
     elif method == 'session/close':
         if (root / 'scenario').read_text().strip() == 'shared-close-error':
@@ -363,6 +444,8 @@ for line in sys.stdin:
         state = json.loads(native_path().read_text())
         assert state['cwd'] == params['cwd']
         model, effort = state['model'], state['effort']
+        if (root / 'scenario').read_text().strip() == 'worker-resume-defaults-changed':
+            model, effort = 'fixture/model-b', 'deep'
         for text in state['inputs'] if method == 'session/load' else []:
             update({'sessionUpdate': 'user_message_chunk', 'content': {'type': 'text', 'text': text}})
             update({'sessionUpdate': 'agent_message_chunk', 'content': {'type': 'text', 'text': 'historic reply'}})
@@ -392,7 +475,7 @@ for line in sys.stdin:
                 assert barrier.recv(1) == b'!'
     elif method == 'session/set_config_option':
         if params['configId'] == 'declared-model-key':
-            model = params['value']
+            model = 'fixture/model-a' if (root / 'scenario').read_text().strip() == 'worker-config-mismatch' else params['value']
         elif params['configId'] == 'declared-effort-key':
             effort = params['value']
         else:
@@ -546,6 +629,18 @@ for line in sys.stdin:
                 ask_shell(permission)
             else:
                 ask_mcp_tool(permission, 'neige_task_gate' if scenario == 'grok-mcp-unlisted' else 'neige_report_commit')
+        elif scenario.startswith('worker-'):
+            native = params['sessionId']
+            if scenario == 'worker-reply':
+                worker_finish(native, request)
+            elif scenario == 'worker-death':
+                os._exit(3)
+            elif scenario in ['worker-permissions', 'worker-permissions-silent']:
+                worker_ask(native, request, json.loads((root / (native + '.json')).read_text())['cwd'])
+            else:
+                worker_pending[native] = request
+                (root / ('worker-prompt-' + native)).write_text('submitted')
+                threading.Thread(target=worker_wait_round, args=(native,request), daemon=True).start()
         elif scenario == 'antigravity-permissions':
             permission_id = 'agy-permission-' + current
             agy_permissions[permission_id] = (current, request)
@@ -614,6 +709,22 @@ for line in sys.stdin:
                     'content': [{'type': 'content', 'content': {'type': 'text', 'text': 'native tool output'}}]})
             vendor('session/prompt_complete')
             finish(request, 'reply: ' + texts[-1])
+    elif method == 'session/cancel' and params['sessionId'] in worker_pending:
+        native = params['sessionId']
+        prompt = worker_pending.pop(native)
+        if (root / ('worker-late-permission-' + native)).exists():
+            cwd = json.loads((root / (native + '.json')).read_text())['cwd']
+            emit({'jsonrpc':'2.0','id':'late-worker-' + native,'method':'session/request_permission','params':{'sessionId':native,'toolCall':{'toolCallId':'late-read','kind':'read','locations':[{'path':str(pathlib.Path(cwd)/'inside')}]},'options':[{'optionId':'once','kind':'allow_once','name':'Once'}]}})
+        threading.Thread(target=worker_settle, args=(native,prompt), daemon=True).start()
+    elif method is None and str(request.get('id','')).startswith('late-worker-'):
+        (root / ('worker-late-answer-' + request['id'][len('late-worker-'):])).write_text(json.dumps(request.get('result')))
+    elif method is None and str(request.get('id','')).startswith('worker-permission-'):
+        native, prompt, cwd, index = worker_permissions.pop(request['id'])
+        with (root / 'worker-permissions.jsonl').open('a') as output:
+            output.write(json.dumps({'session':native,'index':index,'answer':request.get('result')}) + '\n')
+        if index == 14 and (root / 'scenario').read_text().strip() == 'worker-permissions-silent':
+            emit({'jsonrpc':'2.0','method':'session/update','params':{'sessionId':native,'update':{'sessionUpdate':'tool_call_update','toolCallId':request['id'],'status':'failed'}}})
+        worker_ask(native, prompt, cwd, index + 1)
     elif method == 'session/cancel' and 'agy-permission-' + params['sessionId'] in agy_permissions:
         current = params['sessionId']
         permission_log({'event': 'cancel', 'sessionId': current})

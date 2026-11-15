@@ -51,17 +51,24 @@ async fn refuses_a_result_violating_its_declared_result_contract(
     kind: &str,
     provider: AgentProvider,
 ) {
-    let fx = fixture().await;
-    let worker = fx.new_worker("reviewer", provider).await;
-    let lease = fx.kernel_lease(&worker.card_id).await;
-    let task = fx
-        .running_task(
-            "review",
-            kind,
-            &worker.card_id,
-            json!({"result_contract": "review-v1"}),
-        )
-        .await;
+    // A validator now requires a real read-only preparation, including the frozen
+    // checkout witness used by the shared completion sampler.
+    let world = crate::track_worker_cwd::world().await;
+    let fx = &world.fx;
+    crate::task_recovery::declare(
+        &fx.boot,
+        json!({"key":"review","kind":kind,"goal":"Review the frozen checkout",
+            "declared_by":calm_types::report_blocks::tasks::PLANNER_DECLARATION_AUTHOR,
+            "ready":true,"access":"read_only","result_contract":"review-v1"}),
+    )
+    .await;
+    let started = crate::track_worker_cwd::wait_running(fx, "review").await;
+    let worker = ToolCallIdentity {
+        provider,
+        ..started.identity
+    };
+    let lease_id = started.lease_id;
+    let task = started.task;
     assert_eq!(task.result_contract.as_deref(), Some("review-v1"));
     let shape = result_contract("review-v1").unwrap().shape_hint;
 
@@ -75,7 +82,7 @@ async fn refuses_a_result_violating_its_declared_result_contract(
             "result: must be a JSON object, got string",
         ),
     ] {
-        let error = done(&fx, &worker, &task.id, result.clone())
+        let error = done(fx, &worker, &task.id, result.clone())
             .await
             .expect_err("a result violating the contract is refused");
         assert_eq!(error.code, RpcError::INVALID_PARAMS, "{result}: {error:?}");
@@ -92,19 +99,19 @@ async fn refuses_a_result_violating_its_declared_result_contract(
             TaskStatus::Running,
             "the attempt is still running"
         );
-        assert_eq!(task_completed_events(&fx, &task.id).await, 0);
-        assert_eq!(lease_state(&fx, &lease.lease_id).await, "held");
+        assert_eq!(task_completed_events(fx, &task.id).await, 0);
+        assert_eq!(lease_state(fx, &lease_id).await, "held");
         assert_eq!(fx.delivery_count(&task.id).await, 0, "no delivery row");
     }
 
     let valid = json!({"verdict": "blocking", "summary": "one defect",
         "blocking_findings": [{"title": "lease", "evidence": "decision_sink.rs:180"}]});
     assert_eq!(
-        done(&fx, &worker, &task.id, valid.clone()).await.unwrap(),
-        json!({"status": "report_received", "delivery_commit_message": "test: complete result contract attempt", "gate_run_commits_keep_original_message": true})
+        done(fx, &worker, &task.id, valid.clone()).await.unwrap(),
+        json!({"status": "report_received", "delivery_commit_message": null, "gate_run_commits_keep_original_message": true})
     );
     assert_eq!(current(&fx.boot, "review").await.status, TaskStatus::Done);
-    assert_eq!(task_completed_events(&fx, &task.id).await, 1);
+    assert_eq!(task_completed_events(fx, &task.id).await, 1);
     let recorded: String = sqlx::query_scalar(
         "SELECT json_extract(payload, '$.result') FROM events WHERE kind = 'task.completed' \
          AND json_extract(payload, '$.idempotency_key') = ?1",
@@ -114,7 +121,12 @@ async fn refuses_a_result_violating_its_declared_result_contract(
     .await
     .unwrap();
     assert_eq!(serde_json::from_str::<Value>(&recorded).unwrap(), valid);
-    assert_ne!(lease_state(&fx, &lease.lease_id).await, "held");
+    assert_ne!(lease_state(fx, &lease_id).await, "held");
+    assert_eq!(
+        fx.delivery_count(&task.id).await,
+        0,
+        "read-only validator has no delivery"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

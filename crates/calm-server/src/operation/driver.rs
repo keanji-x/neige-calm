@@ -589,12 +589,79 @@ impl OperationRuntime {
 
     /// Stop only the supplied session and its exact terminal; leave session lifecycle to
     /// the caller's fenced transaction. Never resolve the card's current runtime here.
+    /// Post-commit fence for report/cancel; the durable task/session checks also deny every write.
+    pub(crate) async fn fence_worker_input(&self, session: &str) -> Result<()> {
+        let turn = self
+            .spawn_ctx
+            .repo
+            .session_projection_by_id(session)
+            .await?
+            .and_then(|row| row.active_turn_id);
+        self.fence_worker_input_identity(session, turn.as_deref())
+            .await
+    }
+    pub(crate) async fn fence_worker_input_identity(
+        &self,
+        session: &str,
+        turn: Option<&str>,
+    ) -> Result<()> {
+        let Some(runtime) = self
+            .spawn_ctx
+            .repo
+            .session_projection_by_id(session)
+            .await?
+        else {
+            return Ok(());
+        };
+        let Some(provider) = runtime.agent_provider.clone() else {
+            return Ok(());
+        };
+        let Some(cap) =
+            calm_types::provider_worker::ProviderWorkerCapabilities::for_provider(provider)
+        else {
+            return Ok(());
+        };
+        if cap.message_transport
+            == calm_types::provider_worker::WorkerMessageTransport::NativeSession
+        {
+            self.adapter(cap.operation.as_str())?
+                .fence_worker_session(session, turn);
+        }
+        Ok(())
+    }
+
+    /// Exercise the real exact-session stop path with a captured historical turn.
+    #[cfg(feature = "fixtures")]
+    pub async fn stop_worker_turn_for_test(
+        &self,
+        runtime: &crate::session_projection_repo::WorkerSessionProjection,
+    ) -> Result<()> {
+        self.stop_timeout_worker_session(Some(runtime), None).await
+    }
+
     pub(crate) async fn stop_timeout_worker_session(
         &self,
         runtime: Option<&crate::session_projection_repo::WorkerSessionProjection>,
         terminal: Option<&crate::model::Terminal>,
     ) -> Result<()> {
         if let Some(runtime) = runtime {
+            if let Some(provider) = runtime.agent_provider.clone()
+                && let Some(cap) =
+                    calm_types::provider_worker::ProviderWorkerCapabilities::for_provider(provider)
+                && cap.message_transport
+                    == calm_types::provider_worker::WorkerMessageTransport::NativeSession
+            {
+                if !self
+                    .adapter(cap.operation.as_str())?
+                    .stop_worker_session(runtime)
+                    .await?
+                {
+                    return Err(CalmError::Conflict(
+                        "native Worker stop is not confirmed".into(),
+                    ));
+                }
+                return Ok(());
+            }
             let shared = if runtime.agent_provider
                 == Some(crate::session_projection_repo::AgentProvider::Codex)
             {

@@ -57,6 +57,7 @@ pub(crate) static PLANNER_CATCH_UP_KINDS: std::sync::LazyLock<Vec<&'static str>>
     std::sync::LazyLock::new(|| {
         [
             "task.completed",
+            "task.report_settled",
             "task.failed",
             "task.git_delivery_settled",
             "task.gate_result",
@@ -117,7 +118,9 @@ pub(crate) fn event_warrants_planner_push_with_role(
         return true;
     }
     match event {
-        Event::TaskCompleted { .. } | Event::TaskFailed { .. } => {
+        Event::TaskCompleted { .. }
+        | Event::TaskFailed { .. }
+        | Event::TaskReportSettled { .. } => {
             // Not a planner author, whether card-keyed or session-keyed.
             !matches!(actor, ActorId::AiPlanner(_) | ActorId::AiPlannerSession(_))
         }
@@ -1139,7 +1142,8 @@ impl Inner {
                     tracing::warn!(%error, "child failure observation remains discoverable by the watchdog");
                 }
             }
-            Event::TaskCompleted { .. }
+            Event::TaskReportSettled { .. }
+            | Event::TaskCompleted { .. }
             | Event::TaskFailed { .. }
             | Event::TaskGateResult { .. }
             | Event::TaskGitDeliverySettled { .. } => {
@@ -1684,6 +1688,25 @@ pub(crate) fn harness_observation_from_event(
 ) -> Option<HarnessObservation> {
     match event {
         Event::TaskGitDeliverySettled { .. } => None, // requires the retained tasks row read above
+        Event::TaskReportSettled {
+            idempotency_key,
+            outcome,
+            ..
+        } => match outcome {
+            calm_types::acp_worker::WorkerReportOutcome::Completed { result, .. } => {
+                Some(HarnessObservation::TaskCompleted {
+                    idempotency_key: idempotency_key.clone(),
+                    result: result.clone(),
+                    result_contract: None,
+                })
+            }
+            calm_types::acp_worker::WorkerReportOutcome::Failed { reason } => {
+                Some(HarnessObservation::TaskFailed {
+                    idempotency_key: idempotency_key.clone(),
+                    error: reason.clone(),
+                })
+            }
+        },
         Event::TaskCompleted {
             idempotency_key,
             result,

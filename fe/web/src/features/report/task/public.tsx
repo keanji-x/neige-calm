@@ -1,6 +1,8 @@
 import type { ReactNode, ComponentProps } from 'react';
 import { ProseBlock } from '../document/content.tsx';
 import { boundedStatusDetail, type ReportTaskRow, type TaskBlockPayload } from '../../../../../core/domain/report.ts';
+import { providerPresentation, taskProvider } from '../../../../../core/domain/provider-presentation.ts';
+import { selectionSourceLabel } from '../../../../../core/domain/task-selection.ts';
 import { taskStatusPhrase } from '../../../../../core/view/track-page.ts';
 import { useState } from '../../../ui/state/public.ts';
 import { SpringRotation } from '../../../ui/motion/rotation.tsx';
@@ -55,6 +57,10 @@ export function ReportTaskBlock({ payload, blockId, task, renderExecution, textC
 
   const live: LiveTask = payload;
   const worker = live.kind === 'compact' ? null : live;
+  const selection = task?.execution?.workerSelection;
+  const provider = selection === undefined ? taskProvider(live.kind, 'provider' in live ? live.provider : undefined) : selection.provider;
+  const requestedModel = selection === undefined ? ('model' in live ? live.model : null) : selection.requested_model;
+  const requestedEffort = selection === undefined ? ('reasoning_effort' in live ? live.reasoning_effort : null) : selection.requested_effort;
   const status = task?.execution?.status ?? task?.status ?? null;
   const explanation = [
     status === null ? null : taskStatusPhrase(task?.execution?.label ?? status, task?.execution === undefined ? task?.statusDetail ?? null : boundedStatusDetail(task.execution.statusDetail)),
@@ -68,7 +74,7 @@ export function ReportTaskBlock({ payload, blockId, task, renderExecution, textC
         <span className={styles.key}>{live.key === '' ? blockId : live.key}</span>
         <span className={styles.spacer} />
         <span className={styles.kind}>
-          {live.kind}{worker?.spawn === 'sub-track' ? ' · sub-track' : ''}
+          {provider === null ? live.kind : providerPresentation(provider)?.label ?? provider}{worker?.spawn === 'sub-track' ? ' · sub-track' : ''}
         </span>
         <span className={styles.state} title={explanation || undefined}>
           {task?.execution?.label ?? status ?? (live.ready ? 'Declaration ready' : 'Declaration not ready')}
@@ -81,6 +87,14 @@ export function ReportTaskBlock({ payload, blockId, task, renderExecution, textC
       </div>}
 
       <dl className={styles.fields}>
+        {provider !== null && <>
+          <dt className={styles.label}>Mechanism</dt><dd className={styles.value}>{selection?.mechanism ?? live.kind}</dd>
+          <dt className={styles.label}>Provider</dt><dd className={styles.value}>{providerPresentation(provider)?.label ?? provider}</dd>
+          <dt className={styles.label}>Requested model / effort</dt><dd className={styles.value}>{requestedModel ?? 'Provider default'} / {requestedEffort ?? 'Provider default'}</dd>
+          <dt className={styles.label}>Effective model</dt><dd className={styles.value}>{selection?.effective_model ?? '未记录'} · {selectionSourceLabel(selection?.selection_source?.model)}</dd>
+          <dt className={styles.label}>Effective effort</dt><dd className={styles.value}>{selection?.effective_effort ?? '未记录'} · {selectionSourceLabel(selection?.selection_source?.effort)}</dd>
+          {selection?.cleanup_pending === true && <><dt className={styles.label}>Cleanup</dt><dd className={styles.value}>{selection.turn_phase === 'unknown' ? 'Unknown · cleanup pending' : 'Awaiting native round settlement'}</dd></>}
+        </>}
         {worker?.acceptance != null && worker.acceptance !== '' && (
           <>
             <dt className={styles.label}>Done when</dt>

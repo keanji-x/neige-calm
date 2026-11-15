@@ -17,6 +17,21 @@ function event(value: unknown): WireEvent {
 }
 
 describe('invalidation plan behavior', () => {
+  it('decodes native report settlement and refreshes task history and worker activity', () => {
+    for (const outcome of [
+      { kind: 'completed', result: { reviewed: true }, artifacts: [] },
+      { kind: 'failed', reason: 'native outcome unknown' },
+    ]) {
+      const settled = wireEventSchema.parse({
+        ev: 'task.report_settled',
+        data: { idempotency_key: 'native-attempt', notification: 'notify', outcome },
+      });
+      expect(invalidationPlanFor(settled)).toEqual({
+        invalidate: [['track-report'], ['track']], remove: [], writeThrough: [],
+      });
+    }
+  });
+
   it('refreshes the settled track\'s report after a git delivery settles', () => {
     const settled = wireEventSchema.parse({
       ev: 'task.git_delivery_settled',

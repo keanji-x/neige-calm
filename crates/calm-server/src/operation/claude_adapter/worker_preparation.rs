@@ -39,12 +39,20 @@ impl crate::operation::workspace_lease::worker::preparation::WorkerAdmission
         )
         .await?;
         let claude_bin = crate::claude_version::resolve_claude_bin(&self.codex.claude_bin);
-        let command_line = build_claude_worker_command_line(
+        let task = crate::db::sqlite::task_get_tx(tx, &payload.idempotency_key).await?;
+        let selection = task
+            .map(|task| provider::TurnModelSelection {
+                model: task.model,
+                effort: task.reasoning_effort,
+            })
+            .unwrap_or_else(provider::TurnModelSelection::inherit);
+        let command_line = build_claude_worker_command_line_selected(
             &claude_bin,
             &settings_path,
             &claude_session_id,
             track_id.as_str(),
             &rendered_prompt,
+            &selection,
         )?;
         let env = build_claude_env(self.repo.as_ref(), &self.codex, &card_id).await?;
         let scope = card_scope(
@@ -130,6 +138,7 @@ impl crate::operation::workspace_lease::worker::preparation::WorkerAdmission
             "branch": plan.branch,
             "base_sha": plan.base.base_sha,
             "canonical_path": plan.base.canonical_path,
+            "git_common_dir": plan.base.git_common_dir,
             "env": env,
             "prompt": rendered_prompt,
             "scope": scope,

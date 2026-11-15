@@ -80,7 +80,7 @@ pub(crate) async fn require_operation_checkout_tx(
     tx: &mut Transaction<'_, Sqlite>,
     op: &crate::operation::Operation,
 ) -> Result<()> {
-    let Some(kind) = crate::model::TaskKind::from_worker_operation_kind(&op.kind) else {
+    let Some(_) = calm_types::provider_worker::WorkerOperationKind::parse(&op.kind) else {
         return Ok(());
     };
     let id = op
@@ -90,7 +90,7 @@ pub(crate) async fn require_operation_checkout_tx(
     let task = task_get_tx(tx, id)
         .await?
         .ok_or_else(|| CalmError::Conflict("checkout worker task is missing".into()))?;
-    if task.kind != kind
+    if task.worker_operation_kind() != Some(op.kind.as_str())
         || !task.runs_in_track_checkout()
         || op
             .payload

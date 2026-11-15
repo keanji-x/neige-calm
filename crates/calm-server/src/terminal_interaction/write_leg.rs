@@ -163,7 +163,7 @@ impl TerminalInteraction {
                     .as_ref()
                     .expect("message rule requires task");
                 let id = crate::decision_sink::CardDecisionSink::commit_planner_message(
-                    self.repo.as_ref(),
+                    &self.repo,
                     identity,
                     &task.attempt_id,
                     &resolved.binding.card_id,

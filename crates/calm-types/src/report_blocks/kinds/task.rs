@@ -4,6 +4,9 @@ use super::*;
 pub const TASK_FIELDS: &[&str] = &[
     "key",
     "kind",
+    "provider",
+    "model",
+    "reasoning_effort",
     "goal",
     "command",
     "acceptance",
@@ -80,10 +83,10 @@ pub(super) fn validate_task(map: &Map<String, Value>, errors: &mut Vec<String>) 
         errors.push("tombstoned_by: must be absent from a non-tombstone task".into());
     }
     let task_kind = match map.get("kind").and_then(Value::as_str) {
-        Some(kind @ ("codex" | "claude" | "terminal" | "compact")) => Some(kind),
+        Some(kind @ ("agent" | "codex" | "claude" | "terminal" | "compact")) => Some(kind),
         _ => {
             errors.push(
-                "kind: required; must be one of \"codex\" | \"claude\" | \"terminal\" | \"compact\"".into(),
+                "kind: required; must be one of \"agent\" | \"codex\" | \"claude\" | \"terminal\" | \"compact\"".into(),
             );
             None
         }
@@ -125,10 +128,10 @@ pub(super) fn validate_task(map: &Map<String, Value>, errors: &mut Vec<String>) 
                 errors.push("goal: must be absent when kind is \"terminal\"".into());
             }
         }
-        Some("codex" | "claude") => {
+        Some("agent" | "codex" | "claude") => {
             required_non_empty_string(map, "goal", errors);
             if map.contains_key("command") {
-                errors.push("command: must be absent when kind is \"codex\" or \"claude\"".into());
+                errors.push("command: must be absent on an agent task".into());
             }
         }
         _ => {}
@@ -236,6 +239,30 @@ pub(super) fn validate_task(map: &Map<String, Value>, errors: &mut Vec<String>) 
             }
             Err(error) => errors.push(format!("child_track: invalid shape: {error}")),
         }
+    }
+    let worker_selection = ["provider", "model", "reasoning_effort"];
+    let sub_track = map.get("spawn").and_then(Value::as_str) == Some("sub-track");
+    for field in worker_selection {
+        if let Some(value) = map.get(field) {
+            if !value.as_str().is_some_and(|value| !value.trim().is_empty()) {
+                errors.push(format!("{field}: must be a non-blank string"));
+            }
+            if let Some(value) = value.as_str() {
+                check_string_cap(field, value, errors);
+            }
+            if sub_track || !task_kind.is_some_and(crate::provider_worker::is_agent_task_kind) {
+                errors.push(format!(
+                    "{field}: only in-track agent workers accept selection"
+                ));
+            }
+        }
+    }
+    if !sub_track
+        && let Some(kind) = task_kind
+        && let Err(error) =
+            crate::provider_worker::task_provider(kind, map.get("provider").and_then(Value::as_str))
+    {
+        errors.push(error);
     }
     crate::task_execution::validate_task_access(map, errors);
     crate::task_execution::validate_reader_commits(map, errors);

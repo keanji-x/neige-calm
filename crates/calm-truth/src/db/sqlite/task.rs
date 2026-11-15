@@ -8,7 +8,7 @@ use crate::model::*;
 pub const RUNNING_WORK_STATUSES_SQL: &str = "('dispatched','running','verifying')";
 
 /// One spelling so the `FromRow` mapping can't drift between pool and in-tx reads.
-pub(super) const TASK_COLUMNS: &str = "id, track_id, key, kind, goal, context_json, acceptance_criteria, \
+pub(super) const TASK_COLUMNS: &str = "id, track_id, key, kind, provider, model, reasoning_effort, goal, context_json, acceptance_criteria, \
      cwd, depends_on_json, priority, gate_json, status, status_detail, worker_card_id, \
      gate_result_json, gate_attempt, gate_pid, gate_pid_starttime, gate_pid_boot_id, \
      running_deadline_ms, context_stale_at_ms, declared_by, spawn, access, start, result_contract, child_track_json, \
@@ -44,7 +44,7 @@ pub async fn task_update_pending_tx(tx: &mut Transaction<'_, Sqlite>, t: &Task) 
     let res = sqlx::query(
         r#"UPDATE tasks
            SET kind = ?1, goal = ?2, context_json = ?3, acceptance_criteria = ?4, cwd = ?5,
-               depends_on_json = ?6, priority = ?7, gate_json = ?8, spawn = ?9, updated_at_ms = ?10, child_track_json = ?12
+               depends_on_json = ?6, priority = ?7, gate_json = ?8, spawn = ?9, updated_at_ms = ?10, child_track_json = ?12, provider = ?13, model = ?14, reasoning_effort = ?15
            WHERE id = ?11 AND status = 'pending'"#,
     )
     .bind(t.kind)
@@ -59,6 +59,9 @@ pub async fn task_update_pending_tx(tx: &mut Transaction<'_, Sqlite>, t: &Task) 
     .bind(t.updated_at_ms)
     .bind(&t.id)
     .bind(&t.child_track_json)
+    .bind(&t.provider)
+    .bind(&t.model)
+    .bind(&t.reasoning_effort)
     .execute(&mut **tx)
     .await?;
     if res.rows_affected() == 0 {
@@ -339,7 +342,8 @@ pub async fn worker_op_targets_card_tx(
     card_id: &str,
 ) -> Result<bool> {
     let owns: bool = sqlx::query_scalar(&format!(
-        "SELECT EXISTS(SELECT 1 {WORKER_SPAWN_OPS_OF_CARD} AND idempotency_key = ?2)"
+        "SELECT EXISTS(SELECT 1 {} AND idempotency_key = ?2)",
+        worker_spawn_ops_of_card()
     ))
     .bind(card_id)
     .bind(task_id)
@@ -349,10 +353,12 @@ pub async fn worker_op_targets_card_tx(
 }
 
 /// The scheduler's worker-spawn ops that created card `?1` (see [`worker_op_targets_card_tx`]).
-const WORKER_SPAWN_OPS_OF_CARD: &str = "FROM operations \
-     WHERE kind IN ('codex-worker', 'terminal-worker', 'claude-worker') \
-       AND target_type = 'card' AND target_id = ?1 \
-       AND json_extract(payload_json, '$.actor.kind') = 'KernelDispatcher'";
+fn worker_spawn_ops_of_card() -> String {
+    format!(
+        "FROM operations WHERE kind IN ({}) AND target_type='card' AND target_id=?1 AND json_extract(payload_json,'$.actor.kind')='KernelDispatcher'",
+        calm_types::provider_worker::WorkerOperationKind::sql_list()
+    )
+}
 
 /// Whether a scheduler worker-spawn op created `card_id`: a task worker's card, by the same op
 /// proof as [`worker_op_targets_card_tx`], never the card's (editable) payload.
@@ -361,7 +367,8 @@ pub async fn card_is_worker_spawn_target_tx(
     card_id: &str,
 ) -> Result<bool> {
     let spawned: bool = sqlx::query_scalar(&format!(
-        "SELECT EXISTS(SELECT 1 {WORKER_SPAWN_OPS_OF_CARD})"
+        "SELECT EXISTS(SELECT 1 {})",
+        worker_spawn_ops_of_card()
     ))
     .bind(card_id)
     .fetch_one(&mut **tx)
@@ -377,7 +384,8 @@ pub async fn worker_card_declared_head_tx(
     card_id: &str,
 ) -> Result<Option<String>> {
     let head: Option<Option<String>> = sqlx::query_scalar(&format!(
-        "SELECT head FROM tasks WHERE id IN (SELECT idempotency_key {WORKER_SPAWN_OPS_OF_CARD})"
+        "SELECT head FROM tasks WHERE id IN (SELECT idempotency_key {})",
+        worker_spawn_ops_of_card()
     ))
     .bind(card_id)
     .fetch_optional(&mut **tx)

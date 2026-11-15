@@ -1,4 +1,4 @@
-use super::config::{AcpPlannerHost, Registration};
+use crate::acp_session::host::{AcpHost, Registration};
 use crate::error::{CalmError, Result};
 use plugin::child_process::{GroupChild, set_process_group_leader, spawn_within};
 use provider::acp::{Connection, Incoming, approvals::refuse, protocol};
@@ -6,11 +6,11 @@ use serde_json::Value;
 use std::time::Duration;
 use tokio::process::Command;
 
-use super::start::StartFailure;
+use super::failure::SetupFailure as StartFailure;
 
-pub(super) struct Process {
+pub(crate) struct Process {
     child: GroupChild,
-    pub(super) restart_owner: Option<crate::db::sqlite::AcpSharedProcessIdentity>,
+    pub(crate) restart_owner: Option<crate::db::sqlite::AcpSharedProcessIdentity>,
     pub connection: Connection,
     pub capabilities: protocol::AgentCapabilities,
     pub commands: Commands,
@@ -20,7 +20,7 @@ pub(super) struct Process {
 }
 impl Process {
     pub async fn spawn(
-        host: &AcpPlannerHost,
+        host: &AcpHost,
         registration: Registration<'_>,
         worker: &str,
         cwd: &std::path::Path,
@@ -31,7 +31,7 @@ impl Process {
     }
 
     pub async fn spawn_shared(
-        host: &AcpPlannerHost,
+        host: &AcpHost,
         registration: Registration<'_>,
         cwd: &std::path::Path,
     ) -> std::result::Result<Self, StartFailure> {
@@ -43,7 +43,7 @@ impl Process {
     /// authenticate it when its profile names a method. Any refusal stops the process before a
     /// session operation.
     async fn spawn_control(
-        host: &AcpPlannerHost,
+        host: &AcpHost,
         registration: Registration<'_>,
         worker: &str,
         cwd: &std::path::Path,
@@ -68,7 +68,10 @@ impl Process {
             .stderr(std::process::Stdio::piped())
             .kill_on_drop(true);
         if boot_swept {
-            command.env(super::config::MARKER_KEY, host.instance.marker(worker));
+            command.env(
+                crate::acp_session::host::MARKER_KEY,
+                host.instance.marker(worker),
+            );
         }
         set_process_group_leader(&mut command);
         let mut child = spawn_within(
@@ -144,7 +147,7 @@ const STDERR_LIMIT: usize = 256 * 1024;
 
 /// The file the stderr of `worker`'s agent processes is kept in, under the host's data directory;
 /// each launch overwrites it.
-pub(super) fn worker_log_name(worker: &str) -> String {
+pub(crate) fn worker_log_name(worker: &str) -> String {
     let name: String = worker
         .chars()
         .map(|c| {
@@ -158,7 +161,7 @@ pub(super) fn worker_log_name(worker: &str) -> String {
     if name.is_empty() { "_".into() } else { name }
 }
 
-fn stderr_log(host: &AcpPlannerHost, worker: &str) -> std::path::PathBuf {
+fn stderr_log(host: &AcpHost, worker: &str) -> std::path::PathBuf {
     host.agent_logs
         .join(format!("{}.stderr.log", worker_log_name(worker)))
 }
@@ -208,12 +211,12 @@ async fn open_log(path: &std::path::Path) -> std::io::Result<tokio::fs::File> {
 
 /// `initialize`, then the profile's identity at the registered minimum version, then its
 /// authentication: the agent's capabilities, or why the launch is refused.
-pub(super) struct Negotiated {
+pub(crate) struct Negotiated {
     pub capabilities: protocol::AgentCapabilities,
     pub version: Option<semver::Version>,
 }
 
-pub(super) async fn negotiate(
+pub(crate) async fn negotiate(
     client: &provider::acp::Client,
     Registration { config, profile }: Registration<'_>,
     compaction: bool,
@@ -255,7 +258,7 @@ pub(super) async fn negotiate(
     })
 }
 
-pub(super) async fn reap(child: &mut GroupChild) -> Result<()> {
+pub(crate) async fn reap(child: &mut GroupChild) -> Result<()> {
     // Cancellation/timeout leaves GroupChild armed. A cleanup attempt alone is
     // not exit evidence for canonical Keep or generation retirement.
     let (status, group) =
@@ -268,7 +271,7 @@ pub(super) async fn reap(child: &mut GroupChild) -> Result<()> {
     status.map(drop).map_err(Into::into)
 }
 
-pub(super) async fn setup_request(
+pub(crate) async fn setup_request(
     connection: &mut Connection,
     commands: &Commands,
     method: &str,
@@ -298,37 +301,37 @@ pub(super) async fn setup_request(
 /// Session-scoped declarations observed from setup, idle traffic and the routed driver.
 /// Replacing a menu replaces that session's catalog, including an empty menu.
 #[derive(Clone, Default)]
-pub(super) struct Commands(
+pub(crate) struct Commands(
     std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, Vec<String>>>>,
 );
 impl Commands {
-    pub(super) fn contains(&self, session: &str, command: &str) -> bool {
+    pub(crate) fn contains(&self, session: &str, command: &str) -> bool {
         self.0
             .lock()
             .expect("ACP commands")
             .get(session)
             .is_some_and(|names| names.iter().any(|name| name == command))
     }
-    pub(super) fn declared(&self, session: &str) -> bool {
+    pub(crate) fn declared(&self, session: &str) -> bool {
         self.0.lock().expect("ACP commands").contains_key(session)
     }
-    pub(super) fn retain_sessions(&self, sessions: &std::collections::HashSet<&str>) {
+    pub(crate) fn retain_sessions(&self, sessions: &std::collections::HashSet<&str>) {
         self.0
             .lock()
             .expect("ACP commands")
             .retain(|id, _| sessions.contains(id.as_str()));
     }
-    pub(super) fn observe_for(&self, session: &str, frame: &Incoming) {
+    pub(crate) fn observe_for(&self, session: &str, frame: &Incoming) {
         if let Incoming::Notification { params, .. } = frame
             && params["sessionId"].as_str() == Some(session)
         {
             self.observe(frame);
         }
     }
-    pub(super) fn forget(&self, session: &str) {
+    pub(crate) fn forget(&self, session: &str) {
         self.0.lock().expect("ACP commands").remove(session);
     }
-    pub(super) fn observe(&self, frame: &Incoming) {
+    pub(crate) fn observe(&self, frame: &Incoming) {
         let Incoming::Notification { method, params } = frame else {
             return;
         };
@@ -432,7 +435,9 @@ mod setup_tests {
                 Err(error),
             )
             .await;
-            let outcome = super::super::start::start_result(result.map(|_| unreachable!()));
+            let outcome = crate::acp_planner::start::start_result(
+                result.map(|_| unreachable!()).map_err(Into::into),
+            );
             assert!(matches!(
                 outcome,
                 Ok(provider::control::TurnStartOutcome::Failed { error: CalmError::Conflict(message) })

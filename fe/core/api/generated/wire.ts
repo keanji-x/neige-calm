@@ -328,7 +328,7 @@ hook_idempotency_key: string,
 /**
  * Original Claude hook JSON, verbatim.
  */
-payload: unknown, } } | { "ev": "codex.worker_requested", "data": { idempotency_key: string, goal: string, context: unknown, acceptance_criteria?: string, agent_message?: string, } } | { "ev": "terminal.worker_requested", "data": { idempotency_key: string, cmd: string, cwd?: string, agent_message?: string, } } | { "ev": "task.completed", "data": { notification: PlannerNotification, idempotency_key: string, result: unknown, artifacts: Array<ArtifactRef>, agent_message?: string, } } | { "ev": "task.failed", "data": { notification: PlannerNotification, idempotency_key: string, reason: string, details?: unknown, agent_message?: string, } } | { "ev": "task.git_delivery_settled", "data": { task_id: string, idempotency_key: string, track_id: TrackId, card_id: CardId, delivery_id: string, ordinal: number, result: DeliverySettlement, wake_reason: DeliveryWakeReason, } } | { "ev": "plan.updated", "data": { track_id: TrackId, changed_keys: Array<string>, agent_message?: string, } } | { "ev": "task.dispatched", "data": { idempotency_key: string, kind: string, agent_message?: string, } } | { "ev": "task.context_frozen", "data": { track_id: TrackId, task_key: string, idempotency_key: string, task_id: string, refs: Array<TaskContextRef>, doc_revs: { [key in string]: number }, truncated: boolean, } } | { "ev": "task.context_advanced", "data": { track_id: TrackId, task_key: string, task_id: string, changed_refs: Array<TaskContextChangedRef>, verdict: string, rationale: string, } } | { "ev": "workspace.leased", "data": { track_id: TrackId, card_id: CardId, lease_id: string, path: string, } } | { "ev": "workspace.released", "data": { track_id: TrackId, card_id: CardId, lease_id: string, } } | { "ev": "forge.pr.merged", "data": { track_id: TrackId, subject: ForgeMergeSubject, head_sha: string, merge_sha: string, } } | { "ev": "ask.requested", "data": { track_id: TrackId, questions: Array<AskQuestion>, delivery: AskDelivery, action?: AskAction, 
+payload: unknown, } } | { "ev": "codex.worker_requested", "data": { idempotency_key: string, goal: string, context: unknown, acceptance_criteria?: string, agent_message?: string, } } | { "ev": "terminal.worker_requested", "data": { idempotency_key: string, cmd: string, cwd?: string, agent_message?: string, } } | { "ev": "task.completed", "data": { notification: PlannerNotification, idempotency_key: string, result: unknown, artifacts: Array<ArtifactRef>, agent_message?: string, } } | { "ev": "task.failed", "data": { notification: PlannerNotification, idempotency_key: string, reason: string, details?: unknown, agent_message?: string, } } | { "ev": "task.report_settled", "data": { idempotency_key: string, notification: PlannerNotification, outcome: WorkerReportOutcome, } } | { "ev": "task.git_delivery_settled", "data": { task_id: string, idempotency_key: string, track_id: TrackId, card_id: CardId, delivery_id: string, ordinal: number, result: DeliverySettlement, wake_reason: DeliveryWakeReason, } } | { "ev": "plan.updated", "data": { track_id: TrackId, changed_keys: Array<string>, agent_message?: string, } } | { "ev": "task.dispatched", "data": { idempotency_key: string, kind: string, agent_message?: string, } } | { "ev": "task.context_frozen", "data": { track_id: TrackId, task_key: string, idempotency_key: string, task_id: string, refs: Array<TaskContextRef>, doc_revs: { [key in string]: number }, truncated: boolean, } } | { "ev": "task.context_advanced", "data": { track_id: TrackId, task_key: string, task_id: string, changed_refs: Array<TaskContextChangedRef>, verdict: string, rationale: string, } } | { "ev": "workspace.leased", "data": { track_id: TrackId, card_id: CardId, lease_id: string, path: string, } } | { "ev": "workspace.released", "data": { track_id: TrackId, card_id: CardId, lease_id: string, } } | { "ev": "forge.pr.merged", "data": { track_id: TrackId, subject: ForgeMergeSubject, head_sha: string, merge_sha: string, } } | { "ev": "ask.requested", "data": { track_id: TrackId, questions: Array<AskQuestion>, delivery: AskDelivery, action?: AskAction, 
 /**
  * The provider item the question was translated from; absent for a `neige_user_ask` call.
  */
@@ -668,6 +668,8 @@ export type ProposalOp = { "op": "upsert_block", block_id?: string, temp_id?: st
  */
 export type ProvenanceSample = { realpath: string, common_dir: string, registered: boolean, };
 
+export type ProviderWorkerCapabilities = { provider: AgentProvider, operation: WorkerOperationKind, message_transport: WorkerMessageTransport, cancel_strategy: WorkerCancelStrategy, resumable: boolean, executor: boolean, validator: boolean, };
+
 export type QueuedMessageRequest = { carrier_id: string, if_revision: number, };
 
 export type QueuedMessageSteerResult = { submission_id: string, turn_id: string, delivery: ConversationDelivery, };
@@ -813,7 +815,11 @@ export type TailnetStatus = { desiredEnabled: boolean, phase: TailnetPhase, proc
  * Execution summary. Status includes awaiting_projection when admission capacity removed a pending row.
  * Blocking reason applies only to the selected current attempt; historical attempts carry null.
  */
-export type TaskAttemptView = { attempt_id: string, generation: number, status: string, status_detail: string | null, worker_card_id: string | null, created_at_ms: number, finished_at_ms: number | null, blocking_reason: string | null, };
+export type TaskAttemptView = { worker_selection?: TaskWorkerSelection, attempt_id: string, generation: number, status: string, status_detail: string | null, worker_card_id: string | null, created_at_ms: number, finished_at_ms: number | null, blocking_reason: string | null, };
+
+export type TaskCancelRequest = { attempt_id: string, };
+
+export type TaskCancelResponse = { ok: boolean, };
 
 /**
  * One changed frozen reference carried by a context-advance verdict.
@@ -825,13 +831,24 @@ export type TaskContextChangedRef = { track_id: TrackId, block_id: string, from_
  */
 export type TaskContextRef = { track_id: TrackId, block_id: string, rev: number, hash: string, is_root: boolean, };
 
-export type TaskPlannerMessage = { message_id: string, seq: number, text: string, created_at_ms: number, read_at_ms: number | null, };
+export type TaskMessageRequest = { attempt_id: string, idempotency_key: string, text: string, };
+
+export type TaskMessageResponse = { message_id: string, };
+
+export type TaskMessageSource = "planner" | "user";
+
+export type TaskPlannerMessage = { source?: TaskMessageSource, message_id: string, seq: number, text: string, created_at_ms: number, read_at_ms: number | null, };
 
 /**
  * Execution history. `current` is null only when the live declaration has never
  * received an allocation.
  */
 export type TaskRecoveryView = { key: string, current: TaskAttemptView | null, attempts: Array<TaskAttemptView>, };
+
+/**
+ * Frozen request plus provider-confirmed selection; absent actuals never imply an explicit default.
+ */
+export type TaskWorkerSelection = { mechanism: string, provider: AgentProvider, requested_model: string | null, requested_effort: string | null, effective_model: string | null, effective_effort: string | null, selection_source: WorkerSelectionSources | null, capabilities: ProviderWorkerCapabilities, turn_phase: WorkerTurnPhase | null, cleanup_pending: boolean, };
 
 export type TerminalPresentation = { source: CardCreationSource, in_workbench: boolean, };
 
@@ -1195,6 +1212,18 @@ export type VerifyTarget = { "kind": "candidate", candidate_id: string, commit_s
  */
 export type VerifyTargetEvidence = { "kind": "refused", cwd: string, before: Sample, reasons: Array<MismatchReason>, } | { "kind": "verified", cwd: string, before: Sample, after: Sample, reasons: Array<MismatchReason>, } | { "kind": "unsampled", phase: SamplePhase, } | { "kind": "reused", run: string, cwd: string, before: Sample, };
 
+export type WorkerCancelStrategy = "provider_stop" | "acp_cancel";
+
+export type WorkerMessageTransport = "terminal" | "native_session";
+
+export type WorkerOperationKind = "codex-worker" | "claude-worker" | "acp-worker" | "terminal-worker";
+
+export type WorkerReportOutcome = { "kind": "completed", result: unknown, artifacts: Array<ArtifactRef>, } | { "kind": "failed", reason: string, };
+
+export type WorkerSelectionSource = "explicit" | "provider_default_reported" | "provider_default_unreported";
+
+export type WorkerSelectionSources = { model: WorkerSelectionSource, effort: WorkerSelectionSource, };
+
 /**
  * Opaque execution-session identifier.
  */
@@ -1212,6 +1241,8 @@ last_turn_completed_ms?: number, };
  * Session state machine column (`worker_sessions.state`).
  */
 export type WorkerSessionState = "starting" | "running" | "idle" | "turn_pending" | "exited" | "failed" | "superseded";
+
+export type WorkerTurnPhase = "prepared" | "submitting" | "settled" | "unknown";
 
 /**
  * The decoded isolation of a track. This is derived, never stored separately.

@@ -20,18 +20,18 @@ declare module '../registry.js' {
 }
 
 const LANDED = [
-  'terminal', 'codex', 'planner', 'assistant', 'claude', 'track-report', 'file-viewer',
+  'terminal', 'native-worker', 'codex', 'planner', 'assistant', 'claude', 'track-report', 'file-viewer',
 ] as const;
 
 describe('builtin card composition contract', () => {
-  it('[INV-CARD-225] pins the nine-item order tuple', () => {
+  it('[INV-CARD-225] pins the native Worker and existing entry order', () => {
     // Insertion order is the fallback-scan order, so this literal is the resolution semantics.
     expect([...BUILTIN_CARD_ORDER]).toEqual([
-      'terminal', 'codex', 'planner', 'assistant', 'claude', 'track-report',
+      'terminal', 'native-worker', 'codex', 'planner', 'assistant', 'claude', 'track-report',
       'file-viewer', 'iframe', 'plugin-iframe',
     ]);
-    expect(BUILTIN_CARD_ORDER).toHaveLength(9);
-    expect(new Set(BUILTIN_CARD_ORDER).size).toBe(9);
+    expect(BUILTIN_CARD_ORDER).toHaveLength(10);
+    expect(new Set(BUILTIN_CARD_ORDER).size).toBe(10);
   });
 
   it('registers only the entries that exist, with no placeholders for the two that do not', () => {
@@ -58,7 +58,7 @@ describe('builtin card composition contract', () => {
     const tupleIndexes = registered.map((type) => BUILTIN_CARD_ORDER.indexOf(type as never));
     expect(tupleIndexes).not.toContain(-1);
     expect([...tupleIndexes]).toEqual([...tupleIndexes].sort((left, right) => left - right));
-    expect(tupleIndexes).toEqual([0, 1, 2, 3, 4, 5, 6]);
+    expect(tupleIndexes).toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
     const skipped = BUILTIN_CARD_ORDER
       .map((type, index) => ({ type, index }))
       .filter(({ type }) => !(registered as readonly string[]).includes(type));
@@ -100,7 +100,7 @@ describe('builtin card composition contract', () => {
   // `headless` is optional on the interface; a spurious declaration deletes every card of that type, a missing one shows an empty card.
   describe('headless is declared on the entry, and the declaration is what filters', () => {
     const HEADLESS_BY_TYPE: Readonly<Record<BuiltinCardType, boolean>> = Object.freeze({
-      terminal: false, codex: false, planner: true, assistant: true, claude: false,
+      terminal: false, 'native-worker': false, codex: false, planner: true, assistant: true, claude: false,
       'track-report': true, 'file-viewer': false, iframe: false, 'plugin-iframe': false,
     });
     const bootedProductionRegistry = () => {
@@ -159,6 +159,7 @@ describe('builtin card composition contract', () => {
   describe('every registered entry mints cards of its own type', () => {
     const PROBE_BY_TYPE: Readonly<Record<(typeof LANDED)[number], KernelCardInput>> = Object.freeze({
       terminal: { id: 'probe-term', kind: 'terminal', payload: { terminal_id: 't1' } },
+      'native-worker': { id: 'probe-native', kind: 'codex', payload: { acp_worker: true, track_id: 'track', task_key: 'task', idempotency_key: 'attempt' } },
       codex: { id: 'probe-codex', kind: 'codex', payload: { terminal_id: 't3' } },
       planner: { id: 'probe-planner', kind: 'codex', payload: { planner_harness: true } },
       assistant: { id: 'probe-assistant', kind: 'codex', payload: { harness_profile: 'assistant' } },

@@ -25,7 +25,7 @@ use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-mod cancel_running;
+use crate::task_control::cancel as cancel_running;
 mod list;
 
 pub const TOOL_TASK_CANCEL: &str = "neige_task_cancel";
@@ -261,13 +261,10 @@ fn declaration_from_normalized(task: &NormalizedTask) -> Result<TaskDeclaration,
         block_index: None,
         block_id: String::new(),
         key: task.key.clone(),
-        kind: match task.kind {
-            TaskKind::Codex => "codex",
-            TaskKind::Claude => "claude",
-            TaskKind::Terminal => "terminal",
-            TaskKind::Compact => "compact",
-        }
-        .into(),
+        kind: task.kind.as_str().into(),
+        provider: None,
+        model: None,
+        reasoning_effort: None,
         goal: task.goal.clone(),
         acceptance: task.acceptance_criteria.clone(),
         gate,
@@ -322,6 +319,9 @@ fn task_row_from_normalized(track_id: &str, t: &NormalizedTask, now: i64) -> Tas
         start: crate::model::TaskStart::Checkout,
         result_contract: None,
         child_track_json: None,
+        provider: None,
+        model: None,
+        reasoning_effort: None,
         created_at_ms: now,
         updated_at_ms: now,
         finished_at_ms: None,
@@ -418,7 +418,7 @@ where
     let track_id_typed = track.id.clone();
     let key_for_tx = key.clone();
 
-    let result = write_with_actor_events_typed::<(), _>(
+    let result = write_with_actor_events_typed(
         ctx.repo.as_ref(),
         None,
         &ctx.events,
@@ -443,6 +443,8 @@ where
                         ));
                     }
                 };
+                let captured =
+                    crate::task_control::capture_worker_identity_tx(tx, &current).await?;
                 let (rows, released) = if in_flight {
                     cancel_running::cancel_running_in_tx(tx, &current, &key).await?
                 } else {
@@ -480,7 +482,7 @@ where
                 if events.is_empty() {
                     return Err(CalmError::Conflict(CANCEL_ALREADY_APPLIED.into()));
                 }
-                Ok(((), events))
+                Ok((captured, events))
             })
         },
     )
@@ -488,7 +490,15 @@ where
 
     match result {
         Err(CalmError::Conflict(m)) if m == CANCEL_ALREADY_APPLIED => Ok(json!({ "ok": true })),
-        Ok(_) => {
+        Ok((captured, _)) => {
+            if let Some((session, turn)) = captured
+                && let Some(operations) = ctx.operation_runtime.get()
+            {
+                operations
+                    .fence_worker_input_identity(&session, turn.as_deref())
+                    .await
+                    .map_err(|e| RpcError::internal(e.to_string()))?;
+            }
             // The canceled worker's cleanup marker is committed; reap it now rather than on the
             // next reconcile tick.
             if in_flight && let Some(poke) = ctx.scheduler_poke.get() {
@@ -589,6 +599,7 @@ async fn plan_list(
                     })?;
                     entry["attempt_id"] = json!(current.attempt_id);
                     entry["generation"] = json!(current.generation);
+                    if let Some(selection)=current.worker_selection {entry["provider"]=json!(selection.provider);entry["model"]=json!(selection.requested_model);entry["reasoning_effort"]=json!(selection.requested_effort);entry["worker_selection"]=serde_json::to_value(selection)?;}
                     entry["status"] = json!(current.status);
                     entry["blocking_reason"] = json!(current.blocking_reason);
                     // Absent (no key) when the attempt never held a lease.
@@ -700,7 +711,7 @@ fn task_list_entry(t: &Task) -> Value {
     });
     match t.kind {
         TaskKind::Terminal => entry["command"] = json!(t.goal),
-        TaskKind::Codex | TaskKind::Claude => entry["goal"] = json!(t.goal),
+        TaskKind::Agent | TaskKind::Codex | TaskKind::Claude => entry["goal"] = json!(t.goal),
         TaskKind::Compact => {}
     }
     entry

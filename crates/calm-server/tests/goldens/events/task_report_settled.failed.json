@@ -1,0 +1,14 @@
+{
+  "description": "An interrupted native Worker report retains its failed outcome and explicit notification policy after settlement.",
+  "wire": {
+    "ev": "task.report_settled",
+    "data": {
+      "idempotency_key": "idem-01",
+      "notification": "suppress",
+      "outcome": {
+        "kind": "failed",
+        "reason": "native round interrupted"
+      }
+    }
+  }
+}

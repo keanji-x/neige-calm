@@ -1,332 +1,9 @@
-use super::profile::AcpAgentProfile;
+//! Planner policy and compatibility names over the shared ACP host.
+pub(crate) use crate::acp_session::host::Registration;
+pub use crate::acp_session::host::{
+    AcpAgentConfig, AcpHost as AcpPlannerHost, AcpPlannerConfig, MARKER_KEY,
+};
 use crate::error::{CalmError, Result};
-use crate::planner_process::MarkerInstance;
-use calm_types::harness::PlannerPermissionMode;
-use calm_types::runtime::{AgentProtocol, AgentProvider};
-use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
-
-pub const MARKER_KEY: &str = "NEIGE_ACP_PLANNER";
-#[derive(Clone, Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct AcpPlannerConfig {
-    pub agents: Vec<AcpAgentConfig>,
-}
-#[derive(Clone, Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct AcpAgentConfig {
-    pub provider: AgentProvider,
-    pub command: PathBuf,
-    /// Arguments before the provider profile's ACP entry, such as a wrapper's or interpreter's
-    /// own; the profile adds the agent's ACP subcommand and options after them.
-    pub args: Vec<String>,
-    /// Complete operator-declared environment additions. Nothing is inherited implicitly.
-    pub env: BTreeMap<String, String>,
-    /// The lowest agent version a launch accepts; the agent's profile says where it reports it.
-    #[serde(deserialize_with = "semver_text")]
-    pub min_agent_version: semver::Version,
-    /// Permission policy for newly created Planner cards; omission keeps `never`.
-    #[serde(default, deserialize_with = "declared_permission_mode")]
-    pub default_permission_mode: Option<PlannerPermissionMode>,
-}
-
-// A present value must be a mode string: explicit null is invalid too.
-fn declared_permission_mode<'de, D: serde::Deserializer<'de>>(
-    input: D,
-) -> Result<Option<PlannerPermissionMode>, D::Error> {
-    PlannerPermissionMode::deserialize(input).map(Some)
-}
-
-/// A semver version from its text.
-fn semver_text<'de, D: serde::Deserializer<'de>>(input: D) -> Result<semver::Version, D::Error> {
-    let text = String::deserialize(input)?;
-    semver::Version::parse(&text)
-        .map_err(|error| serde::de::Error::custom(format!("`min_agent_version` {text:?}: {error}")))
-}
-
-/// What a bound native session depends on: the agent process a launch talks to, and the
-/// directory it runs in. A conversation resumes its native session only under the same key.
-/// Admission policy such as `min_agent_version` is checked on every launch instead, so raising it
-/// resets nothing.
-#[derive(Serialize)]
-struct NativeSessionKey<'a> {
-    provider: &'a AgentProvider,
-    command: &'a Path,
-    args: &'a [String],
-    env: &'a BTreeMap<String, String>,
-    cwd: &'a Path,
-}
-
-impl AcpAgentConfig {
-    /// The digest a bound conversation's native session is claimed under for `cwd`.
-    pub(super) fn native_session_digest(&self, cwd: &Path) -> Result<String> {
-        use sha2::Digest as _;
-        // Exhaustive, so a new registration field has to be placed in or out of the key here.
-        let Self {
-            provider,
-            command,
-            args,
-            env,
-            min_agent_version: _,
-            default_permission_mode: _, // Creation policy never changes native-session identity.
-        } = self;
-        let key = NativeSessionKey {
-            provider,
-            command,
-            args,
-            env,
-            cwd,
-        };
-        Ok(hex::encode(sha2::Sha256::digest(serde_json::to_vec(&key)?)))
-    }
-}
-
-/// Registration fields this version no longer reads, and what replaced each: a file that fails
-/// to parse and still names one is told what to change, beside the parse error. Delete this list
-/// and [`replaced_field_hint`] in the first release after the one that ships them (#2924): every
-/// operator file has been rewritten by then, and the parse error alone names the unknown field.
-const REPLACED_FIELDS: [(&str, &str); 2] = [
-    (
-        "expected_agent_name",
-        "remove it: the provider's profile fixes the agent name it accepts",
-    ),
-    (
-        "expected_agent_version",
-        "rename it to `min_agent_version`: the lowest semver version accepted",
-    ),
-];
-
-/// What to change in a registration that failed to parse, when it still names replaced fields.
-fn replaced_field_hint(bytes: &[u8]) -> Option<String> {
-    let raw: serde_json::Value = serde_json::from_slice(bytes).ok()?;
-    let agents = raw.get("agents")?.as_array()?;
-    let changes: Vec<String> = REPLACED_FIELDS
-        .into_iter()
-        .filter(|(field, _)| agents.iter().any(|agent| agent.get(field).is_some()))
-        .map(|(field, change)| format!("ACP registration field `{field}` was replaced; {change}"))
-        .collect();
-    (!changes.is_empty()).then(|| {
-        format!(
-            "{}. `args` no longer holds the ACP subcommand: the provider's profile adds it, so \
-             drop `\"acp\"` from `args`",
-            changes.join(". ")
-        )
-    })
-}
-
-impl AcpPlannerConfig {
-    pub fn read(path: &Path) -> Result<Self> {
-        let bytes = std::fs::read(path)?;
-        let config: Self =
-            serde_json::from_slice(&bytes).map_err(|error| match replaced_field_hint(&bytes) {
-                Some(hint) => CalmError::BadRequest(format!("{hint} ({error})")),
-                None => error.into(),
-            })?;
-        config.validate()?;
-        Ok(config)
-    }
-    fn validate(&self) -> Result<()> {
-        let mut seen = std::collections::HashSet::new();
-        for agent in &self.agents {
-            let profile = AcpAgentProfile::of(&agent.provider)
-                .filter(|_| agent.provider.protocol() == AgentProtocol::Acp)
-                .filter(|_| seen.insert(agent.provider.wire_name()))
-                .ok_or_else(|| {
-                    CalmError::BadRequest(
-                        "ACP registration names an unsupported or duplicate agent".into(),
-                    )
-                })?;
-            if !agent.command.is_absolute() {
-                return Err(CalmError::BadRequest(
-                    "ACP registration requires an absolute command".into(),
-                ));
-            }
-            if agent
-                .env
-                .keys()
-                .any(|key| key == "PATH" || key.starts_with("NEIGE_") || key.contains(['=', '\0']))
-            {
-                return Err(CalmError::BadRequest(
-                    "ACP environment cannot override kernel credentials or process markers".into(),
-                ));
-            }
-            if let Some(key) = profile
-                .owned_env
-                .iter()
-                .find(|key| agent.env.contains_key(**key))
-            {
-                return Err(CalmError::BadRequest(format!(
-                    "ACP {} registration cannot set `{key}`: reserved by agent profile; use a native config file",
-                    agent.provider.wire_name()
-                )));
-            }
-            if let Some(key) = profile
-                .refused_env
-                .iter()
-                .find(|key| agent.env.contains_key(**key))
-            {
-                return Err(CalmError::BadRequest(format!(
-                    "ACP registration of {} cannot set `{key}`: it signs in with its own CLI, \
-                     never an API key",
-                    agent.provider.wire_name()
-                )));
-            }
-        }
-        Ok(())
-    }
-}
-
-/// One registered agent and its provider's profile: everything one launch reads.
-#[derive(Clone, Copy)]
-pub(super) struct Registration<'a> {
-    pub config: &'a AcpAgentConfig,
-    pub profile: &'static AcpAgentProfile,
-}
-
-#[derive(Debug)]
-pub struct AcpPlannerHost {
-    /// Shared engine binding, reserved for the Planner execution migration.
-    pub execution: crate::execution_quiesce::ExecutionLifecycle,
-    pub provider_execution: crate::provider_execution::ProviderExecution,
-    pub(crate) completion: std::sync::Arc<super::execution::Owner>,
-    config: Option<AcpPlannerConfig>,
-    pub instance: MarkerInstance,
-    pub(crate) pre_c4: std::sync::OnceLock<crate::provider_execution::PreC4Sweep>,
-    pub mcp_shim: PathBuf,
-    pub mcp_socket: PathBuf,
-    /// What Neige's MCP server lists each session, for agents whose requests for its tools are
-    /// approved by name; without it no tool is approved by name, so a request is the mode's.
-    tool_names: Option<crate::mcp_server::transport::SessionToolNames>,
-    /// Where each agent process's stderr is kept, one bounded file per worker, overwritten by its
-    /// next launch.
-    pub(super) shared_server: tokio::sync::Mutex<Option<super::session::Server>>,
-    pub(super) context_queries: tokio::sync::Semaphore,
-    pub(super) agent_logs: PathBuf,
-    readiness: tokio::sync::Mutex<()>,
-    pub(super) discovery: super::catalog::DiscoveryCache,
-    catalogs: std::sync::Mutex<
-        std::collections::HashMap<String, (provider::acp::configuration::Configuration, i64)>,
-    >,
-    _scratch: Option<tempfile::TempDir>,
-}
-impl AcpPlannerHost {
-    pub fn new(
-        config: Option<AcpPlannerConfig>,
-        data_dir: &Path,
-        mcp_shim: PathBuf,
-        mcp_socket: PathBuf,
-    ) -> Result<Self> {
-        if let Some(config) = &config {
-            config.validate()?;
-        }
-        let (provider_execution, completion) = super::execution::owner();
-        std::fs::create_dir_all(data_dir.join("acp-agent-logs"))?;
-        Ok(Self {
-            provider_execution,
-            completion,
-            execution: Default::default(),
-            pre_c4: std::sync::OnceLock::new(),
-            config,
-            instance: MarkerInstance::for_data_dir(data_dir, MARKER_KEY)?,
-            mcp_shim,
-            mcp_socket,
-            tool_names: None,
-            shared_server: Default::default(),
-            context_queries: tokio::sync::Semaphore::new(1),
-            agent_logs: data_dir.join("acp-agent-logs"),
-            readiness: tokio::sync::Mutex::new(()),
-            discovery: Default::default(),
-            catalogs: std::sync::Mutex::new(std::collections::HashMap::new()),
-            _scratch: None,
-        })
-    }
-    /// The host reading what Neige's MCP server lists each session from `tool_names`.
-    pub fn with_tool_names(
-        mut self,
-        tool_names: crate::mcp_server::transport::SessionToolNames,
-    ) -> Self {
-        self.tool_names = Some(tool_names);
-        self
-    }
-
-    /// The tool names Neige's MCP server lists the worker session `worker` now; none without a
-    /// source.
-    pub(super) async fn listed_tools(&self, worker: &str) -> Result<Vec<String>> {
-        match &self.tool_names {
-            Some(tool_names) => tool_names.listed(worker).await,
-            None => Ok(Vec::new()),
-        }
-    }
-
-    pub fn unconfigured_scratch() -> Result<Self> {
-        let scratch = tempfile::Builder::new().prefix("neige-acp-").tempdir()?;
-        let mut host = Self::new(
-            None,
-            scratch.path(),
-            "neige-mcp-stdio-shim".into(),
-            scratch.path().join("mcp.sock"),
-        )?;
-        host._scratch = Some(scratch);
-        Ok(host)
-    }
-    pub fn configured(&self, provider: &AgentProvider) -> Result<&AcpAgentConfig> {
-        self.config
-            .as_ref()
-            .and_then(|config| {
-                config
-                    .agents
-                    .iter()
-                    .find(|agent| &agent.provider == provider)
-            })
-            .ok_or_else(|| {
-                CalmError::Conflict(format!(
-                    "{} is unavailable: configure --acp-planner-config",
-                    provider.wire_name()
-                ))
-            })
-    }
-
-    /// The registration of `provider` with its profile.
-    pub(super) fn registration(&self, provider: &AgentProvider) -> Result<Registration<'_>> {
-        let config = self.configured(provider)?;
-        let profile = AcpAgentProfile::of(provider).ok_or_else(|| {
-            CalmError::Internal(format!("{} has no ACP profile", provider.wire_name()))
-        })?;
-        Ok(Registration { config, profile })
-    }
-
-    pub fn record_configuration(
-        &self,
-        card: &str,
-        configuration: provider::acp::configuration::Configuration,
-    ) {
-        self.catalogs
-            .lock()
-            .expect("ACP catalogs")
-            .insert(card.to_owned(), (configuration, crate::model::now_ms()));
-    }
-    pub(super) fn configuration(
-        &self,
-        card: &str,
-    ) -> Option<(provider::acp::configuration::Configuration, i64)> {
-        self.catalogs
-            .lock()
-            .expect("ACP catalogs")
-            .get(card)
-            .cloned()
-    }
-
-    pub async fn check_ready(&self, provider: &AgentProvider) -> Result<()> {
-        let _probe = self.readiness.lock().await;
-        let registration = self.registration(provider)?;
-        let process =
-            super::process::Process::spawn(self, registration, "readiness", &std::env::temp_dir())
-                .await?;
-        process.stop().await
-    }
-}
-
 /// Revoke owned credentials before listening, even without a current registration. A failed
 /// pre-C4 marker sweep warns and retains an unproven-session fence; runtime Stop is durable.
 pub async fn boot(repo: &dyn crate::db::Repo, host: &AcpPlannerHost) -> Result<()> {
@@ -345,12 +22,12 @@ pub(crate) async fn boot_with_empty_marker_scan_for_test(
     boot_with_sweep(repo, host, |_| async { Ok(()) }).await
 }
 
-pub(super) async fn boot_with_sweep<F: std::future::Future<Output = Result<()>>>(
+pub(crate) async fn boot_with_sweep<F: std::future::Future<Output = Result<()>>>(
     repo: &dyn crate::db::Repo,
     host: &AcpPlannerHost,
     sweep: impl FnOnce(Vec<String>) -> F,
 ) -> Result<()> {
-    let ids = revoke_owned(repo, None).await?;
+    let ids = revoke_owned(repo, host.native_workers.clone(), None).await?;
     let pass_a_ids = ids.clone();
     if let Err(error) = crate::db::write_in_tx_typed(repo, move |tx| {
         Box::pin(
@@ -386,6 +63,7 @@ pub(super) async fn boot_with_sweep<F: std::future::Future<Output = Result<()>>>
     for provider in shared {
         super::session::recover_shared_after_boot(repo, provider, sweep_confirmed).await?;
     }
+    host.native_workers.recover(repo, sweep_confirmed).await?;
     let unproven = if sweep_confirmed {
         Default::default()
     } else {
@@ -417,9 +95,10 @@ pub async fn sweep_track(
 ) -> Result<()> {
     let track = track.to_owned();
     let proof = host.pre_c4.get().cloned();
+    let native_workers = host.native_workers.clone();
     let ids = crate::db::write_in_tx_typed(repo, move |tx| {
         Box::pin(async move {
-            let ids = revoke_owned_tx(tx, Some(&track)).await?;
+            let ids = revoke_owned_tx(tx, native_workers.as_ref(), Some(&track)).await?;
             // A refusal rolls back revocation before any Stop can be requested.
             crate::provider_execution::PreC4Sweep::require_absent(proof.as_ref(), &ids)?;
             Ok(ids)
@@ -472,19 +151,24 @@ pub async fn sweep_track(
 
 async fn revoke_owned(
     repo: &dyn crate::db::RepoEventWrite,
+    native_workers: std::sync::Arc<dyn crate::acp_session::roles::NativeWorkers>,
     track: Option<String>,
 ) -> Result<Vec<String>> {
     crate::db::write_in_tx_typed(repo, move |tx| {
-        Box::pin(async move { revoke_owned_tx(tx, track.as_deref()).await })
+        Box::pin(
+            async move { revoke_owned_tx(tx, native_workers.as_ref(), track.as_deref()).await },
+        )
     })
     .await
 }
 
 async fn revoke_owned_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    native_workers: &dyn crate::acp_session::roles::NativeWorkers,
     track: Option<&str>,
 ) -> Result<Vec<String>> {
-    let ids = crate::db::sqlite::acp_managed_session_ids(&mut **tx, track).await?;
+    let mut ids = crate::db::sqlite::acp_managed_session_ids(&mut **tx, track).await?;
+    ids.extend(native_workers.revoke_owned_tx(tx, track).await?);
     sqlx::query(concat!("UPDATE worker_sessions SET mcp_token_hash=NULL WHERE id IN (SELECT worker_session_id FROM ","acp_managed_sessions) AND (?1 IS NULL OR track_id=?1)")).bind(track).execute(&mut **tx).await?;
     Ok(ids)
 }
@@ -493,6 +177,7 @@ async fn revoke_owned_tx(
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::path::Path;
 
     fn read(agent: serde_json::Value) -> Result<AcpPlannerConfig> {
         let file = tempfile::NamedTempFile::new().unwrap();
