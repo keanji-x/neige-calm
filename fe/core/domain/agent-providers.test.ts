@@ -1,9 +1,19 @@
 import { expect, it } from 'vitest';
-import { managedProviderProblem, managedProvidersOperation } from './agent-providers.js';
+import { managedProviderProblem, managedProvidersOperation, providerAvailabilitySchema } from './agent-providers.js';
 
 const READY = Object.freeze({
-  availability: { provider: 'claude' as const, status: 'ready' as const, reason: null, checked_at_ms: 1, authentication_notice: null },
+  availability: { provider: 'claude' as const, status: 'ready' as const, reason: null, checked_at_ms: 1, authentication_method: null, authentication_notice: null },
   accepts_unavailable_blank_track: true, capabilities: { managed_conversation: true, steer: false, images: true, manual_compact: true, history_replacement: true, requires_ready_availability: true },
+});
+
+it('preserves the selected authentication method and rejects missing or malformed declarations', () => {
+  const answer = { ...READY.availability, provider: 'grok', authentication_method: 'xai.api_key' };
+  expect(providerAvailabilitySchema.parse(answer)).toEqual(answer);
+  const missing: Partial<typeof answer> = { ...answer };
+  delete missing.authentication_method;
+  expect(providerAvailabilitySchema.safeParse(missing).success).toBe(false);
+  expect(providerAvailabilitySchema.safeParse({ ...answer, authentication_method: 1 }).success).toBe(false);
+  expect(providerAvailabilitySchema.parse({ ...answer, authentication_method: null }).authentication_method).toBeNull();
 });
 
 it('decodes registered managed capabilities and preserves availability notices', () => {
@@ -11,7 +21,7 @@ it('decodes registered managed capabilities and preserves availability notices',
   expect(operation.path).toBe('/api/agent-providers/managed?refresh=true');
   expect(operation.responseSchema.parse([READY])).toEqual([READY]);
   expect(managedProviderProblem([READY], 'claude')).toBeNull();
-  const unavailable = { ...READY, availability: { ...READY.availability, status: 'unavailable', reason: 'Sign in first', authentication_notice: { kind: 'sign_in_required', text: 'Authenticate on this server', revision: 'r1' } } };
+  const unavailable = { ...READY, availability: { ...READY.availability, status: 'unavailable', reason: 'Sign in first', authentication_method: null, authentication_notice: { kind: 'sign_in_required', text: 'Authenticate on this server', revision: 'r1' } } };
   const answers = operation.responseSchema.parse([unavailable]);
   expect(answers[0].availability.authentication_notice?.text).toBe('Authenticate on this server');
   expect(managedProviderProblem(answers, 'claude')).toBe('Sign in first');

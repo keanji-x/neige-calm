@@ -16,11 +16,24 @@ const LOGGED_OUT = 'not logged in — run `claude /login` with '
   + 'CLAUDE_CONFIG_DIR=/home/owner/.local/share/neige-next/claude-planner/config-dir-for-the-dedicated-login';
 
 const PROVIDERS: readonly ManagedProviderAvailability[] = [
-  { availability: { provider: 'codex', status: 'ready', reason: null, authentication_notice: null, checked_at_ms: 1_760_000_000_000 }, accepts_unavailable_blank_track: true, capabilities: { managed_conversation: true, steer: true, images: true, manual_compact: true, history_replacement: true, requires_ready_availability: false } },
-  { availability: { provider: 'claude', status: 'unavailable', reason: LOGGED_OUT, authentication_notice: null, checked_at_ms: 1_760_000_000_000 }, accepts_unavailable_blank_track: true, capabilities: { managed_conversation: true, steer: false, images: true, manual_compact: true, history_replacement: true, requires_ready_availability: true } },
+  { availability: { provider: 'codex', status: 'ready', reason: null, authentication_method: null, authentication_notice: null, checked_at_ms: 1_760_000_000_000 }, accepts_unavailable_blank_track: true, capabilities: { managed_conversation: true, steer: true, images: true, manual_compact: true, history_replacement: true, requires_ready_availability: false } },
+  { availability: { provider: 'claude', status: 'unavailable', reason: LOGGED_OUT, authentication_method: null, authentication_notice: null, checked_at_ms: 1_760_000_000_000 }, accepts_unavailable_blank_track: true, capabilities: { managed_conversation: true, steer: false, images: true, manual_compact: true, history_replacement: true, requires_ready_availability: true } },
 ];
 
 describe('Settings Planners', () => {
+  it('shows the selected Grok API key authentication alongside readiness', async () => {
+    render(<PlannersPane providers={[{ ...PROVIDERS[0], availability: {
+      provider: 'grok', status: 'ready', reason: null, authentication_notice: null,
+      authentication_method: 'xai.api_key', checked_at_ms: 1,
+    } }]} loadError={null} onRetryLoad={vi.fn()} onRecheck={vi.fn()}
+    rechecking={false} recheckError={null} authenticationRecovery={null}
+    turnDuration={{ readRevision: 1, value: undefined, loaded: true, loadError: null,
+      onRetryLoad: vi.fn(), onSave: vi.fn().mockResolvedValue(undefined) }} />);
+    await expect.element(page.getByText('Authentication: xai.api_key')).toBeVisible();
+    await expect.element(page.getByText('Ready', { exact: true })).toBeVisible();
+    await page.screenshot({ path: '../../../../test-results/grok-api-key-auth.png' });
+  });
+
   for (const [presentation, width, height] of [['desktop', 1180, 720], ['mobile-detail', 390, 844]] as const) {
     it(`shows each status and the whole reason without widening the ${presentation} pane`, async () => {
       await page.viewport(width, height);

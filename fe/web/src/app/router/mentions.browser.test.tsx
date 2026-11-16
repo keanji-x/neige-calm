@@ -38,7 +38,7 @@ function mount(path: string, storedText: string | null = null, pluginDescription
     requests.push(request);
     if (request.path === '/api/version') return Promise.resolve(ok({ webCompatVersion: WEB_COMPAT_VERSION, minWebCompatVersion: WEB_COMPAT_VERSION, syncEventVersion: 20, dbInstanceId: 'mentions', assistantProviders: true, conversationInitialInput: true, conversationCreateModel: true }));
     if (request.path.startsWith('/api/agent-providers/managed')) return Promise.resolve(ok([{
-      availability: { provider: 'codex', status: 'ready', reason: null, checked_at_ms: 1, authentication_notice: null },
+      availability: { provider: 'codex', status: 'ready', reason: null, checked_at_ms: 1, authentication_method: null, authentication_notice: null },
       accepts_unavailable_blank_track: true, capabilities: { managed_conversation: true, steer: true, images: true, manual_compact: true, history_replacement: true, requires_ready_availability: false },
     }]));
     if (request.path.startsWith('/api/areas/c1/mentions?q=bob')) return Promise.resolve(ok({ tags: [], tracks: [], blocks: [] }));

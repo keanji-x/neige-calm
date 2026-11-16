@@ -97,7 +97,10 @@ Tracks, and Today/daily planners. Other providers still start at `never`; Assist
 `never`. This creation policy does not change existing cards or native-session digests.
 After creation, only `PUT /api/cards/{id}/planner/permission-mode` changes the stored mode.
 
-Use an operator-owned private profile and authenticate through the native CLI outside Neige. All launch fields are required and unknown keys are refused. The child inherits no ambient environment. Kernel PATH and marker/credential keys cannot be overridden by registration.
+Use an operator-owned private profile and authenticate through the native CLI outside Neige.
+The launch fields `command`, `args`, `env` and `min_agent_version` are required; registration
+policy fields such as `auth_method` are optional. Unknown keys are refused. The child inherits
+no ambient environment. Kernel PATH and marker/credential keys cannot be overridden by registration.
 
 The argument vector is the registration's `args`, then the provider profile's ACP entry with the
 agent options of the turn's permission mode inside it: the entry's arguments before the options,
@@ -122,8 +125,10 @@ longer holds the ACP subcommand; the two forms are never read together.
 
 Grok Build (`provider: "grok"`, tested with 1.0.62) serves ACP as `grok agent --no-leader stdio`;
 `--no-leader` starts the process's own agent rather than joining a shared leader. Its `initialize`
-reports no `agentInfo`, only `_meta.agentVersion`, and every launch authenticates with
-`cached_token`: the sign-in `grok login` stored under the registration's `GROK_HOME`. Point
+reports no `agentInfo`, only `_meta.agentVersion`. By default, every launch authenticates with
+`cached_token`: the sign-in `grok login` stored under the registration's `GROK_HOME`. The optional
+registration field `auth_method` can explicitly select `cached_token` or `xai.api_key`; Neige never
+falls back between them. Point
 `command` at a versioned binary, not the `~/.grok/bin` link its updater rewrites, and turn the
 updater off:
 
@@ -144,9 +149,27 @@ updater off:
 ```
 
 Sign in once with `GROK_HOME=/var/lib/neige/grok-home/.grok grok login --device-auth` (add the
-same proxy variables the registration declares, if any). Neige runs Grok on that subscription
-only: a registration setting `XAI_API_KEY` or `GROK_CODE_XAI_API_KEY` is refused when the file is
-read.
+same proxy variables the registration declares, if any). The default and explicit `cached_token`
+registrations refuse `XAI_API_KEY` and `GROK_CODE_XAI_API_KEY` when the file is read.
+
+For API billing, add `"auth_method": "xai.api_key"` to the Grok registration. Grok Build 1.0.70
+advertises this ACP method and reads its native `api_key` / `env_key` configuration or
+`XAI_API_KEY`. Keep the key in Grok's protected native configuration under the declared
+`HOME` / `GROK_HOME`; Neige does not read or rewrite that configuration. An API key registration
+may also explicitly declare `XAI_API_KEY` or `GROK_CODE_XAI_API_KEY` in its environment; protect
+the registration file as a credential file in that case. The child never inherits ambient
+credentials. Do not put real keys in shared examples or logs.
+
+Both provider availability endpoints report the effective `authentication_method`, and Settings
+→ Planners displays it for ready and unavailable providers. Authentication failures name that
+method and its recovery advice. A missing method, rejected authentication, timeout or connection
+closure leaves the provider unavailable without trying another billing method. API key failures
+require fixing the native API key configuration, not `grok login`.
+
+Changing the authentication method changes the native-session registration identity. An existing
+conversation cannot continue with its old native session after that switch; explicitly reset it
+or create a new conversation. Omitting `auth_method` and explicitly selecting `cached_token`
+retain the previous identity, so existing subscription registrations keep their sessions.
 
 Grok also loads MCP servers a project defines (`.grok/config.toml`, `.mcp.json`,
 `.cursor/mcp.json`) and the operator's own in the Grok home's `config.toml`; Neige neither pins nor

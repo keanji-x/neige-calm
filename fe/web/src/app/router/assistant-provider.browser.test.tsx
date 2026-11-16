@@ -7,7 +7,7 @@ import type { ManagedProviderAvailability } from '../../../../core/domain/agent-
 import { renderAssistantProviderFixture } from './assistant-provider-fixture.tsx';
 
 const CLAUDE = Object.freeze<ManagedProviderAvailability>({
-  availability: { provider: 'claude', status: 'ready', reason: null, checked_at_ms: 1, authentication_notice: null },
+  availability: { provider: 'claude', status: 'ready', reason: null, checked_at_ms: 1, authentication_method: null, authentication_notice: null },
   accepts_unavailable_blank_track: true, capabilities: { managed_conversation: true, steer: false, images: false, manual_compact: false, history_replacement: false, requires_ready_availability: true },
 });
 afterEach(async () => { cleanup(); document.getElementById('root')?.remove(); await page.viewport(1280, 800); });

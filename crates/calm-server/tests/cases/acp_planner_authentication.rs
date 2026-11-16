@@ -18,6 +18,11 @@ async fn acp_does_not_inherit_codex_authentication_hold_or_notice() {
     let (status, providers) = stack.send("GET", "/api/agent-providers", None).await;
     assert_eq!(status, StatusCode::OK);
     let providers = providers.as_array().unwrap();
+    assert!(
+        providers
+            .iter()
+            .all(|p| p.get("authentication_method") == Some(&Value::Null))
+    );
     let acp = providers
         .iter()
         .find(|p| p["provider"] == "opencode")

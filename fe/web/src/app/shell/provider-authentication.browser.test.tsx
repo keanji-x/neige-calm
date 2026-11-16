@@ -12,7 +12,7 @@ for (const width of [390, 1280]) {
     await page.viewport(width, 844);
     const text = 'Codex sign-in needs renewal. Sign in again for this server, then retry.';
     const transport: ApiTransportPort = { send: () => Promise.resolve({ status: 200, statusText: 'OK', body: [
-      { provider: 'codex', status: 'unavailable', reason: text, checked_at_ms: 1, authentication_notice: { kind: 'sign_in_required', revision: '1', text } },
+      { provider: 'codex', status: 'unavailable', reason: text, checked_at_ms: 1, authentication_method: null, authentication_notice: { kind: 'sign_in_required', revision: '1', text } },
     ] }) };
     const open = vi.fn();
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });

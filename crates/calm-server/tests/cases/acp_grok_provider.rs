@@ -13,6 +13,18 @@ fn grok() -> Value {
 pub(super) async fn boot_grok(root: &Root) -> Stack {
     boot_as(root, "grok", grok(), "1.0.62").await
 }
+async fn boot_grok_auth(root: &Root, method: Option<&str>) -> Stack {
+    boot_registration(
+        root,
+        "grok",
+        json!({"ACP_FIXTURE_IDENTITY":"meta","ACP_FIXTURE_VERSION":"1.0.70",
+            "ACP_FIXTURE_AUTH_METHODS":"cached_token,xai.api_key","ACP_FIXTURE_VENDOR":"xai"}),
+        "1.0.70",
+        None,
+        method,
+    )
+    .await
+}
 pub(super) async fn create_grok(stack: &Stack) -> (String, String) {
     stack
         .create_historical_track_with(json!({"planner_provider":"grok","title":"Managed Grok"}))
@@ -71,6 +83,83 @@ async fn set_mode(stack: &Stack, card: &str, mode: &str) {
         )
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn grok_auth_switch_refuses_old_native_session_and_new_conversations_use_api_key() {
+    let root = Root::new("unused");
+    let stack = boot_grok_auth(&root, None).await;
+    let (_, card) = create_grok(&stack).await;
+    assert_eq!(
+        turn(&stack, &card, "subscription", 1).await["status"],
+        "completed"
+    );
+    let native = stack.runtime(&card).await.session_id.unwrap();
+    stack.shutdown().await;
+
+    let stack = boot_grok_auth(&root, Some("cached_token")).await;
+    assert_eq!(
+        turn(&stack, &card, "explicit subscription", 2).await["status"],
+        "completed"
+    );
+    assert_eq!(
+        stack.runtime(&card).await.session_id.as_deref(),
+        Some(native.as_str())
+    );
+    stack.shutdown().await;
+
+    let stack = boot_grok_auth(&root, Some("xai.api_key")).await;
+    let (status, providers) = stack
+        .send("GET", "/api/agent-providers?refresh=true", None)
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let grok = providers
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["provider"] == "grok")
+        .unwrap();
+    assert_eq!(grok["status"], "ready");
+    assert_eq!(grok["authentication_method"], "xai.api_key");
+    let setups = requests(&root, "session/load").len();
+    let prompts = requests(&root, "session/prompt").len();
+    let (status, body) = stack
+        .post_input(&card, "must not cross authentication")
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let worker = stack.runtime(&card).await.id;
+    let handle = stack.harness(&worker);
+    tokio::time::timeout(Duration::from_secs(20), async {
+        while handle.refused_issuances_for_test() == 0 {
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("the production registration fence must refuse the changed authentication");
+    assert_eq!(requests(&root, "session/load").len(), setups);
+    assert_eq!(requests(&root, "session/prompt").len(), prompts);
+    assert_eq!(
+        stack.runtime(&card).await.session_id.as_deref(),
+        Some(native.as_str())
+    );
+
+    let (_, fresh) = create_grok(&stack).await;
+    assert_eq!(
+        turn(&stack, &fresh, "API key", 1).await["status"],
+        "completed"
+    );
+    let frames = lines(&root, "requests.jsonl");
+    let last_prompt = frames
+        .iter()
+        .rev()
+        .find(|f| f["method"] == "session/prompt")
+        .unwrap();
+    let authenticated = frames
+        .iter()
+        .find(|f| f["_pid"] == last_prompt["_pid"] && f["method"] == "authenticate")
+        .unwrap();
+    assert_eq!(authenticated["params"], json!({"methodId":"xai.api_key"}));
+    stack.shutdown().await;
 }
 
 /// A Grok Planner authenticates every launch before its session, runs two turns on one native

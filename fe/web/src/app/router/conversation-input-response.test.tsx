@@ -48,7 +48,7 @@ function mount({ phase = 'idle', input }: { phase?: string; input?: Promise<ApiT
     if (request.path === '/api/version') return ok({ assistantProviders: true, conversationInitialInput: true, conversationCreateModel: true,
       webCompatVersion: WEB_COMPAT_VERSION, minWebCompatVersion: WEB_COMPAT_VERSION, syncEventVersion: 29, dbInstanceId: 'input-response' });
     if (request.path.startsWith('/api/agent-providers/managed')) return ok([{
-      availability: { provider: 'codex', status: 'ready', reason: null, checked_at_ms: 1, authentication_notice: null },
+      availability: { provider: 'codex', status: 'ready', reason: null, checked_at_ms: 1, authentication_method: null, authentication_notice: null },
       accepts_unavailable_blank_track: true, capabilities: { managed_conversation: true, steer: true, images: true, manual_compact: true, history_replacement: true, requires_ready_availability: false },
     }]);
     if (request.path === '/api/cards/second-planner/planner/run?contract=conversation_v1') return ok(historicalConversationRun({ card_id: 'second-planner', worker_session_id: 'runtime',

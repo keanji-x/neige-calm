@@ -73,7 +73,7 @@ pub(super) const PROFILE: AcpAgentProfile = AcpAgentProfile {
         env: &[NEVER_PERMISSION],
         agent_options: &[],
     },
-    authentication: None,
+    authentication: &[],
     ask: ModeLaunch {
         env: &[ASK_PERMISSION],
         agent_options: &[],
@@ -85,7 +85,6 @@ pub(super) const PROFILE: AcpAgentProfile = AcpAgentProfile {
     },
     mcp_tool_request: None,
     decline_ends_turn: false,
-    refused_env: &[],
 };
 
 #[cfg(test)]

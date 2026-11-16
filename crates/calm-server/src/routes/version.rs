@@ -60,7 +60,8 @@ pub use calm_types::compatibility::REST_API_VERSION as API_VERSION;
 // #3363: recovery adds a terminal-provider-error cause and recover_session action.
 // #3423: objective approval snapshots require complete question detail presentation.
 // Track template selection and workspace isolation upgrades require compatible clients.
-pub const WEB_COMPAT_VERSION: u32 = 71;
+// Provider availability requires the effective authentication method (#3682).
+pub const WEB_COMPAT_VERSION: u32 = 72;
 
 /// Kernel compatibility values sourced from live constants.
 #[derive(Debug, Clone, Serialize)]

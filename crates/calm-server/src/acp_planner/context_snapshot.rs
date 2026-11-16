@@ -278,6 +278,7 @@ while True:time.sleep(1)
             )]),
             min_agent_version: semver::Version::new(1, 5, 0),
             default_permission_mode: None,
+            auth_method: None,
         };
         (root, config)
     }

@@ -7,6 +7,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+#[cfg(test)]
+mod authentication_tests;
+
 pub const MARKER_KEY: &str = "NEIGE_ACP_PLANNER";
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -26,9 +29,18 @@ pub struct AcpAgentConfig {
     /// The lowest agent version a launch accepts; the agent's profile says where it reports it.
     #[serde(deserialize_with = "semver_text")]
     pub min_agent_version: semver::Version,
+    /// A method declared by the provider's profile; omission keeps its existing default.
+    #[serde(default, deserialize_with = "declared_auth_method")]
+    pub auth_method: Option<String>,
     /// Permission policy for newly created Planner cards; omission keeps `never`.
     #[serde(default, deserialize_with = "declared_permission_mode")]
     pub default_permission_mode: Option<PlannerPermissionMode>,
+}
+
+fn declared_auth_method<'de, D: serde::Deserializer<'de>>(
+    input: D,
+) -> Result<Option<String>, D::Error> {
+    String::deserialize(input).map(Some)
 }
 
 // A present value must be a mode string: explicit null is invalid too.
@@ -56,9 +68,24 @@ struct NativeSessionKey<'a> {
     args: &'a [String],
     env: &'a BTreeMap<String, String>,
     cwd: &'a Path,
+    // Preserve byte-for-byte identity for existing registrations and explicit default choices.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    auth_method: Option<&'a str>,
 }
 
 impl AcpAgentConfig {
+    /// Resolve only the profile's declared methods; no credential discovery or fallback.
+    pub(crate) fn authentication(
+        &self,
+    ) -> Result<Option<&'static super::profile::AuthenticationMethod>> {
+        AcpAgentProfile::of(&self.provider)
+            .ok_or_else(|| {
+                CalmError::BadRequest("ACP registration names an unsupported agent".into())
+            })?
+            .authentication(self.auth_method.as_deref())
+            .map_err(|error| CalmError::BadRequest(error.into()))
+    }
+
     /// The digest a bound conversation's native session is claimed under for `cwd`.
     pub(super) fn native_session_digest(&self, cwd: &Path) -> Result<String> {
         use sha2::Digest as _;
@@ -69,14 +96,21 @@ impl AcpAgentConfig {
             args,
             env,
             min_agent_version: _,
+            auth_method: _,
             default_permission_mode: _, // Creation policy never changes native-session identity.
         } = self;
+        let authentication = self.authentication()?;
+        let default =
+            AcpAgentProfile::of(provider).and_then(|profile| profile.authentication.first());
         let key = NativeSessionKey {
             provider,
             command,
             args,
             env,
             cwd,
+            auth_method: authentication
+                .map(|method| method.id)
+                .filter(|id| Some(*id) != default.map(|method| method.id)),
         };
         Ok(hex::encode(sha2::Sha256::digest(serde_json::to_vec(&key)?)))
     }
@@ -161,15 +195,16 @@ impl AcpPlannerConfig {
                     agent.provider.wire_name()
                 )));
             }
-            if let Some(key) = profile
-                .refused_env
-                .iter()
-                .find(|key| agent.env.contains_key(**key))
+            if let Some(method) = agent.authentication()?
+                && let Some(key) = method
+                    .refused_env
+                    .iter()
+                    .find(|key| agent.env.contains_key(**key))
             {
                 return Err(CalmError::BadRequest(format!(
-                    "ACP registration of {} cannot set `{key}`: it signs in with its own CLI, \
-                     never an API key",
-                    agent.provider.wire_name()
+                    "ACP registration of {} cannot set `{key}` with authentication method `{}`",
+                    agent.provider.wire_name(),
+                    method.id
                 )));
             }
         }
@@ -632,8 +667,8 @@ mod tests {
         assert!(message.contains("at line 1 column"), "{message}");
     }
 
-    /// A registration may not hand Grok an xAI API key: Neige runs it on its signed-in
-    /// subscription only. Every other provider keeps its environment as registered.
+    /// A default registration may not hand Grok an xAI API key: it uses the signed-in
+    /// subscription. Every other provider keeps its environment as registered.
     #[test]
     fn a_grok_registration_refuses_xai_api_keys() {
         let grok = |env: serde_json::Value| {

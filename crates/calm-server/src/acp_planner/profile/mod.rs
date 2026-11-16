@@ -52,9 +52,9 @@ pub(crate) struct AcpAgentProfile {
     pub(crate) owned_env: &'static [&'static str],
     /// What a Planner turn adds under `never`.
     pub(crate) never: ModeLaunch,
-    /// The reported `authMethods` id every launch authenticates with after `initialize`, before
-    /// any session operation; `None` sends no `authenticate`.
-    pub(crate) authentication: Option<&'static str>,
+    /// Supported native authentication methods. The first is the existing default; an empty
+    /// slice sends no `authenticate`. Registration may explicitly select one of these only.
+    pub(crate) authentication: &'static [AuthenticationMethod],
     /// What one Planner turn's process adds under `ask`.
     pub(crate) ask: ModeLaunch,
     /// What one Planner turn's process adds under `full`.
@@ -69,8 +69,12 @@ pub(crate) struct AcpAgentProfile {
     /// or a correlated silent tool failure, instead of hiding it as an ordinary end.
     pub(crate) decline_ends_turn: bool,
     pub(crate) full_requests: provider::acp::approvals::FullPermissionRequests,
-    /// Environment the registration may not set: credentials the agent would use in place of the
-    /// sign-in it authenticates with.
+}
+
+pub(crate) struct AuthenticationMethod {
+    pub(crate) id: &'static str,
+    pub(crate) recovery: &'static str,
+    /// Credentials incompatible with this authentication and billing choice.
     pub(crate) refused_env: &'static [&'static str],
 }
 
@@ -113,6 +117,21 @@ const NOTHING: ModeLaunch = ModeLaunch {
 };
 
 impl AcpAgentProfile {
+    pub(crate) fn authentication(
+        &self,
+        selected: Option<&str>,
+    ) -> Result<Option<&AuthenticationMethod>, &'static str> {
+        match selected {
+            None => Ok(self.authentication.first()),
+            Some(id) => self
+                .authentication
+                .iter()
+                .find(|method| method.id == id)
+                .map(Some)
+                .ok_or("ACP registration selects an unsupported authentication method"),
+        }
+    }
+
     pub(crate) fn mcp_shim_args(&self, server: &str) -> Vec<String> {
         let mut args = vec!["--structured-content-as-text".into()];
         if let Some(budget) = self.mcp_tool_name_budget {

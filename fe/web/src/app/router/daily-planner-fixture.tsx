@@ -98,7 +98,7 @@ export function renderWorkingDailySideFixture({ paginated = false, routeProbe, u
         webCompatVersion: WEB_COMPAT_VERSION, minWebCompatVersion: WEB_COMPAT_VERSION, syncEventVersion: 26, dbInstanceId: 'daily-side' });
       if (request.path.startsWith('/api/models?')) return ok({ models: [{ id: 'probe-model', model: 'probe-model', resolved_model: null, display_name: 'Probe Model', description: 'Probe', is_default: false, supported_reasoning_efforts: [{ reasoning_effort: 'low', description: 'Low' }, { reasoning_effort: 'high', description: 'High' }], default_reasoning_effort: 'low' }], default: { model: 'installation-default', reasoning_effort: null, supported_reasoning_efforts: null }, default_source: 'config_read', source: 'live', fetched_at_ms: 1 });
       if (request.path.startsWith('/api/agent-providers/managed')) return ok([{
-        availability: { provider: 'codex', status: 'ready', reason: null, checked_at_ms: 1, authentication_notice: null },
+        availability: { provider: 'codex', status: 'ready', reason: null, checked_at_ms: 1, authentication_method: null, authentication_notice: null },
         accepts_unavailable_blank_track: true, capabilities: { managed_conversation: true, steer: true, images: true, manual_compact: true, history_replacement: true, requires_ready_availability: false },
       }]);
       if (request.path === '/api/tracks/daily/conversations') {

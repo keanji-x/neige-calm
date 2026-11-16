@@ -5,7 +5,7 @@ import { renderDailyFixture } from './daily-planner-fixture.tsx';
 
 const ok = (body: unknown): ApiTransportResponse => ({ status: 200, statusText: 'OK', body });
 export const steerAnswer = (provider: AgentProvider, steer: boolean) => [{
-  availability: { provider, status: 'ready', reason: null, checked_at_ms: 1, authentication_notice: null },
+  availability: { provider, status: 'ready', reason: null, checked_at_ms: 1, authentication_method: null, authentication_notice: null },
   accepts_unavailable_blank_track: true, capabilities: { managed_conversation: true, steer, images: true, manual_compact: true,
     history_replacement: true, requires_ready_availability: false },
 }];

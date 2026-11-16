@@ -9,9 +9,9 @@ import { PlannersPane, type PlannersPaneProps } from './planners.tsx';
 afterEach(cleanup);
 
 const PROVIDERS: NonNullable<PlannersPaneProps['providers']> = [
-  { availability: { provider: 'codex', status: 'ready', reason: null, authentication_notice: null, checked_at_ms: 1_760_000_000_000 }, accepts_unavailable_blank_track: true },
+  { availability: { provider: 'codex', status: 'ready', reason: null, authentication_method: null, authentication_notice: null, checked_at_ms: 1_760_000_000_000 }, accepts_unavailable_blank_track: true },
   { availability: { provider: 'claude', status: 'not_configured', reason: 'calm-server was started without --claude-planner-config',
-    authentication_notice: null, checked_at_ms: 1_760_000_000_000 }, accepts_unavailable_blank_track: true },
+    authentication_method: null, authentication_notice: null, checked_at_ms: 1_760_000_000_000 }, accepts_unavailable_blank_track: true },
 ];
 
 function pane(overrides: Partial<PlannersPaneProps> = {}) {
@@ -31,6 +31,13 @@ function row(title: string): HTMLElement {
 }
 
 describe('PlannersPane', () => {
+  it.each(['xai.api_key', 'cached_token'])('shows the selected authentication method %s even when ready', (method) => {
+    pane({ providers: [{ availability: { provider: 'grok', status: 'ready', reason: null,
+      authentication_notice: null, authentication_method: method, checked_at_ms: 1 }, accepts_unavailable_blank_track: true }] });
+    expect(within(row('Grok')).getByText(`Authentication: ${method}`)).toBeTruthy();
+    expect(within(row('Grok')).getByText('Ready')).toBeTruthy();
+  });
+
   it('says it is checking rather than guessing a status', () => {
     pane({ providers: undefined });
     expect(screen.getByText('Checking providers…')).toBeTruthy();
@@ -48,8 +55,8 @@ describe('PlannersPane', () => {
 
   it('describes blank track creation during Codex and Claude outages (#3037)', () => {
     pane({ providers: [
-      { availability: { provider: 'codex', status: 'unavailable', reason: 'shared codex app-server is not running', authentication_notice: null, checked_at_ms: 1 }, accepts_unavailable_blank_track: true },
-      { availability: { provider: 'claude', status: 'unavailable', reason: 'not logged in', authentication_notice: null, checked_at_ms: 1 }, accepts_unavailable_blank_track: true },
+      { availability: { provider: 'codex', status: 'unavailable', reason: 'shared codex app-server is not running', authentication_method: null, authentication_notice: null, checked_at_ms: 1 }, accepts_unavailable_blank_track: true },
+      { availability: { provider: 'claude', status: 'unavailable', reason: 'not logged in', authentication_method: null, authentication_notice: null, checked_at_ms: 1 }, accepts_unavailable_blank_track: true },
     ] });
     expect(within(row('Codex')).getByText(
       'shared codex app-server is not running A track can still be created; it runs once Codex is back.',
@@ -70,9 +77,9 @@ describe('PlannersPane', () => {
 
   it('retains server order, the oldest check and notice precedence over outage copy', () => {
     pane({ providers: [
-      { ...PROVIDERS[1], availability: { provider: 'opencode', status: 'not_configured', reason: 'not configured', checked_at_ms: 3000, authentication_notice: null } },
+      { ...PROVIDERS[1], availability: { provider: 'opencode', status: 'not_configured', reason: 'not configured', checked_at_ms: 3000, authentication_method: null, authentication_notice: null } },
       { ...PROVIDERS[0], availability: { provider: 'codex', status: 'unavailable', reason: 'daemon down', checked_at_ms: 1000,
-        authentication_notice: { kind: 'refresh_error_reported', text: 'reported notice', revision: '9' } } },
+        authentication_method: null, authentication_notice: { kind: 'refresh_error_reported', text: 'reported notice', revision: '9' } } },
     ] });
     expect(screen.getAllByRole('listitem').map((item) => within(item).queryByText(/^(OpenCode|Codex)$/)?.textContent)
       .filter(Boolean)).toEqual(['OpenCode', 'Codex']);
@@ -85,7 +92,7 @@ describe('PlannersPane', () => {
   it('names Grok and shows its sign-in advice when it is unavailable', () => {
     const reason = 'grok did not authenticate (authenticate `cached_token`: timed out); sign it in with its own CLI under the environment its ACP registration declares, then retry';
     pane({ providers: [
-      { availability: { provider: 'grok', status: 'unavailable', reason, authentication_notice: null, checked_at_ms: 1 }, accepts_unavailable_blank_track: true },
+      { availability: { provider: 'grok', status: 'unavailable', reason, authentication_method: null, authentication_notice: null, checked_at_ms: 1 }, accepts_unavailable_blank_track: true },
     ] });
     expect(within(row('Grok')).getByText(`${reason} A track can still be created; it runs once Grok is back.`)).toBeTruthy();
   });
@@ -108,7 +115,7 @@ it('offers an injected owner retry only for a confirmed failure and passes its e
   const onRetry = vi.fn();
   pane({
     providers: [{ availability: { provider: 'codex', status: 'unavailable', reason: 'Sign in for the server.', checked_at_ms: 1,
-      authentication_notice: { kind: 'sign_in_required', text: 'Sign in for the server.', revision: '7' } },
+      authentication_method: null, authentication_notice: { kind: 'sign_in_required', text: 'Sign in for the server.', revision: '7' } },
       accepts_unavailable_blank_track: true }],
     authenticationRecovery: { provider: 'codex', pending: false, error: null, notices: [], onRetry, onOpenConversation: vi.fn() },
   });

@@ -46,4 +46,5 @@
 // Revision 44 (#3363): explicit known-terminal carrier recovery.
 // Revision 45 (#3531): managed ACP adds the Antigravity provider identity.
 // Revision 46 (#3633): retire token-in-URL share HTTP/WS routes; use scoped ordinary APIs.
-pub const REST_API_VERSION: &str = "46";
+// Revision 47 (#3682): provider availability requires the selected authentication_method.
+pub const REST_API_VERSION: &str = "47";

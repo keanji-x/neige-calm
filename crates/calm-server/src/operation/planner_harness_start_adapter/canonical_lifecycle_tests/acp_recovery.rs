@@ -142,6 +142,7 @@ fn configure_acp(fx: &mut Fixture, scenario: &str) {
                 .into(),
                 min_agent_version: semver::Version::new(1, 0, 0),
                 default_permission_mode: None,
+                auth_method: None,
             }],
         },
         &fx._dir.path().join("data"),
