@@ -50,7 +50,7 @@ async fn c4_acp_existing_execution_refuses_before_credential_mint() {
     intent.metadata.consumer = "acp-planner".into();
     intent.metadata.alias = ProcessAlias(format!("planner:{worker}:{}", id.as_str()));
     intent.metadata.owner = OperationRef(format!("worker-session:{worker}"));
-    intent.metadata.scope = workspace_runtime::execution::ExecutionScope::Track(TrackId(track));
+    intent.metadata.scope = workspace_runtime::execution::ExecutionOwnership::Track(TrackId(track));
     intent.metadata.program.program = "/bin/sh".into();
     intent.metadata.program.args = vec!["-c".into(), "read held".into()];
     let (admitted, guard) = owner
@@ -420,7 +420,8 @@ async fn c4_acp_boot_never_resends_held_or_releasing_payload() {
         intent.metadata.consumer = "acp-planner".into();
         intent.metadata.alias = ProcessAlias(format!("planner:{worker}:{}", id.as_str()));
         intent.metadata.owner = OperationRef(format!("worker-session:{worker}"));
-        intent.metadata.scope = workspace_runtime::execution::ExecutionScope::Track(TrackId(track));
+        intent.metadata.scope =
+            workspace_runtime::execution::ExecutionOwnership::Track(TrackId(track));
         intent.metadata.program.program = "/bin/sh".into();
         intent.metadata.program.args =
             vec!["-c".into(), "read value && touch forbidden-release".into()];

@@ -4,7 +4,7 @@ use crate::harness::native_admission::NativePromptAdmission;
 use crate::shared_codex_appserver::{IdleDetachGuard, SharedCodexAppServer};
 
 pub(super) enum RecoveryProof {
-    Provider(crate::provider_execution::quiescence::Quiescence),
+    Provider(crate::harness::backend::factory::ProviderQuiescence),
     Codex {
         native: IdleDetachGuard,
         transcript: crate::harness::transcript_receipt::CanonicalTerminalReceipt,

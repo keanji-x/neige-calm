@@ -198,6 +198,24 @@ pub async fn settlement_history(
     .await
 }
 
+/// Resident owners use their consumer key as the prefix of every durable alias.
+/// Either ownership projection selects the row so damage cannot hide a live Run.
+pub async fn resident_inventory_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    consumer: &str,
+) -> Result<Vec<(String, String)>, sqlx::Error> {
+    sqlx::query_as(
+        "SELECT execution_id,alias FROM workspace_executions
+         WHERE desired <> 'retire'
+           AND ((alias >= ?1 || ':' AND alias < ?1 || ';')
+                 OR json_extract(intent_json, '$.consumer') = ?1)
+         ORDER BY execution_id",
+    )
+    .bind(consumer)
+    .fetch_all(&mut **tx)
+    .await
+}
+
 /// Occupancy scopes; lifecycle policy belongs to callers.
 pub enum Scope<'a> {
     Card(&'a str),

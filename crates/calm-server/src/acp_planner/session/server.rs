@@ -21,9 +21,10 @@ struct Binding {
 
 struct Generation {
     id: uuid::Uuid,
+    supervised: bool,
     /// Set after the profile's process owner confirms cleanup. Supervised
     /// generations require the executor's descendants-complete settlement.
-    stopped: AtomicBool,
+    stopped: Arc<AtomicBool>,
 }
 
 struct CleanupWitness {
@@ -344,6 +345,8 @@ async fn settle(
         execution_end::Settlement::Completed
     } else if cleaned {
         execution_end::Settlement::CleanUnknown
+    } else if persisted && durable.is_none() && cleanup.generation.supervised {
+        execution_end::Settlement::AwaitingResidentDrain(cleanup.generation.stopped.clone())
     } else {
         execution_end::Settlement::Unconfirmed
     }
@@ -567,6 +570,9 @@ async fn retire(host: &AcpPlannerHost, owned: &mut Option<Server>) -> Result<()>
     if let Some(server) = owned.as_mut() {
         server.process.stop().await?;
         server.generation.stopped.store(true, Ordering::Release);
+        for worker in &server.touched_workers {
+            host.completion.request_progress(worker);
+        }
         owned.take();
     }
     Ok(())

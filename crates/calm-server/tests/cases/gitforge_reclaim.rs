@@ -229,8 +229,9 @@ async fn foreign_execution_retains_extra(delete: bool) {
         let f = Fixture::new().await;
         let mut intent = crate::support::execution::occupancy_intent(f.clean.clone());
         intent.metadata.consumer = "gate".into();
-        intent.metadata.scope =
-            workspace_runtime::execution::ExecutionScope::Track(TrackId("foreign-owner".into()));
+        intent.metadata.scope = workspace_runtime::execution::ExecutionOwnership::Track(TrackId(
+            "foreign-owner".into(),
+        ));
         let id = intent.metadata.id.clone();
         let engine = f._execution.lifecycle.engine().unwrap();
         let ticket = {

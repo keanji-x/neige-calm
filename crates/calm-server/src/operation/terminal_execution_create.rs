@@ -61,7 +61,7 @@ impl TxOnlyAdapter for TerminalExecutionCreate {
                     &terminal_id,
                 )),
                 owner: OperationRef(op.id.clone()),
-                scope: workspace_runtime::execution::ExecutionScope::Track(TrackId(
+                scope: workspace_runtime::execution::ExecutionOwnership::Track(TrackId(
                     output.output_string("track_id", KIND)?,
                 )),
                 source: PrivateSource {

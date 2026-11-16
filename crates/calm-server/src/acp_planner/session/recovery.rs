@@ -299,23 +299,7 @@ async fn restart_owner_stopped(
                 .leader_exited(),
         ),
         Some(AcpSharedRestartOwner::Execution { execution_id }) if supervised => {
-            let settlement: Option<String> = sqlx::query_scalar(
-                "SELECT settlement_json FROM workspace_executions WHERE execution_id=?1 AND alias=?2 AND json_extract(intent_json,'$.consumer')=?3 AND settlement_json IS NOT NULL",
-            )
-            .bind(execution_id.as_str())
-            .bind(format!("acp-resident:{}", provider.wire_name()))
-            .bind(super::super::resident_execution::CONSUMER)
-            .fetch_optional(&mut **tx)
-            .await
-            .map_err(crate::error::CalmError::from)?;
-            settlement
-                .map(|json| {
-                    serde_json::from_str::<workspace_runtime::execution::Settlement>(&json)
-                        .map(|settlement| settlement.descendants_complete())
-                })
-                .transpose()
-                .map(|settled| settled.unwrap_or(false))
-                .map_err(Into::into)
+            super::super::resident_execution::has_drained_tx(tx, provider, &execution_id).await
         }
         _ => Ok(false),
     }

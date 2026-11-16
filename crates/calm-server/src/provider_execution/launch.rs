@@ -23,7 +23,7 @@ pub(crate) async fn intent(
                 consumer: owner.consumer().into(),
                 alias: ProcessAlias(owner.alias(session, id.as_str())),
                 owner: OperationRef(format!("worker-session:{session}")),
-                scope: ExecutionScope::Track(TrackId(track.to_owned())),
+                scope: ExecutionOwnership::Track(TrackId(track.to_owned())),
             },
             cwd,
             id,
@@ -43,7 +43,7 @@ pub(crate) struct LaunchOwner {
     pub consumer: ExecutionConsumer,
     pub alias: ProcessAlias,
     pub owner: OperationRef,
-    pub scope: ExecutionScope,
+    pub scope: ExecutionOwnership,
 }
 
 #[allow(clippy::too_many_arguments)]

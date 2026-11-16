@@ -6,14 +6,87 @@ use crate::{
 };
 
 pub(crate) use crate::provider_execution::quiescence::Quiescence;
+pub(crate) enum AbandonmentProof {
+    Track(Quiescence),
+    Resident(ResidentQuiescence),
+}
+
+pub(crate) struct ResidentQuiescence {
+    worker: String,
+    submission: String,
+    provider: calm_types::runtime::AgentProvider,
+    execution: workspace_runtime::execution::ExecutionId,
+}
+
+impl AbandonmentProof {
+    pub(crate) async fn recheck_tx(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    ) -> Result<()> {
+        match self {
+            Self::Track(proof) => proof.recheck_tx(tx).await,
+            Self::Resident(proof) => proof.recheck_tx(tx).await,
+        }
+    }
+}
+
+impl ResidentQuiescence {
+    async fn recheck_tx(&self, tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<()> {
+        use crate::db::sqlite::{AcpSharedRestartOwner, acp_shared_receipt_process_tx};
+        let owner = acp_shared_receipt_process_tx(tx, &self.worker, &self.submission).await?;
+        let unbound: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM worker_sessions WHERE id=?1 AND mcp_token_hash IS NULL)
+             AND NOT EXISTS(SELECT 1 FROM acp_resident_workspace_bindings WHERE worker_session_id=?1)",
+        )
+        .bind(&self.worker)
+        .fetch_one(&mut **tx)
+        .await?;
+        if !matches!(owner, Some(AcpSharedRestartOwner::Execution { execution_id }) if execution_id == self.execution)
+            || !unbound
+            || !super::resident_execution::has_drained_tx(tx, &self.provider, &self.execution)
+                .await?
+        {
+            return Err(CalmError::Conflict(
+                "Resident ACP execution quiescence is unproven".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
 pub(crate) async fn quiesce_for_abandonment(
     host: &AcpPlannerHost,
+    provider: &calm_types::runtime::AgentProvider,
     session: &str,
     track: &str,
-) -> Result<Quiescence> {
+    submission: &str,
+) -> Result<AbandonmentProof> {
     stop_session(host, session, StopReason::Shutdown).await?;
     let repo = host.completion.repo()?;
     let pool = repo.sqlite_db().ok_or(CalmError::ExecutionUnavailable)?;
+    let (worker, client, provider) = (session.to_owned(), submission.to_owned(), provider.clone());
+    let resident = crate::db::write_in_tx_typed(repo.as_ref(), move |tx| {
+        Box::pin(async move {
+            use crate::db::sqlite::{AcpSharedRestartOwner, acp_shared_receipt_process_tx};
+            let Some(AcpSharedRestartOwner::Execution { execution_id }) =
+                acp_shared_receipt_process_tx(tx, &worker, &client).await?
+            else {
+                return Ok(None);
+            };
+            let proof = ResidentQuiescence {
+                worker,
+                submission: client,
+                provider,
+                execution: execution_id,
+            };
+            proof.recheck_tx(tx).await?;
+            Ok(Some(proof))
+        })
+    })
+    .await?;
+    if let Some(proof) = resident {
+        return Ok(AbandonmentProof::Resident(proof));
+    }
     Quiescence::capture(
         pool.read_pool(),
         session,
@@ -22,6 +95,7 @@ pub(crate) async fn quiesce_for_abandonment(
         crate::provider_execution::AliasPrefix::planner(),
     )
     .await
+    .map(AbandonmentProof::Track)
 }
 
 pub(crate) async fn stop_session(

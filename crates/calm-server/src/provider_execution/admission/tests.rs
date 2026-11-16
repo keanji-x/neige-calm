@@ -37,7 +37,7 @@ async fn refused(empty: bool) {
     };
     let mut intent = workspace_runtime::execution::test_support::intent(dir.path().into());
     intent.metadata.consumer = Owner.consumer().into();
-    intent.metadata.scope = workspace_runtime::execution::ExecutionScope::Track(
+    intent.metadata.scope = workspace_runtime::execution::ExecutionOwnership::Track(
         workspace_runtime::execution::TrackId(binding.track.clone()),
     );
     intent.metadata.alias.0 = Owner.alias(&binding.worker, intent.metadata.id.as_str());
@@ -71,7 +71,7 @@ async fn refused(empty: bool) {
     // these negative assertions pass without the fence validation.
     let mut control = workspace_runtime::execution::test_support::intent(dir.path().into());
     control.metadata.consumer = Owner.consumer().into();
-    control.metadata.scope = workspace_runtime::execution::ExecutionScope::Track(
+    control.metadata.scope = workspace_runtime::execution::ExecutionOwnership::Track(
         workspace_runtime::execution::TrackId(binding.track.clone()),
     );
     control.metadata.alias.0 = Owner.alias(&binding.worker, control.metadata.id.as_str());
@@ -142,7 +142,7 @@ async fn c5d_engine_loss_during_writer_wait_keeps_fence_refusal() {
     };
     let mut intent = workspace_runtime::execution::test_support::intent(dir.path().into());
     intent.metadata.consumer = Owner.consumer().into();
-    intent.metadata.scope = workspace_runtime::execution::ExecutionScope::Track(
+    intent.metadata.scope = workspace_runtime::execution::ExecutionOwnership::Track(
         workspace_runtime::execution::TrackId(binding.track.clone()),
     );
     intent.metadata.alias.0 = Owner.alias(&binding.worker, intent.metadata.id.as_str());

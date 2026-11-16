@@ -332,7 +332,7 @@ async fn runtime_stop_settles(path: &str) {
     intent.metadata.consumer = crate::acp_planner::execution::CONSUMER.into();
     let id = intent.metadata.id.clone();
     intent.metadata.alias = ProcessAlias(format!("planner:{worker}:{}", id.as_str()));
-    intent.metadata.scope = workspace_runtime::execution::ExecutionScope::Track(TrackId(
+    intent.metadata.scope = workspace_runtime::execution::ExecutionOwnership::Track(TrackId(
         fx.output.output_string("track_id", "test").unwrap(),
     ));
     intent.metadata.program.program = "/bin/sleep".into();

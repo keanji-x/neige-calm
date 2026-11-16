@@ -26,12 +26,12 @@ pub struct TrackId(pub String);
 /// even when several Tracks use that generation.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
-pub enum ExecutionScope {
+pub enum ExecutionOwnership {
     Track(TrackId),
     Host { backend: String },
 }
 
-impl ExecutionScope {
+impl ExecutionOwnership {
     pub fn track(&self) -> Option<&TrackId> {
         match self {
             Self::Track(track) => Some(track),
@@ -69,7 +69,7 @@ pub struct ExecutionMetadata {
     pub owner: OperationRef,
     /// Keep the existing persisted field name and representation for Tracks.
     #[serde(rename = "track")]
-    pub scope: ExecutionScope,
+    pub scope: ExecutionOwnership,
     pub source: PrivateSource,
     pub program: ExecutionSpecification,
     pub specification: SpecificationId,

@@ -14,6 +14,7 @@ use crate::thread_seals::ThreadSeals;
 use calm_types::runtime::AgentProtocol;
 
 mod abandonment;
+pub(crate) use abandonment::ProviderQuiescence;
 mod catalog_readiness;
 pub(crate) use catalog_readiness::CatalogReadiness;
 mod codex;

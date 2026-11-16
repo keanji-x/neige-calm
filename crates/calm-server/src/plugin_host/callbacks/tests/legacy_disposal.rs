@@ -56,7 +56,7 @@ async fn execution(h: &Harness, id: &str) {
                 Arc::new(crate::execution_store::tests::NoopProjection),
             );
     let mut intent = test_support::intent("/".into());
-    intent.metadata.scope = workspace_runtime::execution::ExecutionScope::Track(
+    intent.metadata.scope = workspace_runtime::execution::ExecutionOwnership::Track(
         workspace_runtime::execution::TrackId(h.track_id.clone()),
     );
     let owner = intent.metadata.owner.0.clone();

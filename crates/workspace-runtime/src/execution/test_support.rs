@@ -258,7 +258,7 @@ pub fn intent(root: std::path::PathBuf) -> ExecutionIntent {
             id: ExecutionId::fresh().unwrap(),
             alias: ProcessAlias(ExecutionId::fresh().unwrap().as_str().into()),
             owner: OperationRef("port-contract".into()),
-            scope: ExecutionScope::Track(TrackId("test-track".into())),
+            scope: ExecutionOwnership::Track(TrackId("test-track".into())),
             source: PrivateSource {
                 root,
                 cwd: WorkspaceCwd::root(),

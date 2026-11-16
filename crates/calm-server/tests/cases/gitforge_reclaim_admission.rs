@@ -44,7 +44,7 @@ async fn seed_legacy_reclaim(
     intent.metadata.consumer = "workspace-reclaim".into();
     intent.metadata.owner = OperationRef(op.clone());
     intent.metadata.scope =
-        workspace_runtime::execution::ExecutionScope::Track(TrackId(f.track.clone()));
+        workspace_runtime::execution::ExecutionOwnership::Track(TrackId(f.track.clone()));
     intent.metadata.alias = ProcessAlias(format!("reclaim:{op}"));
     intent.metadata.program.program = "/bin/sh".into();
     intent.metadata.program.args = [

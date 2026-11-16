@@ -136,7 +136,7 @@ async fn ws_before_spawn_retains_latest_resize_and_recovers_input() {
     let (_, term) = f.terminal().await;
     let mut intent = exec::test_support::intent(f.root.clone());
     intent.metadata.scope =
-        workspace_runtime::execution::ExecutionScope::Track(exec::TrackId(f.track.clone()));
+        workspace_runtime::execution::ExecutionOwnership::Track(exec::TrackId(f.track.clone()));
     intent.metadata.alias = ProcessAlias(sql::terminal_alias(&term.id));
     intent.metadata.program.io_mode = calm_session::control::IoMode::Pty { cols: 80, rows: 24 };
     intent.metadata.program.program = "/bin/sh".into();

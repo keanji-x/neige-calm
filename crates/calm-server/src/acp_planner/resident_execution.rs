@@ -35,7 +35,7 @@ impl ResidentExecution {
             .sqlite_db()
             .ok_or(CalmError::ExecutionUnavailable)?;
         let backend = registration.config.provider.wire_name();
-        let alias = format!("acp-resident:{backend}");
+        let alias = format!("{CONSUMER}:{backend}");
         // A cancelled initialize can leave a committed generation without an
         // in-memory server. Settle that exact owner before starting another.
         stop_previous(&pool, Some(&engine), Some(&alias)).await?;
@@ -51,7 +51,7 @@ impl ResidentExecution {
                 consumer: CONSUMER.into(),
                 owner: OperationRef(alias.clone()),
                 alias: ProcessAlias(alias),
-                scope: ExecutionScope::Host {
+                scope: ExecutionOwnership::Host {
                     backend: backend.to_owned(),
                 },
             },
@@ -143,12 +143,16 @@ pub(crate) async fn stop_previous(
             Box::pin(async move {
                 let mut tx = writer.begin_immediate().await?;
                 let mut ids = Vec::new();
-                for (_, row) in sql::consumer_inventory(&mut **tx, CONSUMER).await? {
-                    let row = row?;
-                    if alias.as_ref().is_some_and(|alias| alias != &row.alias) {
+                for (execution_id, registered_alias) in
+                    sql::resident_inventory_tx(&mut tx, CONSUMER).await?
+                {
+                    if alias
+                        .as_ref()
+                        .is_some_and(|alias| alias != &registered_alias)
+                    {
                         continue;
                     }
-                    let id = ExecutionId::try_from(row.execution_id).map_err(conflict)?;
+                    let id = ExecutionId::try_from(execution_id).map_err(conflict)?;
                     sql::request(&mut tx, id.as_str(), "stop").await?;
                     ids.push(id);
                 }
@@ -242,9 +246,37 @@ async fn drain(pool: &SqliteDb, engine: &ExecutionEngine, id: &ExecutionId) -> R
                     settlement,
                     Settlement::Journal(ExecutionState::NoChild { .. } | ExecutionState::Revoked)
                 )
+                || matches!(
+                    settlement,
+                    Settlement::Retired(tombstone)
+                        if tombstone.execution_id == *id
+                            && tombstone.outcome == TombstoneOutcome::Revoked
+                )
         })
     {
         return Err(conflict("resident ACP descendants have not drained"));
     }
     request(pool, engine, id, Desired::Retire).await
+}
+
+pub(super) async fn has_drained_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    provider: &calm_types::runtime::AgentProvider,
+    execution_id: &ExecutionId,
+) -> Result<bool> {
+    let settlement: Option<String> = sqlx::query_scalar(
+        "SELECT settlement_json FROM workspace_executions
+         WHERE execution_id=?1 AND alias=?2 AND json_extract(intent_json,'$.consumer')=?3
+           AND settlement_json IS NOT NULL",
+    )
+    .bind(execution_id.as_str())
+    .bind(format!("{CONSUMER}:{}", provider.wire_name()))
+    .bind(CONSUMER)
+    .fetch_optional(&mut **tx)
+    .await?;
+    let settlement: Option<Settlement> = settlement
+        .as_deref()
+        .map(serde_json::from_str)
+        .transpose()?;
+    Ok(settlement.is_some_and(|settlement| settlement.descendants_complete()))
 }

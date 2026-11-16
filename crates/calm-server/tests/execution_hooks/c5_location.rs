@@ -18,9 +18,9 @@ async fn c5_location_occupancy_foreign_execution_keeps_track_without_stop() {
             }
         };
         let mut intent = crate::support::execution::occupancy_intent(root);
-        intent.metadata.scope = workspace_runtime::execution::ExecutionScope::Track(exec::TrackId(
-            "foreign-owner".into(),
-        ));
+        intent.metadata.scope = workspace_runtime::execution::ExecutionOwnership::Track(
+            exec::TrackId("foreign-owner".into()),
+        );
         let id = intent.metadata.id.clone();
         let write_db = (f.repo.db()).clone();
         write_db
@@ -103,8 +103,9 @@ async fn c5_repoint_internal_trash_refuses_before_lifecycle() {
 async fn c5_location_repoint_foreign_without_stop() {
     let f = Fixture::new().await;
     let mut intent = crate::support::execution::occupancy_intent(f.root.clone());
-    intent.metadata.scope =
-        workspace_runtime::execution::ExecutionScope::Track(exec::TrackId("foreign-owner".into()));
+    intent.metadata.scope = workspace_runtime::execution::ExecutionOwnership::Track(exec::TrackId(
+        "foreign-owner".into(),
+    ));
     let id = intent.metadata.id.clone();
     let write_db = (f.repo.db()).clone();
     write_db
@@ -175,8 +176,9 @@ async fn c5_location_ancestor_root_does_not_block_delete() {
     let f = Fixture::new().await;
     let mut intent =
         crate::support::execution::occupancy_intent(f.state.workspace_root().to_path_buf());
-    intent.metadata.scope =
-        workspace_runtime::execution::ExecutionScope::Track(exec::TrackId("foreign-owner".into()));
+    intent.metadata.scope = workspace_runtime::execution::ExecutionOwnership::Track(exec::TrackId(
+        "foreign-owner".into(),
+    ));
     let id = intent.metadata.id.clone();
     let write_db = (f.repo.db()).clone();
     write_db
@@ -214,8 +216,9 @@ async fn c5_track_positive_proof_after_quiesce_precedes_move() {
                 .await
                 .unwrap();
             let mut intent = crate::support::execution::occupancy_intent(f.root.clone());
-            intent.metadata.scope =
-                workspace_runtime::execution::ExecutionScope::Track(exec::TrackId(f.track.clone()));
+            intent.metadata.scope = workspace_runtime::execution::ExecutionOwnership::Track(
+                exec::TrackId(f.track.clone()),
+            );
             let id = intent.metadata.id.clone();
             let write_db = (f.repo.db()).clone();
             write_db
@@ -263,7 +266,7 @@ async fn c5_track_writer_rechecks_foreign_location() {
                 .unwrap();
             assert!(f.root.is_dir());
             let mut intent = crate::support::execution::occupancy_intent(f.root.clone());
-            intent.metadata.scope = workspace_runtime::execution::ExecutionScope::Track(
+            intent.metadata.scope = workspace_runtime::execution::ExecutionOwnership::Track(
                 exec::TrackId("foreign-owner".into()),
             );
             let id = intent.metadata.id.clone();
@@ -311,7 +314,7 @@ async fn c5_repoint_writer_rechecks_foreign_location_without_stop() {
                 .await
                 .unwrap();
             let mut intent = crate::support::execution::occupancy_intent(f.root.clone());
-            intent.metadata.scope = workspace_runtime::execution::ExecutionScope::Track(
+            intent.metadata.scope = workspace_runtime::execution::ExecutionOwnership::Track(
                 exec::TrackId("foreign-owner".into()),
             );
             let id = intent.metadata.id.clone();

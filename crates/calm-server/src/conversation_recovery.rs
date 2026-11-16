@@ -268,7 +268,7 @@ async fn replace_carrier_owned(
                     &s.claude_planner,
                     &s.acp_planner,
                 )
-                .quiesce_for_abandonment(&binding.provider, &request.carrier_id, track.as_str())
+                .quiesce_for_abandonment(&binding.provider, &request.carrier_id, track.as_str(), &request.submission_id)
                 .await?,
             )
         };

@@ -32,6 +32,7 @@ pub(super) async fn prepare(
             return Err(refused("Shared ACP requires session close"));
         }
         let generation = uuid::Uuid::new_v4();
+        let supervised = process.is_supervised();
         *owned = Some(Server {
             process,
             bindings: HashMap::new(),
@@ -39,7 +40,8 @@ pub(super) async fn prepare(
             touched_workers: HashSet::new(),
             generation: Arc::new(Generation {
                 id: generation,
-                stopped: AtomicBool::new(false),
+                supervised,
+                stopped: Arc::new(AtomicBool::new(false)),
             }),
         });
         tokio::spawn(supervise(

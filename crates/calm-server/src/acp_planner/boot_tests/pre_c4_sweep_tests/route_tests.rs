@@ -179,7 +179,7 @@ async fn area_delete(proven: bool) {
     proof(&state, &row, &AgentProvider::OpenCode, proven);
     let track = repo.track_get(&row.track).await.unwrap().unwrap();
     let mut intent = workspace_runtime::execution::test_support::intent(root.path().into());
-    intent.metadata.scope = workspace_runtime::execution::ExecutionScope::Track(
+    intent.metadata.scope = workspace_runtime::execution::ExecutionOwnership::Track(
         workspace_runtime::execution::TrackId(row.track.clone()),
     );
     let execution = intent.metadata.id.as_str().to_owned();

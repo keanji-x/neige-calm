@@ -607,6 +607,17 @@ for line in sys.stdin:
             result(request, {'unexpected': True})
         elif scenario == 'shared-hold':
             shared_pending[current] = request
+        elif scenario == 'resident-drain-sibling':
+            (root / 'resident-sibling-held').touch()
+            import threading
+            def release_sibling(saved=request):
+                deadline = time.monotonic() + 30
+                while not (root / 'release-resident-sibling').exists():
+                    if time.monotonic() >= deadline:
+                        return
+                    time.sleep(0.01)
+                result(saved, {'stopReason': 'end_turn'})
+            threading.Thread(target=release_sibling, daemon=True).start()
         elif scenario in ['hold', 'server-drain']:
             pending = request
             if (root / 'prompt-consumption.sock').exists():

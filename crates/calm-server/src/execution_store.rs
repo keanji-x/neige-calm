@@ -100,8 +100,8 @@ impl Store for SqliteExecutionStore {
         .await
         .map_err(error)?;
         let scope_key = match &intent.metadata.scope {
-            ExecutionScope::Track(track) => track.0.clone(),
-            ExecutionScope::Host { backend } => format!("host:{backend}"),
+            ExecutionOwnership::Track(track) => track.0.clone(),
+            ExecutionOwnership::Host { backend } => format!("host:{backend}"),
         };
         sql::insert(
             tx,

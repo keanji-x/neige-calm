@@ -564,7 +564,7 @@ async fn legacy_disposal_recover_classification_absent() {
 
 async fn seed_typed_history(repo: &SqlxRepo, track: &str, terminal: &str, root: &std::path::Path) {
     let mut intent = workspace_runtime::execution::test_support::intent(root.to_owned());
-    intent.metadata.scope = workspace_runtime::execution::ExecutionScope::Track(
+    intent.metadata.scope = workspace_runtime::execution::ExecutionOwnership::Track(
         workspace_runtime::execution::TrackId(track.to_owned()),
     );
     intent.metadata.alias = workspace_runtime::execution::ProcessAlias(
