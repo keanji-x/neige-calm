@@ -228,6 +228,19 @@ export function extractTemplateMentions(text: string): readonly string[] {
   return ids;
 }
 
+/** Return a template ID for `POST /api/tracks` only when the message names one known ready template without inputs. */
+export function selectedReadyTemplateId(
+  text: string,
+  templates: readonly TrackTemplate[],
+): string | undefined {
+  const templateIds = extractTemplateMentions(text);
+  if (templateIds.length !== 1) return undefined;
+  const template = templates.find(candidate => candidate.id === templateIds[0]);
+  return template?.availability.status === 'ready' && template.input_schema === undefined
+    ? template.id
+    : undefined;
+}
+
 /** Find templates by title, ID or description without requiring a type prefix. */
 export function templateMentionSuggestions(templates: readonly TrackTemplate[], typed: string): readonly MentionSuggestion[] {
   const query = mentionQueryOf(typed);
