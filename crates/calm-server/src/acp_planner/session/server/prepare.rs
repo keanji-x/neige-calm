@@ -14,6 +14,7 @@ pub(super) async fn prepare(
     source: &NativePromptAdmission<'_>,
 ) -> std::result::Result<(String, UsageTracker), StartFailure> {
     let params = &shared.params;
+    let resident = registration.profile.resident.expect("shared ACP profile");
     let pool = params
         .repo
         .sqlite_db()
@@ -28,19 +29,20 @@ pub(super) async fn prepare(
         let process =
             process::Process::spawn_shared(&params.host, registration, &std::env::temp_dir())
                 .await?;
-        if !process.is_supervised() && process.capabilities.session_capabilities.close.is_none() {
+        if resident.detach == ResidentDetach::CloseSession
+            && process.capabilities.session_capabilities.close.is_none()
+        {
             return Err(refused("Shared ACP requires session close"));
         }
         let generation = uuid::Uuid::new_v4();
-        let supervised = process.is_supervised();
         *owned = Some(Server {
             process,
+            detach: resident.detach,
             bindings: HashMap::new(),
             credential_owners: HashSet::new(),
             touched_workers: HashSet::new(),
             generation: Arc::new(Generation {
                 id: generation,
-                supervised,
                 stopped: Arc::new(AtomicBool::new(false)),
             }),
         });
@@ -88,30 +90,30 @@ pub(super) async fn prepare(
         server
             .credential_owners
             .insert(params.worker_session_id.clone());
-        if server.process.is_supervised() {
-            server
-                .touched_workers
-                .insert(params.worker_session_id.clone());
-        }
+        let id = server
+            .process
+            .supervision_id()
+            .expect("supervised resident");
+        server
+            .touched_workers
+            .insert(params.worker_session_id.clone());
         let mut attachment_guard = AttachmentGuard(Some(server.process.connection.client.clone()));
-        if let Some(id) = server.process.supervision_id() {
-            let (execution, worker, track, cwd) = (
-                id.as_str().to_owned(),
-                params.worker_session_id.clone(),
-                params.track_id.clone(),
-                params.cwd.clone(),
-            );
-            write_in_tx_typed(params.repo.as_ref(), move |tx| {
-                Box::pin(async move {
-                    calm_truth::db::sqlite::acp_resident::bind_workspace(
-                        tx, &execution, &worker, &track, &cwd,
-                    )
-                    .await?;
-                    Ok(())
-                })
+        let (execution, worker, track, cwd) = (
+            id.as_str().to_owned(),
+            params.worker_session_id.clone(),
+            params.track_id.clone(),
+            params.cwd.clone(),
+        );
+        write_in_tx_typed(params.repo.as_ref(), move |tx| {
+            Box::pin(async move {
+                calm_truth::db::sqlite::acp_resident::bind_workspace(
+                    tx, &execution, &worker, &track, &cwd,
+                )
+                .await?;
+                Ok(())
             })
-            .await?;
-        }
+        })
+        .await?;
         let token = mint_token(params).await?;
         let mut attached_native = None;
         // The durable worker owns this attachment across reconnects and shared-process

@@ -218,6 +218,50 @@ async fn canonical_antigravity_two_compacts_route_independent_results() {
     stack.shutdown().await;
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn antigravity_close_leaves_routed_sibling_running_until_workspace_drain() {
+    let root = Root::new("unused");
+    let stack = agy(&root).await;
+    let (track, first) = planner(&stack).await;
+    let (_, sibling) = planner(&stack).await;
+    turn(&stack, &first, "first", 1).await;
+    let first_worker = stack.runtime(&first).await;
+    let first_native = first_worker.session_id.unwrap();
+    std::fs::write(root.path().join("scenario"), "resident-drain-sibling").unwrap();
+    assert_eq!(
+        stack.post_input(&sibling, "stay active").await.0,
+        StatusCode::OK,
+    );
+    wait_file(&root, "resident-sibling-held").await;
+
+    stack
+        .state
+        .harness
+        .shutdown_and_remove(&first_worker.id)
+        .await
+        .unwrap();
+    let closes = owned_closes(&root);
+    assert_eq!(closes.len(), 1);
+    assert_eq!(closes[0]["params"]["sessionId"], first_native);
+    assert!(stack.outcomes(&sibling).await.is_empty());
+
+    let wiring = stack.state.planner_wiring();
+    let sweep = || calm_server::acp_planner::config::sweep_track(stack.repo(), &wiring.acp, &track);
+    assert!(matches!(
+        sweep().await,
+        Err(calm_server::error::CalmError::Conflict(_))
+    ));
+    assert!(requests(&root, "session/cancel").is_empty());
+    std::fs::write(root.path().join("release-resident-sibling"), "").unwrap();
+    assert_eq!(
+        stack.wait_outcomes(&sibling, 1).await[0]["status"],
+        "completed"
+    );
+    assert_one_prompt_process(&root);
+    sweep().await.unwrap();
+    stack.shutdown().await;
+}
+
 async fn context_reading(stack: &Stack, card: &str, used: i64) -> Value {
     tokio::time::timeout(Duration::from_secs(20), async {
         loop {

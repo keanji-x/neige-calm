@@ -1,6 +1,9 @@
 //! OpenCode 2.x ACP contract, tested from 2.1.3. The operator signs in with
 //! `@opencode/cli` outside Neige; ACP authentication is deliberately not invoked.
-use super::{AcpAgentProfile, AgentEntry, AgentIdentity, AgentVersions, ModeLaunch, NOTHING};
+use super::{
+    AcpAgentProfile, AgentEntry, AgentIdentity, AgentVersions, ModeLaunch, NOTHING, ResidentDetach,
+    ResidentProfile,
+};
 
 // Native v2.1.3 config schema: packages/schema/src/config.ts and permission.ts.
 // Last match wins (core/src/permission.ts:74-87); global rules precede agent rules
@@ -27,8 +30,11 @@ const RESIDENT_LAUNCH: ModeLaunch = ModeLaunch {
 
 pub(super) const PROFILE: AcpAgentProfile = AcpAgentProfile {
     context_snapshot: false,
-    resident: Some(&RESIDENT_LAUNCH),
-    supervise_resident: true,
+    resident: Some(ResidentProfile {
+        launch: &RESIDENT_LAUNCH,
+        detach: ResidentDetach::DrainGeneration,
+        release_unknown_on_restart: false,
+    }),
     mcp_call_session_key: Some("ai.opencode/sessionID"),
     background_tool_completions: false,
     mcp_tool_name_budget: None,
@@ -83,7 +89,7 @@ mod tests {
 
     #[test]
     fn opencode_resident_requests_approval_for_managed_actions() {
-        let [(key, config)] = PROFILE.resident.expect("resident launch").env else {
+        let [(key, config)] = PROFILE.resident.expect("resident launch").launch.env else {
             panic!("one native config");
         };
         assert_eq!(*key, "OPENCODE_CONFIG_CONTENT");

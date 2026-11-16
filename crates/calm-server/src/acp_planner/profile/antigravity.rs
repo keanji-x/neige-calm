@@ -2,13 +2,16 @@
 //! with `agy acp --login` before registering it.
 use super::{
     AcpAgentProfile, AgentEntry, AgentIdentity, AgentVersions, CompactionWire, ContractCompaction,
-    NOTHING,
+    NOTHING, ResidentDetach, ResidentProfile,
 };
 
 pub(super) const PROFILE: AcpAgentProfile = AcpAgentProfile {
     context_snapshot: true,
-    resident: Some(&NOTHING),
-    supervise_resident: false,
+    resident: Some(ResidentProfile {
+        launch: &NOTHING,
+        detach: ResidentDetach::CloseSession,
+        release_unknown_on_restart: true,
+    }),
     mcp_call_session_key: None,
     background_tool_completions: true,
     mcp_tool_name_budget: Some(tool_name_budget),

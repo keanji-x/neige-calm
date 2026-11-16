@@ -62,7 +62,9 @@ pub(crate) async fn quiesce_for_abandonment(
     track: &str,
     submission: &str,
 ) -> Result<AbandonmentProof> {
-    stop_session(host, session, StopReason::Shutdown).await?;
+    stop_execution(host, session, StopReason::Shutdown).await?;
+    super::session::drain_workers(host, &[session]).await?;
+    require_pre_c4_absence(host, session)?;
     let repo = host.completion.repo()?;
     let pool = repo.sqlite_db().ok_or(CalmError::ExecutionUnavailable)?;
     let (worker, client, provider) = (session.to_owned(), submission.to_owned(), provider.clone());
@@ -104,6 +106,17 @@ pub(crate) async fn stop_session(
     session: &str,
     reason: StopReason,
 ) -> Result<()> {
+    stop_execution(host, session, reason).await?;
+    let repo = host.completion.repo()?;
+    let provider = repo
+        .session_get_by_id(&calm_types::worker::WorkerSessionId::from(session))
+        .await?
+        .and_then(|row| calm_types::runtime::AgentProvider::try_from(row.provider).ok());
+    super::session::detach_worker(host, session, provider.as_ref()).await?;
+    require_pre_c4_absence(host, session)
+}
+
+async fn stop_execution(host: &AcpPlannerHost, session: &str, reason: StopReason) -> Result<()> {
     let repo = host.completion.repo()?;
     let pool = repo.sqlite_db().ok_or(CalmError::ExecutionUnavailable)?;
     host.provider_execution
@@ -114,8 +127,10 @@ pub(crate) async fn stop_session(
             reason,
             std::time::Duration::from_secs(12),
         )
-        .await?;
-    super::session::detach_worker(host, session).await?;
+        .await
+}
+
+fn require_pre_c4_absence(host: &AcpPlannerHost, session: &str) -> Result<()> {
     // Registered settlement cannot prove absence of an unregistered pre-C4 process.
     if !host
         .pre_c4

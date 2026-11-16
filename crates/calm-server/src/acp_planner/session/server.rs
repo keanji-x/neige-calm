@@ -1,5 +1,5 @@
 //! One ACP process per shared backend. Native sessions and turn receipts remain card-owned.
-use super::super::{config::Registration, process};
+use super::super::{config::Registration, process, profile::ResidentDetach};
 use super::dispatch::{self, Carrier, Driver, PreparedTurn, TurnInput};
 use super::*;
 use provider::acp::{configuration::Configuration, usage::UsageTracker};
@@ -21,7 +21,6 @@ struct Binding {
 
 struct Generation {
     id: uuid::Uuid,
-    supervised: bool,
     /// Set after the profile's process owner confirms cleanup. Supervised
     /// generations require the executor's descendants-complete settlement.
     stopped: Arc<AtomicBool>,
@@ -40,6 +39,7 @@ impl CleanupWitness {
 
 pub(in crate::acp_planner) struct Server {
     process: process::Process,
+    detach: ResidentDetach,
     bindings: HashMap<String, Binding>,
     credential_owners: HashSet<String>,
     touched_workers: HashSet<String>,
@@ -344,7 +344,7 @@ async fn settle(
         execution_end::Settlement::Completed
     } else if cleaned {
         execution_end::Settlement::CleanUnknown
-    } else if settlement == ReceiptSettlement::Unknown && cleanup.generation.supervised {
+    } else if settlement == ReceiptSettlement::Unknown {
         execution_end::Settlement::AwaitingResidentDrain(cleanup.generation.stopped.clone())
     } else {
         execution_end::Settlement::Unconfirmed
@@ -394,18 +394,32 @@ async fn cleanup_unknown(
     }
 }
 
-pub(crate) async fn detach_worker(host: &AcpPlannerHost, worker: &str) -> Result<()> {
-    detach_workers(host, &[worker]).await
+pub(crate) async fn detach_worker(
+    host: &AcpPlannerHost,
+    worker: &str,
+    provider: Option<&AgentProvider>,
+) -> Result<()> {
+    let close_session = provider
+        .and_then(super::super::profile::AcpAgentProfile::of)
+        .and_then(|profile| profile.resident)
+        .is_some_and(|resident| resident.detach == ResidentDetach::CloseSession);
+    if !close_session {
+        return drain_workers(host, &[worker]).await;
+    }
+    for provider in host.shared_servers.keys() {
+        detach_workers_for_provider(host, &[worker], provider, None, false).await?;
+    }
+    Ok(())
 }
 
-pub(crate) async fn detach_workers(host: &AcpPlannerHost, workers: &[&str]) -> Result<()> {
+pub(crate) async fn drain_workers(host: &AcpPlannerHost, workers: &[&str]) -> Result<()> {
     if workers.is_empty() {
         return Ok(());
     }
     let (pool, previous) =
         super::super::resident_execution::workspace_generations(host, workers).await?;
     for provider in host.shared_servers.keys() {
-        detach_workers_for_provider(host, workers, provider, None).await?;
+        detach_workers_for_provider(host, workers, provider, None, true).await?;
     }
     super::super::resident_execution::stop_detached_workspace(host, &pool, previous).await
 }
@@ -416,7 +430,7 @@ async fn detach_worker_with_witness(
     provider: &str,
     expected: Option<(&str, &CleanupWitness)>,
 ) -> Result<()> {
-    detach_workers_for_provider(host, &[worker], provider, expected).await
+    detach_workers_for_provider(host, &[worker], provider, expected, false).await
 }
 
 async fn detach_workers_for_provider(
@@ -424,6 +438,7 @@ async fn detach_workers_for_provider(
     workers: &[&str],
     provider: &str,
     expected: Option<(&str, &CleanupWitness)>,
+    drain_workspace: bool,
 ) -> Result<()> {
     let mut owned = host.shared_servers[provider].lock().await;
     if expected.is_some_and(|(_, witness)| witness.confirmed()) {
@@ -472,7 +487,7 @@ async fn detach_workers_for_provider(
         // EOF does not prove that native workspace users have exited.
         return retire(host, &mut owned).await;
     }
-    if server.process.is_supervised() {
+    if drain_workspace || server.detach == ResidentDetach::DrainGeneration {
         client.retire_shared_when_idle();
         let can_retire = client.can_retire_shared_while(|native| {
             expected.is_none()

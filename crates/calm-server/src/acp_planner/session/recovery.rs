@@ -199,13 +199,16 @@ pub(super) async fn canonical_receipt_tx(
     }
     Ok(Some((receipt, association)))
 }
-/// Retire pre-restart claims before serving ingress. A receipt-backed release
-/// needs both the boot sweep and proof that the exact ACP owner exited.
+/// Reconcile pre-restart claims before serving ingress. A receipt-backed release
+/// requires proof that the exact ACP owner exited.
 pub(in crate::acp_planner) async fn recover_shared_after_boot(
     repo: &dyn Repo,
     provider: AgentProvider,
-    sweep_confirmed: bool,
+    legacy_sweep: Option<&crate::provider_execution::PreC4Sweep>,
 ) -> Result<()> {
+    let policy = super::super::profile::AcpAgentProfile::of(&provider)
+        .and_then(|profile| profile.resident)
+        .expect("shared ACP recovery profile");
     let inventory = provider.clone();
     let candidates = write_in_tx_typed(repo, move |tx| {
         Box::pin(async move {
@@ -216,8 +219,16 @@ pub(in crate::acp_planner) async fn recover_shared_after_boot(
     })
     .await?;
     for (card, worker) in candidates {
-        if let Err(error) =
-            recover_shared_claim(repo, &card, &worker, &provider, sweep_confirmed).await
+        let legacy_swept = legacy_sweep.is_some_and(|proof| proof.proves_absent(&worker));
+        if let Err(error) = recover_shared_claim(
+            repo,
+            &card,
+            &worker,
+            &provider,
+            policy.release_unknown_on_restart,
+            legacy_swept,
+        )
+        .await
         {
             tracing::warn!(%worker, %error, "Shared ACP restart release retained its fence");
         }
@@ -230,7 +241,8 @@ async fn recover_shared_claim(
     card: &str,
     worker: &str,
     provider: &AgentProvider,
-    sweep_confirmed: bool,
+    release_unknown_on_restart: bool,
+    legacy_swept: bool,
 ) -> Result<()> {
     let completed = write_in_tx_typed(repo, {
         let (card, worker, provider) = (card.to_owned(), worker.to_owned(), provider.clone());
@@ -246,8 +258,6 @@ async fn recover_shared_claim(
                     return Ok(None);
                 }
                 let found = canonical_receipt_tx(tx, &card, &worker, &provider).await?;
-                let supervised = super::super::profile::AcpAgentProfile::of(&provider)
-                    .is_some_and(|profile| profile.supervise_resident);
                 let mut client = None;
                 if let Some((receipt, association)) = &found {
                     if matches!(receipt.state, AcpSubmissionState::Completed) {
@@ -269,15 +279,13 @@ async fn recover_shared_claim(
                         &receipt.client_id,
                     )
                     .await?;
-                    if !sweep_confirmed
-                        || !restart_owner_stopped(tx, &provider, supervised, owner).await?
-                    {
+                    if !restart_owner_stopped(tx, &provider, legacy_swept, owner).await? {
                         return Ok(None);
                     }
                     // Stopping the resident proves there can be no later END, but
                     // cannot tell whether its prompt reached the provider. Preserve
                     // the active input so explicit Keep or Abandon owns the decision.
-                    if supervised {
+                    if !release_unknown_on_restart {
                         if matches!(receipt.state, AcpSubmissionState::Sending) {
                             crate::db::sqlite::acp_submission_finish_tx(
                                 tx,
@@ -307,16 +315,16 @@ async fn recover_shared_claim(
 async fn restart_owner_stopped(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     provider: &AgentProvider,
-    supervised: bool,
+    legacy_swept: bool,
     owner: Option<crate::db::sqlite::AcpSharedRestartOwner>,
 ) -> Result<bool> {
     use crate::db::sqlite::AcpSharedRestartOwner;
     match owner {
-        Some(AcpSharedRestartOwner::Process(owner)) if !supervised => Ok(
+        Some(AcpSharedRestartOwner::Process(owner)) if legacy_swept => Ok(
             crate::proc_identity::observe_owned_pid(owner.pid, owner.start_time, &owner.boot_id)
                 .leader_exited(),
         ),
-        Some(AcpSharedRestartOwner::Execution { execution_id }) if supervised => {
+        Some(AcpSharedRestartOwner::Execution { execution_id }) => {
             super::super::resident_execution::has_drained_tx(tx, provider, &execution_id).await
         }
         _ => Ok(false),
@@ -377,4 +385,41 @@ async fn recover_completed_stop(
         })
     })
     .await
+}
+
+#[cfg(all(test, target_os = "linux"))]
+#[tokio::test]
+async fn legacy_process_receipt_requires_marker_sweep_and_matching_exit() {
+    use crate::db::sqlite::AcpSharedRestartOwner;
+    let mut child = tokio::process::Command::new("/bin/sleep")
+        .arg("30")
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    let pid = i32::try_from(child.id().unwrap()).unwrap();
+    let legacy = serde_json::json!({
+        "pid": pid,
+        "start_time": crate::proc_identity::read_proc_start_time(pid).unwrap(),
+        "boot_id": crate::proc_identity::read_boot_id().unwrap(),
+    });
+    let owner: AcpSharedRestartOwner = serde_json::from_value(legacy).unwrap();
+    let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+    let mut tx = pool.begin().await.unwrap();
+    let provider = AgentProvider::Antigravity;
+    assert!(
+        !restart_owner_stopped(&mut tx, &provider, true, Some(owner.clone()))
+            .await
+            .unwrap()
+    );
+    child.kill().await.unwrap();
+    assert!(
+        !restart_owner_stopped(&mut tx, &provider, false, Some(owner.clone()))
+            .await
+            .unwrap()
+    );
+    assert!(
+        restart_owner_stopped(&mut tx, &provider, true, Some(owner))
+            .await
+            .unwrap()
+    );
 }

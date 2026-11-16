@@ -438,11 +438,6 @@ pub(super) async fn boot_with_sweep<F: std::future::Future<Output = Result<()>>>
             false
         }
     };
-    for provider in shared {
-        if !AcpAgentProfile::of(&provider).is_some_and(|profile| profile.supervise_resident) {
-            super::session::recover_shared_after_boot(repo, provider, sweep_confirmed).await?;
-        }
-    }
     let unproven = if sweep_confirmed {
         Default::default()
     } else {
@@ -454,12 +449,15 @@ pub(super) async fn boot_with_sweep<F: std::future::Future<Output = Result<()>>>
     Ok(())
 }
 
-/// Run after the execution owner verified that previous resident scopes drained.
-pub(crate) async fn recover_supervised_after_boot(repo: &dyn crate::db::Repo) -> Result<()> {
+/// Reconcile receipts after the execution owner drains previous resident scopes.
+pub(crate) async fn recover_residents_after_boot(
+    repo: &dyn crate::db::Repo,
+    host: &AcpPlannerHost,
+) -> Result<()> {
     for provider in AgentProtocol::Acp.providers().filter(|provider| {
-        AcpAgentProfile::of(provider).is_some_and(|profile| profile.supervise_resident)
+        AcpAgentProfile::of(provider).is_some_and(|profile| profile.resident.is_some())
     }) {
-        super::session::recover_shared_after_boot(repo, provider, true).await?;
+        super::session::recover_shared_after_boot(repo, provider, host.pre_c4.get()).await?;
     }
     Ok(())
 }
@@ -511,7 +509,7 @@ pub(crate) async fn sweep_tracks<'a>(
     })
     .await?;
     let workers: Vec<_> = ids.iter().map(String::as_str).collect();
-    super::session::detach_workers(host, &workers).await?;
+    super::session::drain_workers(host, &workers).await?;
     let executions = crate::db::write_in_tx_typed(repo, move |tx| {
         Box::pin(async move {
             let mut executions = Vec::new();

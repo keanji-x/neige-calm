@@ -14,7 +14,7 @@ mod setup;
 use cancellation::IssueGuard;
 use input::InputContract;
 pub(super) use server::Server;
-pub(crate) use server::{detach_worker, detach_workers};
+pub(crate) use server::{detach_worker, drain_workers};
 mod execution_end;
 use super::{config::AcpPlannerHost, execution::Process, process::setup_request};
 use crate::db::sqlite::{
@@ -269,17 +269,30 @@ impl AcpPlannerSession {
         let stopped = self
             .stop_execution(crate::provider_execution::StopReason::Shutdown)
             .await;
-        let supervised = super::profile::AcpAgentProfile::of(&params.provider)
-            .is_some_and(|profile| profile.supervise_resident);
-        let detached = if supervised {
+        let drain_generation = super::profile::AcpAgentProfile::of(&params.provider)
+            .and_then(|profile| profile.resident)
+            .is_some_and(|resident| {
+                resident.detach == super::profile::ResidentDetach::DrainGeneration
+            });
+        let detached = if drain_generation {
             // The retiring generation must not wait on this worker's own route.
             // A failed join still requires releasing the workspace attachment.
             let joined = join_driver(&self.shared).await;
-            let detached = detach_worker(&params.host, &params.worker_session_id).await;
+            let detached = detach_worker(
+                &params.host,
+                &params.worker_session_id,
+                Some(&params.provider),
+            )
+            .await;
             joined?;
             detached
         } else {
-            let detached = detach_worker(&params.host, &params.worker_session_id).await;
+            let detached = detach_worker(
+                &params.host,
+                &params.worker_session_id,
+                Some(&params.provider),
+            )
+            .await;
             // Cleanup errors never detach the writer.
             join_driver(&self.shared).await?;
             detached

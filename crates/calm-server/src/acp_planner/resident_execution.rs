@@ -47,7 +47,8 @@ impl ResidentExecution {
         let launch = registration
             .profile
             .resident
-            .ok_or_else(|| conflict("ACP resident launch required"))?;
+            .ok_or_else(|| conflict("ACP resident launch required"))?
+            .launch;
         let (args, payload) = super::execution::process_launch(registration, launch, [])?;
         let intent = provider_execution::launch::wrapped_intent(
             LaunchOwner {

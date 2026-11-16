@@ -29,10 +29,22 @@ pub(crate) struct ContractCompaction {
     pub(crate) assistant: Option<CompactionWire>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ResidentDetach {
+    CloseSession,
+    DrainGeneration,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct ResidentProfile {
+    pub(crate) launch: &'static ModeLaunch,
+    pub(crate) detach: ResidentDetach,
+    pub(crate) release_unknown_on_restart: bool,
+}
+
 pub(crate) struct AcpAgentProfile {
     pub(crate) context_snapshot: bool,
-    pub(crate) resident: Option<&'static ModeLaunch>,
-    pub(crate) supervise_resident: bool,
+    pub(crate) resident: Option<ResidentProfile>,
     /// Vendor MCP call metadata carrying the invoking native session.
     pub(crate) mcp_call_session_key: Option<&'static str>,
     /// Model-visible name budget for the stdio shim, based on the provider's actual server key.
