@@ -372,8 +372,8 @@ export type NewTrackBody = Readonly<{
   title?: string;
   /** Omitted (or `null`) means a managed workspace the server allocates beneath its workspace root. */
   cwd?: string | null;
-  /** Only sent for a direct folder choice, alongside an explicit cwd. */
-  isolation?: 'none';
+  /** Explicit isolation for an attached folder; omitted defaults to `worktree` on the server. */
+  isolation?: 'worktree' | 'none';
   theme: ThemeRgb;
   /**
    * `false` requires `cwd` to already sit under a claimed folder (409 naming the area otherwise);

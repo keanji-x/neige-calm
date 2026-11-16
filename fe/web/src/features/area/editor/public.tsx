@@ -6,10 +6,10 @@ import { Button } from '@astryxdesign/core/Button';
 import { HStack } from '@astryxdesign/core/HStack';
 import { TextInput } from '@astryxdesign/core/TextInput';
 import { VStack } from '@astryxdesign/core/VStack';
-import { useEffect, useId, type FormEvent, type RefObject } from 'react';
+import { useId, type FormEvent, type RefObject } from 'react';
 
-import { DirectoryBrowser, type ListDirectory } from '../../../ui/directory-browser/public.tsx';
-import { useDialogView } from '../../../ui/dialog/public.tsx';
+import { DirectoryPicker } from '../directory-picker.tsx';
+import type { ListDirectory } from '../../../ui/directory-browser/public.tsx';
 import { useState } from '../../../ui/state/public.ts';
 import { FolderPill } from '../default-pills/public.tsx';
 import styles from './area-editor.module.css';
@@ -51,26 +51,7 @@ export function AreaEditorForm(props: AreaEditorFormProps) {
   const [name, setName] = useState(initial.name);
   const [cwd, setCwd] = useState(initial.defaultCwd ?? '');
   const [browsing, setBrowsing] = useState(false);
-  const dialog = useDialogView();
   const normalizedName = name.trim();
-  useEffect(() => {
-    if (!dialog || !browsing) return;
-    const cancel = () => setBrowsing(false);
-    return dialog.pushView({
-      title: 'Choose a directory',
-      onEscape: cancel,
-      body: (
-        <DirectoryBrowser
-          listDirectory={listDirectory}
-          initialPath={cwd === '' ? null : cwd}
-          mode="directory"
-          onCancel={cancel}
-          onSelect={(path) => { setCwd(path); setBrowsing(false); }}
-        />
-      ),
-    });
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- capture the path and ports once when browsing opens; selection must not push a second view.
-  }, [browsing, dialog]);
 
   const submit = (event: FormEvent<HTMLElement>) => {
     event.preventDefault();
@@ -122,6 +103,13 @@ export function AreaEditorForm(props: AreaEditorFormProps) {
           />
         </HStack>
       </HStack>
+      <DirectoryPicker
+        open={browsing}
+        initialPath={cwd === '' ? null : cwd}
+        listDirectory={listDirectory}
+        onCancel={() => setBrowsing(false)}
+        onSelect={(path) => { setCwd(path); setBrowsing(false); }}
+      />
     </VStack>
   );
 }

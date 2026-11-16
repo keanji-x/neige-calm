@@ -259,7 +259,7 @@ async fn prepare_with_area(
             workspace_runtime::selection::validate_borrowed_workspace(std::path::Path::new(
                 &normalized_cwd,
             ))?;
-            TrackWorkspacePlan::AttachedFromCwd
+            TrackWorkspacePlan::AttachedSourceOnly
         }
         CreateIsolation::Attached(AttachedIsolation::Worktree) => {
             let repo_root = workspace_runtime::selection::git_repo_root_for_track_cwd(

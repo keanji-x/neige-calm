@@ -31,6 +31,7 @@ it('hands Folder touch ownership to the directory modal and restores reachable o
       await expect.element(page.getByRole('dialog', { name: 'Track options', exact: true })).toBeVisible();
     }
     await commands.tap('button[aria-label^="Repo:"]');
+    await page.getByRole('menuitem', { name: /^Others…/ }).click();
     const dialog = page.getByRole('dialog', { name: 'Choose a directory' });
     await expect.element(dialog).toBeVisible();
     await expect.poll(() => document.querySelectorAll(':popover-open').length).toBe(0);

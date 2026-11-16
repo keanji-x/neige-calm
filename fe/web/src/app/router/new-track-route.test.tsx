@@ -850,6 +850,7 @@ describe('the new-track page is a route reached from Area groups', () => {
     await userEvent.type(screen.getByLabelText(TASK_LABEL), 'Read it');
 
     await userEvent.click(await screen.findByRole('button', { name: FOLDER_CHIP_NAME }));
+    await userEvent.click(await screen.findByRole('menuitem', { name: /^Others…/ }));
     expect(await screen.findByRole('dialog', { name: 'Choose a directory' })).toBeTruthy();
     await screen.findByDisplayValue('/srv/app/');
     await userEvent.click(await screen.findByRole('button', { name: 'Select this directory' }));

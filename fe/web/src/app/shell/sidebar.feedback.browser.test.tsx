@@ -133,6 +133,7 @@ it('opens the actual NewTrack folder picker from its inline folder host', async 
     listDirectory={() => Promise.resolve({ path: '/', parent: null, entries: [] })} onSubmit={vi.fn()} />);
   const folder = screen.getByRole('button', { name: /^Repo:/ });
   await userEvent.click(folder);
+  await page.getByRole('menuitem', { name: /^Others…/ }).click();
   expect(folder.parentElement!.getAnimations()).toHaveLength(0);
   const node = screen.getByRole('dialog');
   expect(node.getAnimations()).toHaveLength(1);

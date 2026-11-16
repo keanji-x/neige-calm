@@ -1,4 +1,4 @@
-//! Same-locator isolation upgrade. Original Planner carriers and native cwd stay bound.
+//! On-demand isolation for legacy attached Tracks and repair for selected worktrees.
 use super::*;
 use crate::event::{Event, EventScope};
 use crate::ids::ActorId;
@@ -24,14 +24,19 @@ pub(super) async fn prepare(
     {
         return Ok(());
     }
-    if track.workspace.worktree.is_none()
-        && workspace_runtime::selection::git_repo_root_for_track_cwd(
-            track_id,
-            &track.workspace.path,
-        )
-        .is_err()
-    {
-        return Ok(());
+    let pool = ctx.operation_repo.sqlite_db();
+    if track.workspace.worktree.is_none() {
+        // This choice is immutable. A later explicit worktree selection is handled
+        // by the repair path, which sees the selected checkout above.
+        if crate::db::sqlite::track_workspace_source_only(pool.read_pool(), track_id).await?
+            || workspace_runtime::selection::git_repo_root_for_track_cwd(
+                track_id,
+                &track.workspace.path,
+            )
+            .is_err()
+        {
+            return Ok(());
+        }
     }
     // Driver preparation normally owns this guard; direct callers acquire the same lock.
     let held = match ctx.held_track() {
@@ -46,7 +51,6 @@ pub(super) async fn prepare(
         .as_ref()
         .ok_or_else(|| CalmError::Internal("location admission is not configured".into()))?;
     refuse_admitted_teardown(&admission.teardown_targets, track_id)?;
-    let pool = ctx.operation_repo.sqlite_db();
     let selected = ctx
         .repo
         .track_get(track_id)

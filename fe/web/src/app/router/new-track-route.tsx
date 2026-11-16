@@ -98,7 +98,7 @@ function NewTrackEditor({ transport, unauthorized, workspace, session, store }: 
       ...(current.model.model === null ? {} : { model: current.model.model }),
       ...(current.model.reasoning_effort === null ? {} : { reasoning_effort: current.model.reasoning_effort }),
       ...(draft.cwd === undefined ? {} : { cwd: draft.cwd, attach_folder: true,
-        isolation: 'none' }),
+        isolation: draft.isolation ?? 'worktree' }),
       ...(current.role === 'admin' ? { admin: true } : {}),
       ...(authorization === undefined ? {} : { allow_cross_area_cwd: authorization }),
     } satisfies NewTrackBodyWithoutFirstMessage;

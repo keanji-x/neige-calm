@@ -23,6 +23,8 @@ pub enum TrackWorkspacePlan {
     /// (`attached → *` is not a legal transition). No track worktree: fixtures and
     /// `Repo::track_create`.
     AttachedFromCwd,
+    /// Borrow the source cwd and require an explicit upgrade before task workers can use it.
+    AttachedSourceOnly,
     /// [`Self::AttachedFromCwd`] plus the track worktree under this repository root
     /// ([`workspace::worktree::track_worktree_path_for`]); the create route's attached branch (#1830). The route
     /// makes the worktree after the transaction commits.
@@ -97,7 +99,9 @@ pub async fn admit_attached_workspace_tx(
     plan: &TrackWorkspacePlan,
 ) -> Result<()> {
     let (isolation, containing) = match plan {
-        TrackWorkspacePlan::AttachedFromCwd => ("none", true),
+        TrackWorkspacePlan::AttachedFromCwd | TrackWorkspacePlan::AttachedSourceOnly => {
+            ("none", true)
+        }
         TrackWorkspacePlan::AttachedWithTrackWorktree(_) => ("worktree", false),
         TrackWorkspacePlan::ManagedUnder(_)
         | TrackWorkspacePlan::ManagedFrozenUnder(_)
@@ -209,12 +213,14 @@ pub async fn track_create_tx(
     .execute(&mut **tx)
     .await?;
     let workspace = match workspace_plan {
-        TrackWorkspacePlan::AttachedFromCwd => TrackWorkspace {
-            kind: TrackWorkspaceKind::Attached,
-            path: p.cwd.clone(),
-            frozen_at: Some(now),
-            worktree: None,
-        },
+        TrackWorkspacePlan::AttachedFromCwd | TrackWorkspacePlan::AttachedSourceOnly => {
+            TrackWorkspace {
+                kind: TrackWorkspaceKind::Attached,
+                path: p.cwd.clone(),
+                frozen_at: Some(now),
+                worktree: None,
+            }
+        }
         TrackWorkspacePlan::AttachedWithTrackWorktree(repo_root) => TrackWorkspace {
             kind: TrackWorkspaceKind::Attached,
             path: p.cwd.clone(),
@@ -249,6 +255,14 @@ pub async fn track_create_tx(
         },
     };
     track_workspace_write_tx(tx, &id, &workspace).await?;
+    // The database defaults to legacy selection. Stamp the opt-out only for a
+    // source-only plan, in the same transaction as the new Track and workspace.
+    if matches!(workspace_plan, TrackWorkspacePlan::AttachedSourceOnly) {
+        sqlx::query("UPDATE tracks SET workspace_source_only = 1 WHERE id = ?1")
+            .bind(&id)
+            .execute(&mut **tx)
+            .await?;
+    }
     // Write-through so a follow-up emit inside the same closure sees the fresh binding.
     let track_id: TrackId = id.clone().into();
     track_area_cache.insert(track_id.clone(), p.area_id.clone());

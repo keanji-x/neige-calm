@@ -46,6 +46,7 @@ function folderChip(): HTMLButtonElement {
 
 async function pickTheListedFolder(): Promise<void> {
   await userEvent.click(folderChip());
+  await userEvent.click(await screen.findByRole('menuitem', { name: /^Others…/ }));
   // `Select this directory` only enables once the path input and the listing agree.
   await screen.findByDisplayValue('/srv/app/');
   await userEvent.click(screen.getByRole('button', { name: 'Select this directory' }));
@@ -182,7 +183,7 @@ describe('NewTrackForm asks only what the track starts from', () => {
     // The chip opens on Enter rather than creating a track.
     folderChip().focus();
     await userEvent.keyboard('{Enter}');
-    expect(await screen.findByRole('dialog', { name: 'Choose a directory' })).toBeTruthy();
+    expect(await screen.findByRole('menuitem', { name: /^Others…/ })).toBeTruthy();
     expect(onSubmit).not.toHaveBeenCalled();
   });
 
@@ -217,7 +218,7 @@ describe('NewTrackForm asks only what the track starts from', () => {
     await fillMessage('Ship the thing');
     folderChip().focus();
     await userEvent.keyboard('{Enter}');
-    expect(await screen.findByRole('dialog')).toBeTruthy();
+    expect(await screen.findByRole('menuitem', { name: /^Others…/ })).toBeTruthy();
     expect(onSubmit).not.toHaveBeenCalled();
   });
 
@@ -260,6 +261,7 @@ describe('The folder is optional, and its absence is the managed default', () =>
     // Nothing about the folder gates the submit, before or after the picker has opened.
     expect(submitButton().disabled).toBe(false);
     await userEvent.click(folderChip());
+    await userEvent.click(await screen.findByRole('menuitem', { name: /^Others…/ }));
     await screen.findByDisplayValue('/srv/app/');
     await userEvent.keyboard('{Escape}');
     await userEvent.click(submitButton());
@@ -286,6 +288,7 @@ describe('The folder is optional, and its absence is the managed default', () =>
     renderForm();
     expect(screen.queryByRole('dialog')).toBeNull();
     await userEvent.click(folderChip());
+    await userEvent.click(await screen.findByRole('menuitem', { name: /^Others…/ }));
     const picker = await screen.findByRole('dialog');
     expect(picker.getAttribute('aria-modal')).toBe('true');
     expect(picker.getAttribute('aria-label')).toBe('Choose a directory');
@@ -306,7 +309,7 @@ describe('The folder is optional, and its absence is the managed default', () =>
     await pickTheListedFolder();
     expect(onSubmit).not.toHaveBeenCalled();
     await userEvent.click(submitButton());
-    expect(onSubmit).toHaveBeenCalledWith({ message: 'Ship the thing', cwd: '/srv/app', isolation: 'none' });
+    expect(onSubmit).toHaveBeenCalledWith({ message: 'Ship the thing', cwd: '/srv/app', isolation: 'worktree' });
   });
 
   /* Create time is the only entry into the attached choice, so the way back has to exist here too. */
@@ -331,6 +334,7 @@ describe('The folder is optional, and its absence is the managed default', () =>
   it('reads the directory through the injected port', async () => {
     const { props } = renderForm();
     await userEvent.click(folderChip());
+    await userEvent.click(await screen.findByRole('menuitem', { name: /^Others…/ }));
     await screen.findByDisplayValue('/srv/app/');
     expect(props.listDirectory).toHaveBeenCalled();
   });

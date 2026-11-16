@@ -6,11 +6,11 @@ import { Popover } from '@astryxdesign/core/Popover';
 import { Icon } from '../../../ui/icon/public.tsx';
 import { useState } from '../../../ui/state/public.ts';
 import { useCompactViewport } from '../../../ui/viewport/public.ts';
-import { FolderPill } from '../default-pills/public.tsx';
+import { RepoPill } from './repo-pill.tsx';
 import styles from './composer-preferences.module.css';
 
 type Props = Readonly<{
-  folder: Omit<ComponentProps<typeof FolderPill>, 'onBrowse'> & { onBrowse: (origin: DialogOrigin) => void };
+  folder: Omit<ComponentProps<typeof RepoPill>, 'onBrowse'> & { onBrowse: (origin: DialogOrigin) => void };
   browsing: boolean;
 }>;
 
@@ -55,8 +55,11 @@ export function ComposerPreferences({ folder, browsing }: Props) {
     const yieldFocus = (event: Event) => {
       if (event.type === 'focusin' ? event.target === document.activeElement : event.isTrusted) release();
     };
+    const opener = document.activeElement;
     const frame = requestAnimationFrame(() => {
       release();
+      const active = document.activeElement;
+      if (active !== document.body && (active !== opener || !hostRef.current?.contains(active))) return;
       (moreRef.current ?? folderRef.current?.querySelector('button'))?.focus();
     });
     document.addEventListener('pointerdown', yieldFocus, true);
@@ -112,12 +115,15 @@ export function ComposerPreferences({ folder, browsing }: Props) {
   });
 
   const preferences = <div ref={itemsRef} className={styles.items}>
-    <span ref={folderRef} className={styles.folder}><FolderPill {...folder} controlLabel="Repo" showLabel onBrowse={() => {
+    <span ref={folderRef} className={styles.folder}><RepoPill {...folder} onBrowse={() => {
       // A native top-layer popup must relinquish hits and its focus trap before
-      // the body-portal modal opens. Public controlled close also restores More.
-      // Its Folder source becomes unavailable here: Motion's declared first-unavailable
-      // policy centers this cycle; never cache a box or substitute a focus source.
-      if (open) flushSync(() => setOpen(false));
+      // the body-portal modal opens. The nested Repo trigger disappears with
+      // the overflow panel, so give the dialog its reachable focus return.
+      // Motion still uses the Folder anchor and centers when it is unavailable.
+      if (open) {
+        flushSync(() => setOpen(false));
+        moreRef.current?.focus();
+      }
       folder.onBrowse({ kind: 'anchor', anchor: { ref: folderRef }, unavailable: 'surface-center' });
     }} /></span>
   </div>;
