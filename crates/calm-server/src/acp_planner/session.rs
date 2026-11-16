@@ -385,15 +385,20 @@ async fn revoke(params: &SessionParams) -> Result<()> {
 async fn revoke_worker(repo: &dyn Repo, worker: &str) -> Result<()> {
     let worker = worker.to_owned();
     write_in_tx_typed(repo, move |tx| {
-        Box::pin(async move {
-            sqlx::query("UPDATE worker_sessions SET mcp_token_hash=NULL WHERE id=?1")
-                .bind(worker)
-                .execute(&mut **tx)
-                .await?;
-            Ok(())
-        })
+        Box::pin(async move { revoke_worker_tx(tx, &worker).await })
     })
     .await
+}
+
+pub(super) async fn revoke_worker_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    worker: &str,
+) -> Result<()> {
+    sqlx::query("UPDATE worker_sessions SET mcp_token_hash=NULL WHERE id=?1")
+        .bind(worker)
+        .execute(&mut **tx)
+        .await?;
+    Ok(())
 }
 fn cancel_outcome(
     result: std::result::Result<(), tokio::sync::watch::error::SendError<bool>>,

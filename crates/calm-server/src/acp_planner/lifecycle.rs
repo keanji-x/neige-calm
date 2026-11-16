@@ -73,6 +73,9 @@ pub(crate) async fn quiesce_for_abandonment(
             else {
                 return Ok(None);
             };
+            // A cold worker may have no live slot to carry out revocation.
+            // Keep this write in the same transaction as proof validation.
+            super::session::revoke_worker_tx(tx, &worker).await?;
             let proof = ResidentQuiescence {
                 worker,
                 submission: client,
