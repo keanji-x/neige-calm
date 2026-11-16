@@ -119,7 +119,7 @@ it('renders, selects and sends a managed identifier independently of legacy UI l
   await page.getByRole('button', { name: 'New conversation', exact: true }).click();
   const model = page.getByRole('button', { name: /^Model:/ });
   await model.click();
-  await expect.element(page.getByRole('group', { name: 'opencode', exact: true })).toBeVisible();
+  await expect.element(page.getByRole('group', { name: 'OpenCode (Beta)', exact: true })).toBeVisible();
   await page.getByRole('menuitem', { name: 'Selected model' }).click();
   await expect.element(model).toHaveAccessibleName('Model: opencode Selected model');
   await page.getByRole('combobox', { name: 'Message' }).fill('Owner registered backend');

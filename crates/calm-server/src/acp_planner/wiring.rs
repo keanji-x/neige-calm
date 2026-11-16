@@ -47,6 +47,12 @@ pub(crate) fn manual_compaction(provider: &calm_types::runtime::AgentProvider) -
     super::profile::AcpAgentProfile::of(provider).is_some_and(|profile| profile.manual_compaction())
 }
 
+pub(crate) fn mcp_call_session_key(
+    provider: &calm_types::runtime::AgentProvider,
+) -> Option<&'static str> {
+    super::profile::AcpAgentProfile::of(provider)?.mcp_call_session_key
+}
+
 pub(crate) fn manual_compaction_for(
     provider: &calm_types::runtime::AgentProvider,
     contract: calm_types::worker::WorkerContract,

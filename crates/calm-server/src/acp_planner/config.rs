@@ -235,7 +235,8 @@ pub struct AcpPlannerHost {
     tool_names: Option<crate::mcp_server::transport::SessionToolNames>,
     /// Where each agent process's stderr is kept, one bounded file per worker, overwritten by its
     /// next launch.
-    pub(super) shared_server: tokio::sync::Mutex<Option<super::session::Server>>,
+    pub(super) shared_servers:
+        BTreeMap<&'static str, tokio::sync::Mutex<Option<super::session::Server>>>,
     pub(super) context_queries: tokio::sync::Semaphore,
     pub(super) agent_logs: PathBuf,
     readiness: tokio::sync::Mutex<()>,
@@ -255,6 +256,15 @@ impl AcpPlannerHost {
         if let Some(config) = &config {
             config.validate()?;
         }
+        let shared_servers = config
+            .iter()
+            .flat_map(|config| &config.agents)
+            .filter(|agent| {
+                AcpAgentProfile::of(&agent.provider)
+                    .is_some_and(|profile| profile.resident.is_some())
+            })
+            .map(|agent| (agent.provider.wire_name(), Default::default()))
+            .collect();
         let (provider_execution, completion) = super::execution::owner();
         std::fs::create_dir_all(data_dir.join("acp-agent-logs"))?;
         Ok(Self {
@@ -267,7 +277,7 @@ impl AcpPlannerHost {
             mcp_shim,
             mcp_socket,
             tool_names: None,
-            shared_server: Default::default(),
+            shared_servers,
             context_queries: tokio::sync::Semaphore::new(1),
             agent_logs: data_dir.join("acp-agent-logs"),
             readiness: tokio::sync::Mutex::new(()),
@@ -403,7 +413,7 @@ pub(super) async fn boot_with_sweep<F: std::future::Future<Output = Result<()>>>
         .providers()
         .filter(|provider| {
             super::profile::AcpAgentProfile::of(provider)
-                .is_some_and(|profile| profile.shared_server)
+                .is_some_and(|profile| profile.resident.is_some())
         })
         .collect();
     markers.extend(

@@ -6,7 +6,7 @@ use calm_truth::session_repo::SessionRepo;
 async fn canonical_acp_cancel_before_publication_refuses_park_until_cleanup_finishes() {
     use crate::acp_planner::test_seams::{IssueStage, pause_issue};
     for stage in [IssueStage::AfterSpawn, IssueStage::BeforeReceipt] {
-        let fx = Arc::new(Fixture::new("reply").await);
+        let fx = Arc::new(super::grok_compact::fixture().await);
         let pause = pause_issue(&fx.owner.worker, stage);
         let dispatch = tokio::spawn({
             let fx = fx.clone();
@@ -142,7 +142,7 @@ async fn canonical_acp_parked_issue_refuses_before_sql_without_native_effects() 
 async fn canonical_acp_retirement_at_receipt_and_writer_boundaries_never_resends() {
     use crate::acp_planner::test_seams::{IssueStage, pause_issue};
     for after_receipt in [false, true] {
-        let fx = Arc::new(Fixture::new("reply").await);
+        let fx = Arc::new(super::grok_compact::fixture().await);
         let pause = pause_issue(
             &fx.owner.worker,
             if after_receipt {

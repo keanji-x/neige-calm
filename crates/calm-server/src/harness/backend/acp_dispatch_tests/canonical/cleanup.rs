@@ -5,7 +5,7 @@ use super::*;
 use crate::acp_planner::test_seams::pause_issue;
 
 async fn canonical(failure: Failure) {
-    let mut fx = Fixture::new("reply").await;
+    let mut fx = super::grok_compact::fixture().await;
     if matches!(failure, Failure::SpawnRevoke) {
         let (backend, session, _held) = session_for_command(
             &fx.owner,

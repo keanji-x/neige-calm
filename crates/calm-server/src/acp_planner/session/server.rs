@@ -43,7 +43,6 @@ pub(in crate::acp_planner) struct Server {
     bindings: HashMap<String, Binding>,
     credential_owners: HashSet<String>,
     generation: Arc<Generation>,
-    provider: AgentProvider,
 }
 impl std::fmt::Debug for Server {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -86,7 +85,9 @@ pub(super) async fn issue(
         || Box::pin(async { Ok(()) }),
     );
     let source = input.contract.admission(&source);
-    let mut owned = params.host.shared_server.lock().await;
+    let mut owned = params.host.shared_servers[params.provider.wire_name()]
+        .lock()
+        .await;
     let (native, usage) = prepare::prepare(
         &mut owned,
         shared,
@@ -190,6 +191,8 @@ pub(super) async fn drive(
     // A completed native turn can no longer accept answers to its earlier permission requests.
     // Optional telemetry retains admission, never the approval window.
     approvals.close().await;
+    #[cfg(feature = "fixtures")]
+    super::super::test_seams::wait_after_fence(&shared.params.worker_session_id).await;
     let snapshot_cancelled = cancelled.clone();
     // Keep the native turn's active slot while sampling: the next input/maintenance cannot
     // overtake this reading. Maintenance never enters this driver and keeps its invalidation.
@@ -235,6 +238,8 @@ pub(super) async fn drive(
         false
     };
     drop(incoming);
+    #[cfg(feature = "fixtures")]
+    super::super::test_seams::wait_at_settlement(&shared.params.worker_session_id).await;
     settle(&shared, &receipt, retained, outcome, &cleanup, cleaned).await
 }
 
@@ -374,6 +379,7 @@ async fn cleanup_unknown(
     match detach_worker_with_witness(
         &params.host,
         &params.worker_session_id,
+        params.provider.wire_name(),
         Some((&receipt.native_session_id, witness)),
     )
     .await
@@ -387,15 +393,19 @@ async fn cleanup_unknown(
 }
 
 pub(crate) async fn detach_worker(host: &AcpPlannerHost, worker: &str) -> Result<()> {
-    detach_worker_with_witness(host, worker, None).await
+    for provider in host.shared_servers.keys() {
+        detach_worker_with_witness(host, worker, provider, None).await?;
+    }
+    Ok(())
 }
 
 async fn detach_worker_with_witness(
     host: &AcpPlannerHost,
     worker: &str,
+    provider: &str,
     expected: Option<(&str, &CleanupWitness)>,
 ) -> Result<()> {
-    let mut owned = host.shared_server.lock().await;
+    let mut owned = host.shared_servers[provider].lock().await;
     if expected.is_some_and(|(_, witness)| witness.confirmed()) {
         return Ok(());
     }
@@ -418,6 +428,9 @@ async fn detach_worker_with_witness(
                 "Original ACP attachment changed before cleanup".into(),
             ));
         }
+    }
+    if !server.bindings.contains_key(worker) && !server.credential_owners.contains(worker) {
+        return Ok(());
     }
     if server.process.connection.client.terminal_error().is_some() {
         // EOF is not process-stop evidence. Retire and confirm the original
@@ -456,11 +469,15 @@ async fn detach_worker_with_witness(
 
 /// Drain unsolicited traffic while the setup owner is idle, and retire a failed generation
 /// under the same lock that admits attachment and mints credentials.
-async fn supervise(host: std::sync::Weak<AcpPlannerHost>, generation: uuid::Uuid) {
+async fn supervise(
+    host: std::sync::Weak<AcpPlannerHost>,
+    provider: &'static str,
+    generation: uuid::Uuid,
+) {
     loop {
         tokio::time::sleep(Duration::from_millis(25)).await;
         let Some(host) = host.upgrade() else { return };
-        let Ok(mut owned) = host.shared_server.try_lock() else {
+        let Ok(mut owned) = host.shared_servers[provider].try_lock() else {
             continue;
         };
         let Some(server) = owned

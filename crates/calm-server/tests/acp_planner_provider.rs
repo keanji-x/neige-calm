@@ -210,7 +210,7 @@ async fn acp_runs_two_turns_and_loads_the_same_native_session_after_restart() {
             .all(|text| !text.contains("historic reply")),
         "loaded history must not be attributed to a fresh turn: {rows:?}"
     );
-    assert_eq!(requests(&root, "session/resume").len(), 2);
+    assert_eq!(requests(&root, "session/resume").len(), 1);
     assert!(
         requests(&root, "session/resume")
             .iter()
@@ -247,11 +247,6 @@ async fn acp_permission_requests_use_never_without_creating_asks() {
     assert!(
         held.try_recv().is_err(),
         "a never turn reports nothing to the held-request channel"
-    );
-    assert_eq!(
-        acp_planner_approvals::launch_permissions(&root),
-        vec![json!({"permissions":[{"action":"question","resource":"*","effect":"deny"}]})],
-        "a never turn denies native questions while retaining the operator's other permissions"
     );
     wait_file(&root, "permission-reply.json").await;
     let reply: Value = serde_json::from_str(

@@ -58,7 +58,7 @@ impl super::backend::PlannerBackend {
                 false,
                 crate::acp_planner::wiring::manual_compaction(provider),
                 false,
-                ToolDiscovery::SessionToolList,
+                ToolDiscovery::SessionToolListWithTrackReads,
             ),
             // Grok Build's `_meta.sendNow` cancels the running turn and reruns it rather than
             // joining it, and its `initialize` reports `promptCapabilities.image: false`.
@@ -106,6 +106,10 @@ impl ToolDiscovery {
         if !self.lists_track_reads() {
             return template.to_owned();
         }
+        let template = template.replace(
+            include_str!("../../prompts/tool-discovery.md"),
+            "\n## Tool discovery\n\nUse the Neige MCP tools supplied in this session's tool list. Choose the tools associated with this session.\n",
+        );
         // Only rewrite inline commands from the built-in template, before any
         // user or plugin content is added to the instructions.
         template

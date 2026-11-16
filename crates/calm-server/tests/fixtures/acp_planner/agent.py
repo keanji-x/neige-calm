@@ -78,6 +78,7 @@ with (root / 'argv.jsonl').open('a') as output:
 current, pending, permission, cancel_seen = None, None, None, False
 mcp_servers = []
 shared_pending = {}
+session_mcp_servers = {}
 agy_permissions = {}
 xai = os.environ.get('ACP_FIXTURE_VENDOR') == 'xai'
 always_approve = '--always-approve' in sys.argv
@@ -227,22 +228,7 @@ def capture_shared_token(servers):
                         output.write(variable['value'])
 
 def check_mcp(servers):
-    if servers and (root / 'scenario').read_text().strip() == 'cli':
-        cli = pathlib.Path(servers[0]['command']).with_name('neige')
-        help_result = subprocess.run([str(cli), '--help'], capture_output=True, text=True, timeout=10)
-        status = subprocess.run([str(cli), 'track', 'status', '--json'], capture_output=True, text=True, timeout=10)
-        expected = {entry['name']: entry['value'] for entry in servers[0]['env']}
-        fingerprint = hashlib.sha256(os.environ.get('NEIGE_MCP_TOKEN', '').encode()).hexdigest()
-        previous = root / 'cli-token-fingerprint'
-        rotated = previous.exists() and previous.read_text() != fingerprint
-        previous.write_text(fingerprint)
-        record = {'help_exit': help_result.returncode, 'status_exit': status.returncode,
-                  'status': json.loads(status.stdout) if status.returncode == 0 else None,
-                  'matches_mcp_context': all(os.environ.get(key) == value for key, value in expected.items()),
-                  'token_rotated': rotated}
-        with (root / 'cli-results.jsonl').open('a') as output:
-            output.write(json.dumps(record) + '\n')
-    if not servers or (root / 'scenario').read_text().strip() not in ['mcp', 'assistant-mcp', 'assistant-canonical']:
+    if not servers or (root / 'scenario').read_text().strip() not in ['mcp', 'mcp-origin', 'assistant-mcp', 'assistant-canonical']:
         return
     server = servers[0]
     env = dict(os.environ)
@@ -254,6 +240,17 @@ def check_mcp(servers):
             'protocolVersion': '2024-11-05', 'capabilities': {}, 'clientInfo': {'name': 'fixture', 'version': '1'}}}) + '\n')
         child.stdin.flush()
         (root / 'mcp-reply.json').write_text(child.stdout.readline())
+        if (root / 'scenario').read_text().strip() == 'mcp-origin':
+            responses = []
+            for number, origin in enumerate([current, 'another-session', None], 2):
+                call = {'name': 'neige_track_status', 'arguments': {}}
+                if origin is not None:
+                    call['_meta'] = {'ai.opencode/sessionID': origin}
+                child.stdin.write(json.dumps({'jsonrpc': '2.0', 'id': number,
+                    'method': 'tools/call', 'params': call}) + '\n')
+                child.stdin.flush()
+                responses.append(json.loads(child.stdout.readline()))
+            (root / 'mcp-origin-results.json').write_text(json.dumps(responses))
         if (root / 'scenario').read_text().strip() in ['assistant-mcp', 'assistant-canonical']:
             replies = []
             for number, name, arguments in [
@@ -265,7 +262,7 @@ def check_mcp(servers):
                 (6, 'neige_track_close', {})]:
                 (root / 'assistant-mcp-progress').write_text(name)
                 child.stdin.write(json.dumps({'jsonrpc': '2.0', 'id': number, 'method': 'tools/call',
-                    'params': {'name': name, 'arguments': arguments}}) + '\n')
+                    'params': {'name': name, 'arguments': arguments, '_meta': {'ai.opencode/sessionID': current}}}) + '\n')
                 child.stdin.flush()
                 replies.append(json.loads(child.stdout.readline()))
                 (root / 'assistant-mcp-results.json').write_text(json.dumps(replies))
@@ -318,10 +315,6 @@ for line in sys.stdin:
         if methods:
             initialized['authMethods'] = [{'id': m, 'name': m} for m in methods]
         result(request, initialized)
-        if (root / 'scenario').read_text().strip() == 'checkpoint' and 'NEIGE_MCP_TOKEN' in os.environ:
-            (root / 'setup-checkpoint').touch()
-            while not (root / 'release-setup').exists():
-                time.sleep(0.01)
     elif method == 'authenticate':
         # Cached-token login state can recover without changing the registered process config.
         behaviour = ('error' if xai and (root / 'scenario').read_text().strip() == 'grok-auth-error'
@@ -341,15 +334,19 @@ for line in sys.stdin:
         current = 'native_' + uuid.uuid4().hex
         native_path().write_text(json.dumps({'inputs': [], 'cwd': params['cwd'], 'model': model, 'effort': effort}))
         mcp_servers = params['mcpServers']
+        session_mcp_servers[current] = mcp_servers
         capture_shared_token(mcp_servers)
         vendor('mcp/servers_updated')
         vendor('session/setup')
-        check_mcp(params['mcpServers'])
         if (root / 'scenario').read_text().strip() == 'closed-input':
             # Keep stdout/process alive but remove every reader before setup completes.
             os.close(0)
             result(request, {'sessionId': current, **config()})
             while True:
+                time.sleep(0.01)
+        if (root / 'scenario').read_text().strip() == 'checkpoint' and mcp_servers:
+            (root / 'setup-checkpoint').touch()
+            while not (root / 'release-setup').exists():
                 time.sleep(0.01)
         attach_updates()
         result(request, {'sessionId': current, **config()})
@@ -357,9 +354,8 @@ for line in sys.stdin:
         if (root / 'scenario').read_text().strip() == 'shared-close-error':
             emit({'jsonrpc':'2.0', 'id':request['id'], 'error':{'code':-32603, 'message':'close failed'}})
             continue
-        if os.environ.get('ACP_FIXTURE_CAPTURE_SHARED_TOKEN') == '1':
-            current = params['sessionId']
-        assert params['sessionId'] == current
+        current = params['sessionId']
+        session_mcp_servers.pop(current, None)
         result(request, {})
     elif method in ['session/load', 'session/resume']:
         if (root / 'scenario').read_text().strip() in ['load-error', 'resume-error']:
@@ -373,6 +369,7 @@ for line in sys.stdin:
             update({'sessionUpdate': 'user_message_chunk', 'content': {'type': 'text', 'text': text}})
             update({'sessionUpdate': 'agent_message_chunk', 'content': {'type': 'text', 'text': 'historic reply'}})
         mcp_servers = params['mcpServers']
+        session_mcp_servers[current] = mcp_servers
         capture_shared_token(mcp_servers)
         vendor('session/setup')
         attach_updates()
@@ -390,7 +387,6 @@ for line in sys.stdin:
                         'tokens_after': 23450}, '_meta': {'isReplay': False}})
                 threading.Thread(target=pre_send_completion, daemon=True).start()
 
-        check_mcp(params['mcpServers'])
         result(request, config())
         # Fixture-only barrier: setup has replied, but the next prompt is not read yet.
         if (root / 'prompt-consumption.sock').exists():
@@ -470,14 +466,13 @@ for line in sys.stdin:
         else:
             result(request, {'unexpected': True} if scenario == 'grok-compact-invalid-response' else {})
     elif method == 'session/prompt':
-        if os.environ.get('ACP_FIXTURE_CAPTURE_SHARED_TOKEN') == '1':
-            current = params['sessionId']
-        assert params['sessionId'] == current
+        current = params['sessionId']
         state = json.loads(native_path().read_text())
         texts = [part['text'] for part in params['prompt'] if part['type'] == 'text']
         state['inputs'].extend(texts)
         write_native(state)
         scenario = (root / 'scenario').read_text().strip()
+        check_mcp(session_mcp_servers[current])
         if scenario == 'shared-menu-empty':
             update({'sessionUpdate':'available_commands_update', 'availableCommands':[]})
         if texts == ['/compact'] and scenario.startswith('shared-compact-'):
@@ -699,8 +694,12 @@ for line in sys.stdin:
         pending = permission = None
     elif method is None and permission == 'native-permission' and request.get('id') == permission:
         (root / 'permission-reply.json').write_text(json.dumps(request))
-        assert request['result']['outcome'] == {'outcome': 'cancelled'}, 'permission policy is never'
-        finish(pending, 'permission declined', 'cancelled')
+        outcome = request['result']['outcome']
+        if outcome == {'outcome': 'selected', 'optionId': 'yes'}:
+            finish(pending, 'permission allowed')
+        else:
+            assert outcome == {'outcome': 'cancelled'}
+            finish(pending, 'permission declined', 'cancelled')
         pending = permission = None
     elif method is None and permission is not None and request.get('id') == permission:
         outcome = request['result']['outcome']

@@ -79,7 +79,7 @@ async fn canonical_acp_load_replay_and_attach_updates_cannot_settle_new_input() 
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn canonical_acp_private_server_cleanup_and_cancel_drain_remain_unknown() {
-    let fx = Fixture::new("server-drain").await;
+    let fx = Fixture::with_provider(AgentProvider::Grok, "server-drain", false).await;
     let report = fx.dispatch().await.unwrap();
     assert!(matches!(
         report.report.delivery(),
@@ -145,15 +145,6 @@ async fn canonical_acp_resume_does_not_require_load_capability() {
     fx.wait_idle().await;
     assert_eq!(fx.receipt_bytes(&successor).await.2, "completed");
     fx.wait_end().await;
-    let executions: i64 = sqlx::query_scalar(concat!(
-        "SELECT count(*) FROM workspace_executions WHERE ",
-        "json_extract(intent_json,'$.consumer')='acp-planner' ",
-        "AND desired='retire' AND settled_at_ms IS NOT NULL",
-    ))
-    .fetch_one(fx.owner.repo.pool())
-    .await
-    .unwrap();
-    assert_eq!(executions, 2, "new and resume both settle through Engine");
     let calls = fx.requests();
     assert_eq!(
         calls

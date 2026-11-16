@@ -132,7 +132,7 @@ impl AcpPlannerSession {
             .map_err(|e| CompactFailure::Before(start::registration_error(e).into()))?;
         super::super::execution::validate_registration(registration)
             .map_err(CompactFailure::Before)?;
-        if registration.profile.shared_server {
+        if registration.profile.resident.is_some() {
             return server::compact(
                 shared,
                 registration,

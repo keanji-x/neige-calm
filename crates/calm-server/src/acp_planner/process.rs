@@ -50,10 +50,11 @@ impl Process {
         boot_swept: bool,
     ) -> std::result::Result<Self, StartFailure> {
         let Registration { config, profile } = registration;
+        let resident = if boot_swept { profile.resident } else { None };
         let mut command = Command::new(&config.command);
         command
             .args(&config.args)
-            .args(profile.argv(None))
+            .args(profile.argv(resident))
             .current_dir(cwd)
             .env_clear()
             .envs(&config.env)
@@ -67,7 +68,8 @@ impl Process {
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .kill_on_drop(true);
-        if boot_swept {
+        if let Some(launch) = resident {
+            command.envs(launch.env.iter().copied());
             command.env(super::config::MARKER_KEY, host.instance.marker(worker));
         }
         set_process_group_leader(&mut command);
@@ -86,7 +88,7 @@ impl Process {
             None
         };
         keep_stderr(child.stderr(), stderr_log(host, worker));
-        let connect = if profile.shared_server {
+        let connect = if resident.is_some() {
             Connection::new_shared
         } else {
             Connection::new
@@ -99,7 +101,10 @@ impl Process {
                 .stdin()
                 .ok_or_else(|| CalmError::Internal("ACP stdin missing".into()))?,
         );
-        match negotiate(&connection.client, registration, false).await {
+        let compaction = resident.is_some()
+            && [profile.compaction.planner, profile.compaction.assistant]
+                .contains(&Some(super::profile::CompactionWire::StandardPrompt));
+        match negotiate(&connection.client, registration, compaction).await {
             Ok(negotiated) => Ok(Self {
                 child,
                 restart_owner,

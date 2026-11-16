@@ -137,6 +137,12 @@ impl Fixture {
     ) {
         use tokio::io::AsyncWriteExt;
         peer.write_all(b"!").await.unwrap();
+        self.wait_held_prompt(events).await;
+    }
+    pub(super) async fn wait_held_prompt(
+        &self,
+        events: &mut tokio::sync::broadcast::Receiver<provider::events::PlannerEvent>,
+    ) {
         tokio::time::timeout(Duration::from_secs(20), async {
             loop {
                 let event = events.recv().await.unwrap();
@@ -264,7 +270,9 @@ async fn canonical_acp_keep_without_finished_cleanup_stays_held() {
     let fx = Fixture::new("lost").await;
     let pause = crate::acp_planner::test_seams::pause_after_fence(&fx.owner.worker);
     fx.dispatch().await.unwrap();
-    pause.entered.notified().await;
+    tokio::time::timeout(Duration::from_secs(20), pause.entered.notified())
+        .await
+        .expect("the driver paused before cleanup");
     fx.keep_unknown(&fx.submission, "keep-unfinished").await;
     assert!(fx.backend.settle_kept_execution().await.unwrap().is_none());
     assert!(

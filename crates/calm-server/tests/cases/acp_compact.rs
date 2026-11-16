@@ -101,7 +101,6 @@ pub(super) async fn success(grok: bool) {
         claude_planner_session_fixture::card_rows(stack.repo(), &card, "item/completed").await;
     let runtime = stack.runtime(&card).await;
     let receipts = receipt_state(&stack, &runtime.id).await;
-    let cleanup = calm_server::acp_planner::test_seams::pause_after_fence(&runtime.id);
     std::fs::write(
         root.path().join("scenario"),
         if grok {
@@ -111,73 +110,80 @@ pub(super) async fn success(grok: bool) {
         },
     )
     .unwrap();
-    // The maintenance request must cross C4.3's release boundary before ACP
-    // initialize, then retain that same claim until cleanup settles.
-    use calm_server::test_seams::{PausePoint, install_pause_for_test};
-    use calm_truth::db::sqlite::provider_execution as claims;
-    let release = PausePoint::default();
-    install_pause_for_test("c4-release-authorized", &runtime.id, release.clone());
-    let initializes = requests(&root, "initialize").len();
-    let (reply, admitted) = tokio::join!(compact(&stack, &card), async {
-        tokio::time::timeout(Duration::from_secs(20), release.entered.notified())
-            .await
-            .unwrap();
-        let pool = stack.repo().sqlite_db().unwrap();
-        let claim = claims::load(pool.read_pool(), &runtime.id)
-            .await
-            .unwrap()
-            .unwrap();
-        let observed = requests(&root, "initialize").len();
-        release.release.notify_one();
-        assert_eq!(
-            observed, initializes,
-            "no maintenance ACP byte before release"
-        );
+    if grok {
+        let cleanup = calm_server::acp_planner::test_seams::pause_after_fence(&runtime.id);
+        // The maintenance request must cross C4.3's release boundary before ACP
+        // initialize, then retain that same claim until cleanup settles.
+        use calm_server::test_seams::{PausePoint, install_pause_for_test};
+        use calm_truth::db::sqlite::provider_execution as claims;
+        let release = PausePoint::default();
+        install_pause_for_test("c4-release-authorized", &runtime.id, release.clone());
+        let initializes = requests(&root, "initialize").len();
+        let (reply, admitted) = tokio::join!(compact(&stack, &card), async {
+            tokio::time::timeout(Duration::from_secs(20), release.entered.notified())
+                .await
+                .unwrap();
+            let pool = stack.repo().sqlite_db().unwrap();
+            let claim = claims::load(pool.read_pool(), &runtime.id)
+                .await
+                .unwrap()
+                .unwrap();
+            let observed = requests(&root, "initialize").len();
+            release.release.notify_one();
+            assert_eq!(
+                observed, initializes,
+                "no maintenance ACP byte before release"
+            );
+            assert!(matches!(
+                claim.record().release,
+                claims::Release::Releasing { .. }
+            ));
+            claim
+        });
         assert!(matches!(
-            claim.record().release,
-            claims::Release::Releasing { .. }
+            admitted.record().purpose,
+            claims::Purpose::Compaction { .. }
         ));
-        claim
-    });
-    assert!(matches!(
-        admitted.record().purpose,
-        claims::Purpose::Compaction { .. }
-    ));
-    let (status, body) = reply;
-    assert_eq!(status, StatusCode::OK, "{body}");
-    tokio::time::timeout(Duration::from_secs(20), cleanup.entered.notified())
-        .await
-        .unwrap();
-    assert_eq!(
-        snapshot(&stack, &card).await["compact_outcome"]["status"],
-        "started"
-    );
-    let pool = stack.repo().sqlite_db().unwrap();
-    let held = claims::load(pool.read_pool(), &runtime.id)
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(held.record().execution_id, admitted.record().execution_id);
-    cleanup.release.notify_one();
-    wait_phase(&stack, &runtime.id, "turn_completed").await;
-    assert!(
-        claims::load(pool.read_pool(), &runtime.id)
+        let (status, body) = reply;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        tokio::time::timeout(Duration::from_secs(20), cleanup.entered.notified())
+            .await
+            .unwrap();
+        assert_eq!(
+            snapshot(&stack, &card).await["compact_outcome"]["status"],
+            "started"
+        );
+        let pool = stack.repo().sqlite_db().unwrap();
+        let held = claims::load(pool.read_pool(), &runtime.id)
             .await
             .unwrap()
-            .is_none()
-    );
-    let (desired, settled): (String, Option<i64>) = sqlx::query_as(
-        "SELECT desired,settled_at_ms FROM workspace_executions WHERE execution_id=?1",
-    )
-    .bind(&admitted.record().execution_id)
-    .fetch_one(pool.read_pool())
-    .await
-    .unwrap();
-    assert_eq!(desired, "retire");
-    assert!(
-        settled.is_some(),
-        "maintenance must settle the Engine process"
-    );
+            .unwrap();
+        assert_eq!(held.record().execution_id, admitted.record().execution_id);
+        cleanup.release.notify_one();
+        wait_phase(&stack, &runtime.id, "turn_completed").await;
+        assert!(
+            claims::load(pool.read_pool(), &runtime.id)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        let (desired, settled): (String, Option<i64>) = sqlx::query_as(
+            "SELECT desired,settled_at_ms FROM workspace_executions WHERE execution_id=?1",
+        )
+        .bind(&admitted.record().execution_id)
+        .fetch_one(pool.read_pool())
+        .await
+        .unwrap();
+        assert_eq!(desired, "retire");
+        assert!(
+            settled.is_some(),
+            "maintenance must settle the Engine process"
+        );
+    } else {
+        let (status, body) = compact(&stack, &card).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        wait_phase(&stack, &runtime.id, "turn_completed").await;
+    }
     let after = snapshot(&stack, &card).await;
     assert_eq!(after["compact_outcome"]["status"], "completed", "{after}");
     assert_eq!(after["last_turn_id"], before["last_turn_id"]);
@@ -230,8 +236,24 @@ pub(super) async fn success(grok: bool) {
             .fetch_one(pool.read_pool())
             .await
             .unwrap();
-    assert!(token.is_none());
+    if grok {
+        assert!(token.is_none());
+    } else {
+        assert_eq!(ordinary[0]["_pid"], maintenance[0]["_pid"]);
+        assert_eq!(
+            ordinary[0]["params"]["sessionId"],
+            maintenance[0]["params"]["sessionId"]
+        );
+    }
     turn(&stack, &card, "after compaction", 2).await;
+    if !grok {
+        let continued = requests(&root, "session/prompt");
+        assert_eq!(continued[2]["_pid"], maintenance[0]["_pid"]);
+        assert_eq!(
+            continued[2]["params"]["sessionId"],
+            maintenance[0]["params"]["sessionId"]
+        );
+    }
     stack.shutdown().await;
 }
 

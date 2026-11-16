@@ -167,7 +167,7 @@ async fn canonical_acp_retained_recovery_crash_windows_keep_sending_held_without
         IssueStage::AfterReceipt,
         IssueStage::DriverInstalled,
     ] {
-        let fx = Arc::new(Fixture::with_storage("reply", true).await);
+        let fx = Arc::new(Fixture::with_provider(AgentProvider::Grok, "reply", true).await);
         let pause = pause_issue(&fx.owner.worker, stage);
         let dispatch = tokio::spawn({
             let fx = fx.clone();
@@ -216,7 +216,7 @@ async fn canonical_acp_retained_recovery_crash_windows_keep_sending_held_without
                 crate::db::sqlite::AcpSubmissionState::Sending
             ));
         }
-        let (backend, session, _held) = session_for(&owner, &fx.dir);
+        let (backend, session, _held) = session_for_provider(&owner, &fx.dir, fx.provider.clone());
         let prompts = fx.prompts();
         backend.recover_retained().await.unwrap();
         backend.recover_retained().await.unwrap();
@@ -273,7 +273,7 @@ async fn canonical_acp_dispatch_return_does_not_prove_peer_consumption() {
 }
 
 async fn later_activity(consume_before_shutdown: bool) {
-    let fx = Fixture::new("reply").await;
+    let fx = super::grok_compact::fixture().await;
     fx.dispatch().await.unwrap();
     fx.wait_idle().await;
     fx.wait_end().await;

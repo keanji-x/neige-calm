@@ -87,7 +87,7 @@ fn one_terminal(rows: &Rows) {
 #[tokio::test]
 async fn canonical_acp_completed_crash_recovery_preserves_receipt_and_projection_windows() {
     for window in ["receipt", "lost-report", "failed-terminal", "projected"] {
-        let fx = Fixture::with_storage("reply", true).await;
+        let fx = Fixture::with_provider(AgentProvider::Grok, "reply", true).await;
         if window != "projected" {
             fail_terminal_outcome(fx.owner.repo.as_ref()).await;
         }
@@ -164,7 +164,8 @@ async fn canonical_acp_completed_crash_recovery_preserves_receipt_and_projection
                             .unwrap();
                     }
                     if window == "failed-terminal" {
-                        let (backend, session, _held) = session_for(&owner, &fx.dir);
+                        let (backend, session, _held) =
+                            session_for_provider(&owner, &fx.dir, fx.provider.clone());
                         let before = rows(&owner).await;
                         let error = backend.recover_retained().await.unwrap_err();
                         assert!(error.to_string().contains("outcome failed"), "{error}");
@@ -194,7 +195,8 @@ async fn canonical_acp_completed_crash_recovery_preserves_receipt_and_projection
                     let before = rows(&owner).await;
                     assert_eq!(receipt(&owner).await, durable);
                     let prompts = fx.prompts();
-                    let (backend, session, _held) = session_for(&owner, &fx.dir);
+                    let (backend, session, _held) =
+                        session_for_provider(&owner, &fx.dir, fx.provider.clone());
                     backend.recover_retained().await.unwrap();
                     assert!(complete(&owner, &backend).await, "missing END at {window}");
                     assert!(!complete(&owner, &backend).await);
@@ -215,7 +217,8 @@ async fn canonical_acp_completed_crash_recovery_preserves_receipt_and_projection
                     }
                     session.shutdown().await.unwrap();
                     let owner = reopen(&owner, owner.db_url.clone()).await;
-                    let (backend, session, _held) = session_for(&owner, &fx.dir);
+                    let (backend, session, _held) =
+                        session_for_provider(&owner, &fx.dir, fx.provider.clone());
                     backend.recover_retained().await.unwrap();
                     assert!(
                         !complete(&owner, &backend).await,
@@ -334,7 +337,7 @@ async fn canonical_acp_sending_unknown_crash_recovery_after_authenticated_keep_s
 
 #[tokio::test]
 async fn c4_acp_owner_retry_preserves_the_normal_drivers_known_receipt() {
-    let fx = Fixture::new("reply").await;
+    let fx = super::grok_compact::fixture().await;
     fail_terminal_outcome(fx.owner.repo.as_ref()).await;
     fx.dispatch().await.unwrap();
     fx.wait_driver_finished().await;

@@ -326,7 +326,7 @@ async fn bind_native(params: &SessionParams, thread: &str, native: &str) -> Resu
                 return Err(CalmError::Conflict("ACP native owner changed".into()));
             }
             if super::profile::AcpAgentProfile::of(&provider)
-                .is_some_and(|profile| profile.shared_server)
+                .is_some_and(|profile| profile.resident.is_some())
             {
                 server::ensure_native_owner(&mut **tx, &provider, &worker, &native).await?;
             }

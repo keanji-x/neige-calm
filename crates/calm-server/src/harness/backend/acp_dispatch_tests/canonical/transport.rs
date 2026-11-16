@@ -5,7 +5,7 @@ use crate::acp_planner::test_transport::{self, Fault};
 #[tokio::test]
 async fn canonical_acp_partial_flush_and_write_timeout_hold_receipt_without_resend() {
     for fault in [Fault::Partial, Fault::Flush, Fault::Timeout] {
-        let fx = Fixture::new("reply").await;
+        let fx = super::grok_compact::fixture().await;
         let probe = test_transport::arm(&fx.owner.worker, fault);
         let report = fx.dispatch().await.unwrap();
         assert!(
@@ -32,7 +32,7 @@ async fn canonical_acp_partial_flush_and_write_timeout_hold_receipt_without_rese
 }
 #[tokio::test]
 async fn canonical_acp_cancellation_during_partial_native_write_retains_driver() {
-    let fx = Arc::new(Fixture::new("reply").await);
+    let fx = Arc::new(super::grok_compact::fixture().await);
     let probe = test_transport::arm(&fx.owner.worker, Fault::Timeout);
     let dispatch = tokio::spawn({
         let fx = fx.clone();

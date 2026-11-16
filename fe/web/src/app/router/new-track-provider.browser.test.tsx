@@ -154,7 +154,7 @@ it.each([1280, 390])('OpenCode can create a track with inherited agent settings 
   await page.viewport(width, 844);
   const { creates } = mount(NO_CLAUDE, true);
   await openModelMenu('Model: Codex Default');
-  await page.getByRole('group', { name: 'OpenCode' }).getByRole('menuitem', { name: 'Default', exact: true }).click();
+  await page.getByRole('group', { name: 'OpenCode (Beta)', exact: true }).getByRole('menuitem', { name: 'Default', exact: true }).click();
   await expect.element(page.getByRole('button', { name: 'Model: OpenCode Default' })).toBeVisible();
   await page.getByRole('combobox', { name: 'What this track should do' }).fill('Plan with OpenCode');
   await page.getByRole('button', { name: 'Create track' }).click();
@@ -176,7 +176,7 @@ it.each([1280, 390])('OpenCode models can be selected before creating a track (%
   };
   const { creates } = mount(NO_CLAUDE, true, catalog);
   await openModelMenu('Model: Codex Default');
-  await page.getByRole('group', { name: 'OpenCode' }).getByRole('menuitem', { name: 'DeepSeek Flash' }).click();
+  await page.getByRole('group', { name: 'OpenCode (Beta)', exact: true }).getByRole('menuitem', { name: 'DeepSeek Flash' }).click();
   await expect.element(page.getByRole('button', { name: 'Model: OpenCode DeepSeek Flash' })).toBeVisible();
   await page.getByRole('combobox', { name: 'What this track should do' }).fill('Plan with DeepSeek');
   await page.getByRole('button', { name: 'Create track' }).click();

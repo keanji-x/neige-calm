@@ -6,7 +6,7 @@ use calm_truth::db::sqlite::provider_execution as claims;
 
 #[tokio::test]
 async fn canonical_acp_stale_completion_preserves_successor_credential() {
-    let fx = Arc::new(Fixture::new("reply").await);
+    let fx = Arc::new(super::grok_compact::fixture().await);
     let pause = pause_issue(&fx.owner.worker, IssueStage::AfterReceipt);
     let dispatch = tokio::spawn({
         let fx = fx.clone();
@@ -90,7 +90,7 @@ async fn canonical_acp_cancelled_receipt_projection_failure_preserves_cleanup_jo
 }
 
 async fn cancelled_receipt(projection_failure: bool) {
-    let fx = Arc::new(Fixture::new("reply").await);
+    let fx = Arc::new(super::grok_compact::fixture().await);
     let pause = pause_issue(&fx.owner.worker, IssueStage::AfterReceipt);
     let dispatch = tokio::spawn({
         let fx = fx.clone();

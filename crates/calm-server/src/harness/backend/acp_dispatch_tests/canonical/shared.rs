@@ -2,6 +2,32 @@
 use super::*;
 
 #[tokio::test]
+async fn canonical_opencode_reuses_resident_process_and_native_session() {
+    let fx = Fixture::with_provider(AgentProvider::OpenCode, "reply", false).await;
+    fx.dispatch().await.unwrap();
+    fx.wait_idle().await;
+    assert!(fx.complete().await.is_some());
+
+    let successor = fx.claim_successor().await;
+    fx.dispatch_submission(&successor).await;
+    fx.wait_idle().await;
+    assert!(fx.complete().await.is_some());
+
+    let requests = fx.requests();
+    let prompts: Vec<_> = requests
+        .iter()
+        .filter(|request| request["method"] == "session/prompt")
+        .collect();
+    assert_eq!(prompts.len(), 2);
+    assert_eq!(prompts[0]["_pid"], prompts[1]["_pid"]);
+    assert_eq!(
+        prompts[0]["params"]["sessionId"],
+        prompts[1]["params"]["sessionId"]
+    );
+    fx.session.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn canonical_antigravity_normal_end_has_body_free_receipt_and_exact_end() {
     let fx = Fixture::with_provider(AgentProvider::Antigravity, "reply", false).await;
     fx.dispatch().await.unwrap();

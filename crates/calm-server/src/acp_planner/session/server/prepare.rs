@@ -40,16 +40,14 @@ pub(super) async fn prepare(
                 id: generation,
                 stopped: AtomicBool::new(false),
             }),
-            provider: registration.config.provider.clone(),
         });
-        tokio::spawn(supervise(Arc::downgrade(&params.host), generation));
-    }
-    let server = owned.as_mut().expect("shared ACP server installed");
-    if server.provider != params.provider {
-        return Err(refused(
-            "The shared ACP host already owns a different provider",
+        tokio::spawn(supervise(
+            Arc::downgrade(&params.host),
+            params.provider.wire_name(),
+            generation,
         ));
     }
+    let server = owned.as_mut().expect("shared ACP server installed");
     if server.process.connection.client.shared_retiring() {
         return Err(refused(
             "Shared ACP server is waiting for active sessions before retirement",
