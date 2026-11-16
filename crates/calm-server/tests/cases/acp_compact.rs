@@ -355,40 +355,23 @@ async fn acp_compact_canonical_opencode_and_grok_assistant_capability_contract()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn acp_compact_cleanup_failure_cannot_settle_completed() {
+async fn resident_opencode_compact_keeps_the_attached_mcp_grant() {
     let root = Root::new("unused");
     let stack = boot(&root).await;
     let (_, card) = create(&stack).await;
     turn(&stack, &card, "first", 1).await;
     let runtime = stack.runtime(&card).await;
-    let cleanup = calm_server::acp_planner::test_seams::pause_after_fence(&runtime.id);
+    let grant = stack.row_hash(&runtime.id).await;
+    assert!(grant.is_some());
     std::fs::write(root.path().join("scenario"), "compact-success").unwrap();
     assert_eq!(compact(&stack, &card).await.0, StatusCode::OK);
-    tokio::time::timeout(Duration::from_secs(20), cleanup.entered.notified())
-        .await
-        .unwrap();
-    let pool = stack.repo().sqlite_db().unwrap();
-    (pool)
-        .writer()
-        .execute(sqlx::query(concat!(
-            "CREATE TRIGGER refuse_compact_revoke BEFORE UPDATE OF mcp_token_hash ",
-            "ON worker_sessions WHEN NEW.mcp_token_hash IS NULL ",
-            "BEGIN SELECT RAISE(FAIL,'fixture revoke failure'); END",
-        )))
-        .await
-        .unwrap();
-    cleanup.release.notify_one();
-    wait_phase(&stack, &runtime.id, "wedged").await;
+    wait_phase(&stack, &runtime.id, "turn_completed").await;
     assert_eq!(
         snapshot(&stack, &card).await["compact_outcome"]["status"],
-        "unconfirmed"
+        "completed"
     );
+    assert_eq!(stack.row_hash(&runtime.id).await, grant);
     assert_eq!(compact_prompts(&root).len(), 1);
-    (pool)
-        .writer()
-        .execute(sqlx::query("DROP TRIGGER refuse_compact_revoke"))
-        .await
-        .unwrap();
     stack.shutdown().await;
 }
 
@@ -397,14 +380,14 @@ async fn acp_compact_lost_driver_recovers_only_after_settlement_without_input_en
     use calm_server::provider_execution as execution;
     use calm_truth::db::sqlite::provider_execution as claims;
     let root = Root::new("unused");
-    let stack = boot(&root).await;
-    let (_, card) = create(&stack).await;
+    let stack = super::acp_grok_compact::boot_grok(&root).await;
+    let (_, card) = super::acp_grok_compact::create_grok(&stack).await;
     turn(&stack, &card, "first", 1).await;
     let humans = human_state(&stack, &card).await;
     let runtime = stack.runtime(&card).await;
     let session = stack.harness(&runtime.id).acp_session_for_test().unwrap();
     let cleanup = calm_server::acp_planner::test_seams::pause_after_fence(&runtime.id);
-    std::fs::write(root.path().join("scenario"), "compact-success").unwrap();
+    std::fs::write(root.path().join("scenario"), "grok-compact-success").unwrap();
     assert_eq!(compact(&stack, &card).await.0, StatusCode::OK);
     tokio::time::timeout(Duration::from_secs(20), cleanup.entered.notified())
         .await
@@ -479,9 +462,9 @@ async fn acp_compact_lost_driver_recovers_only_after_settlement_without_input_en
     );
     assert_eq!(stack.outcomes(&card).await.len(), 1);
     assert_eq!(human_state(&stack, &card).await, humans);
-    assert_eq!(compact_prompts(&root).len(), 1);
+    assert_eq!(requests(&root, "_x.ai/compact_conversation").len(), 1);
     assert!(!compact(&stack, &card).await.0.is_success());
-    assert_eq!(compact_prompts(&root).len(), 1);
+    assert_eq!(requests(&root, "_x.ai/compact_conversation").len(), 1);
     stack.shutdown().await;
 }
 
