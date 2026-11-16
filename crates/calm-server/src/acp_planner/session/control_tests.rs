@@ -89,3 +89,74 @@ async fn acp_identical_local_turns_keep_two_owner_cancellation_separate() {
         "identical local turn must not give authority over another owner"
     );
 }
+
+#[tokio::test]
+async fn acp_token_reattach_reuses_without_revocation() {
+    let (session, repo, _) = super::admission_tests::fixture().await;
+    let first = mint_token(&session.shared.params).await.unwrap();
+    let params = &session.shared.params;
+    let host =
+        Arc::new(AcpPlannerHost::scratch_with_tokens(params.host.managed_tokens.clone()).unwrap());
+    let rebuilt = AcpPlannerSession::open(SessionParams {
+        engine: params.engine.clone(),
+        host,
+        provider: params.provider.clone(),
+        repo: params.repo.clone(),
+        seals: params.seals.clone(),
+        worker_session_id: params.worker_session_id.clone(),
+        card_id: params.card_id.clone(),
+        track_id: params.track_id.clone(),
+        cwd: params.cwd.clone(),
+        instructions: params.instructions.clone(),
+    });
+    let second = mint_token(&rebuilt.shared.params).await.unwrap();
+    assert_eq!(
+        first, second,
+        "reattach must preserve existing shim credentials"
+    );
+    assert!(
+        crate::db::sqlite::session_get_by_active_token_hash(
+            repo.db().read_pool(),
+            &crate::mcp_server::auth::hash_token(&first),
+        )
+        .await
+        .unwrap()
+        .is_some()
+    );
+}
+
+#[tokio::test]
+async fn acp_token_revoke_rejects_old_credential_and_remints() {
+    let (session, repo, _) = super::admission_tests::fixture().await;
+    let first = mint_token(&session.shared.params).await.unwrap();
+    revoke(&session.shared.params).await.unwrap();
+    assert!(
+        crate::db::sqlite::session_get_by_active_token_hash(
+            repo.db().read_pool(),
+            &crate::mcp_server::auth::hash_token(&first),
+        )
+        .await
+        .unwrap()
+        .is_none()
+    );
+    let second = mint_token(&session.shared.params).await.unwrap();
+    assert_ne!(first, second);
+    assert!(
+        crate::db::sqlite::session_get_by_active_token_hash(
+            repo.db().read_pool(),
+            &crate::mcp_server::auth::hash_token(&first),
+        )
+        .await
+        .unwrap()
+        .is_none()
+    );
+    assert!(
+        crate::db::sqlite::session_get_by_active_token_hash(
+            repo.db().read_pool(),
+            &crate::mcp_server::auth::hash_token(&second),
+        )
+        .await
+        .unwrap()
+        .is_some()
+    );
+}

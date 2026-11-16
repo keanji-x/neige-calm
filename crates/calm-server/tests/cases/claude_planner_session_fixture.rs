@@ -127,6 +127,7 @@ impl RegisteredRig {
             &data,
             PathBuf::from("/nonexistent/neige-mcp-stdio-shim"),
             dir.path().join("mcp.sock"),
+            Default::default(),
         )
         .expect("host");
         host.provider_execution.owner = wrap(host.provider_execution.owner.clone());
@@ -156,6 +157,23 @@ impl RegisteredRig {
         };
         rig.session = Some(Arc::new(rig.open_session().await));
         rig
+    }
+
+    pub async fn rebuild_host(&mut self) {
+        let current = &self.host;
+        let host = ClaudePlannerHost::new(
+            Some(current.configured().unwrap().clone()),
+            &self.dir.path().join("data"),
+            current.mcp_shim.clone(),
+            current.mcp_socket.clone(),
+            current.managed_tokens.clone(),
+        )
+        .unwrap();
+        host.execution.bind(Arc::new(
+            self._execution.lifecycle.engine().unwrap().clone(),
+        ));
+        self.host = Arc::new(host);
+        self.session = Some(Arc::new(self.open_session().await));
     }
 
     /// The session every test drives.

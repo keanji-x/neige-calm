@@ -196,6 +196,7 @@ fn session_for_command_with_options(
             &dir.path().join("data"),
             dir.path().join("unused-shim"),
             dir.path().join("mcp.sock"),
+            Default::default(),
         )
         .unwrap(),
     );

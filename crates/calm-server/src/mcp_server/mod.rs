@@ -6,6 +6,7 @@ pub mod cli;
 pub(crate) mod forge_receipt;
 pub mod framing;
 pub mod handshake;
+pub mod managed_tokens;
 pub mod registry;
 pub mod result;
 pub(crate) mod tool_visibility;

@@ -42,6 +42,7 @@ for line in sys.stdin:
         root.path(),
         "unused-shim".into(),
         root.path().join("sock"),
+        Default::default(),
     )
     .unwrap();
     let started = Instant::now();

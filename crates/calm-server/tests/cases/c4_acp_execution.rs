@@ -474,6 +474,7 @@ async fn c4_acp_boot_never_resends_held_or_releasing_payload() {
             &root.data_dir(),
             session.host().mcp_shim.clone(),
             session.host().mcp_socket.clone(),
+            Default::default(),
         )
         .unwrap();
         calm_server::acp_planner::config::boot(stack.repo(), &rebooted_host)

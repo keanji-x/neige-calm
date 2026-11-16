@@ -54,6 +54,7 @@ fn host_with_auth(
         root,
         root.join("unused-shim"),
         root.join("mcp.sock"),
+        Default::default(),
     )
     .unwrap()
 }

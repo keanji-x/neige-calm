@@ -126,6 +126,7 @@ pub struct ClaudePlannerHost {
     pub instructions_dir: PathBuf,
     pub mcp_shim: PathBuf,
     pub mcp_socket: PathBuf,
+    pub managed_tokens: crate::mcp_server::managed_tokens::ManagedSessionTokens,
     pub calm_tools: ToolNames,
     /// Owns the data dir of [`Self::unconfigured_scratch`].
     _scratch: Option<tempfile::TempDir>,
@@ -137,6 +138,7 @@ impl ClaudePlannerHost {
         data_dir: &Path,
         mcp_shim: PathBuf,
         mcp_socket: PathBuf,
+        managed_tokens: crate::mcp_server::managed_tokens::ManagedSessionTokens,
     ) -> Result<Self> {
         let calm_tools = ToolNames::new(
             crate::mcp_server::wiring::MCP_SERVER_KEY,
@@ -157,6 +159,7 @@ impl ClaudePlannerHost {
             instructions_dir,
             mcp_shim,
             mcp_socket,
+            managed_tokens,
             calm_tools,
             _scratch: None,
         })
@@ -166,6 +169,12 @@ impl ClaudePlannerHost {
     /// data dir (`AppState::from_parts`, the dispatcher's own runtime): it never spawns, and its
     /// marker instance matches no other calm-server's processes.
     pub fn unconfigured_scratch() -> Result<Self> {
+        Self::scratch_with_tokens(Default::default())
+    }
+
+    pub(crate) fn scratch_with_tokens(
+        tokens: crate::mcp_server::managed_tokens::ManagedSessionTokens,
+    ) -> Result<Self> {
         let scratch = tempfile::Builder::new()
             .prefix("calm-claude-planner-")
             .tempdir()?;
@@ -174,6 +183,7 @@ impl ClaudePlannerHost {
             scratch.path(),
             PathBuf::from("neige-mcp-stdio-shim"),
             scratch.path().join("mcp.sock"),
+            tokens,
         )?;
         host._scratch = Some(scratch);
         Ok(host)

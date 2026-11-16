@@ -510,6 +510,7 @@ async fn acp_boot_track_sweep_without_execution_revokes_without_native_scan() {
         &cfg.data_dir_resolved(),
         root.join("no-shim"),
         root.join("mcp.sock"),
+        Default::default(),
     )
     .unwrap();
     super::config::boot_with_sweep(&repo, &host, |_| async { Ok(()) })
@@ -554,6 +555,7 @@ async fn acp_pre_c4_failed_boot_fences_each_strict_stop() {
             &cfg.data_dir_resolved(),
             "no-shim".into(),
             root.path().join("mcp.sock"),
+            Default::default(),
         )
         .unwrap(),
     );

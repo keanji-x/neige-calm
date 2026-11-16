@@ -159,26 +159,28 @@ pub async fn mint_and_persist_card_token(
     Ok(raw)
 }
 
-/// A Claude Planner harness's first-turn mint (#1791 §5.1): the card row and the session hash in
-/// the caller's one transaction, the session write through the guarded writer that refuses a row
-/// that is no longer active. The plaintext is returned to the harness only.
+/// Explicit rotation helper retained for integration tests that exercise
+/// out-of-band credential rotation.
+#[cfg(any(test, feature = "fixtures"))]
 pub async fn mint_and_persist_managed_planner_token(
     tx: &mut Transaction<'_, Sqlite>,
     card_id: &str,
     worker_session_id: &str,
 ) -> Result<String> {
-    let current: Option<String> = sqlx::query_scalar("SELECT session_id FROM cards WHERE id=?1")
-        .bind(card_id)
-        .fetch_optional(&mut **tx)
-        .await?
-        .flatten();
-    if current.as_deref() != Some(worker_session_id) {
-        return Err(crate::error::CalmError::Conflict(
+    if super::managed_tokens::carrier_hash(
+        tx,
+        &crate::model::CardId(card_id.to_owned()),
+        &calm_types::worker::WorkerSessionId(worker_session_id.to_owned()),
+    )
+    .await?
+    .is_none()
+    {
+        return Err(CalmError::Conflict(
             "Managed credential carrier changed".into(),
         ));
     }
     let (raw, hashed) = set_card_mcp_token(tx, card_id).await?;
-    session_mcp_token_set_if_active_tx(tx, worker_session_id, &hashed).await?;
+    crate::db::sqlite::session_mcp_token_set_if_active_tx(tx, worker_session_id, &hashed).await?;
     Ok(raw)
 }
 

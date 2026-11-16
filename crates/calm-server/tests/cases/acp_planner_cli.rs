@@ -53,7 +53,6 @@ async fn resident_opencode_accepts_mcp_calls_only_from_the_credential_owner() {
     let idle_reply = crate::support::mcp::recv_frame(&mut reader).await;
     assert!(idle_reply.get("result").is_some(), "{idle_reply}");
     assert_ne!(idle_reply["result"]["isError"], true, "{idle_reply}");
-    drop((reader, writer));
     assert_eq!(
         turn(&stack, &card, "second", 2).await["status"],
         "completed"
@@ -68,6 +67,19 @@ async fn resident_opencode_accepts_mcp_calls_only_from_the_credential_owner() {
     .await
     .unwrap();
     assert!(!stack.token_authenticates(&token).await);
+    crate::support::mcp::send_frame(
+        &mut writer,
+        json!({
+            "jsonrpc":"2.0", "id":3, "method":"tools/list", "params":{}
+        }),
+    )
+    .await;
+    let revoked = crate::support::mcp::recv_frame(&mut reader).await;
+    assert_eq!(
+        revoked["error"]["code"],
+        calm_server::mcp_server::handshake::TOKEN_NOT_RECOGNIZED_CODE
+    );
+
     assert_eq!(
         turn(&stack, &card, "after generation retirement", 3).await["status"],
         "completed"
@@ -83,6 +95,24 @@ async fn resident_opencode_accepts_mcp_calls_only_from_the_credential_owner() {
     let prompts = requests(&root, "session/prompt");
     assert_eq!(prompts[0]["_pid"], prompts[1]["_pid"]);
     assert_ne!(prompts[1]["_pid"], prompts[2]["_pid"]);
+    let (mut reader, mut writer) = crate::support::mcp::connect(stack.mcp_socket()).await;
+    crate::support::mcp::handshake(&mut reader, &mut writer, &fresh).await;
+    let (status, body) = stack.reset(&card).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(!stack.token_authenticates(&fresh).await);
+    crate::support::mcp::send_frame(
+        &mut writer,
+        json!({
+            "jsonrpc":"2.0", "id":2, "method":"tools/list", "params":{}
+        }),
+    )
+    .await;
+    let replaced = crate::support::mcp::recv_frame(&mut reader).await;
+    assert_eq!(
+        replaced["error"]["code"],
+        calm_server::mcp_server::handshake::TOKEN_NOT_RECOGNIZED_CODE
+    );
+
     stack.shutdown().await;
 }
 

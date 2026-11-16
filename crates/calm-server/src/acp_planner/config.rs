@@ -230,6 +230,7 @@ pub struct AcpPlannerHost {
     pub(crate) pre_c4: std::sync::OnceLock<crate::provider_execution::PreC4Sweep>,
     pub mcp_shim: PathBuf,
     pub mcp_socket: PathBuf,
+    pub managed_tokens: crate::mcp_server::managed_tokens::ManagedSessionTokens,
     /// What Neige's MCP server lists each session, for agents whose requests for its tools are
     /// approved by name; without it no tool is approved by name, so a request is the mode's.
     tool_names: Option<crate::mcp_server::transport::SessionToolNames>,
@@ -252,6 +253,7 @@ impl AcpPlannerHost {
         data_dir: &Path,
         mcp_shim: PathBuf,
         mcp_socket: PathBuf,
+        managed_tokens: crate::mcp_server::managed_tokens::ManagedSessionTokens,
     ) -> Result<Self> {
         if let Some(config) = &config {
             config.validate()?;
@@ -276,6 +278,7 @@ impl AcpPlannerHost {
             instance: MarkerInstance::for_data_dir(data_dir, MARKER_KEY)?,
             mcp_shim,
             mcp_socket,
+            managed_tokens,
             tool_names: None,
             shared_servers,
             context_queries: tokio::sync::Semaphore::new(1),
@@ -305,12 +308,19 @@ impl AcpPlannerHost {
     }
 
     pub fn unconfigured_scratch() -> Result<Self> {
+        Self::scratch_with_tokens(Default::default())
+    }
+
+    pub(crate) fn scratch_with_tokens(
+        tokens: crate::mcp_server::managed_tokens::ManagedSessionTokens,
+    ) -> Result<Self> {
         let scratch = tempfile::Builder::new().prefix("neige-acp-").tempdir()?;
         let mut host = Self::new(
             None,
             scratch.path(),
             "neige-mcp-stdio-shim".into(),
             scratch.path().join("mcp.sock"),
+            tokens,
         )?;
         host._scratch = Some(scratch);
         Ok(host)
@@ -558,7 +568,15 @@ async fn revoke_owned_tx(
     track: Option<&str>,
 ) -> Result<Vec<String>> {
     let ids = crate::db::sqlite::acp_managed_session_ids(&mut **tx, track).await?;
-    sqlx::query(concat!("UPDATE worker_sessions SET mcp_token_hash=NULL WHERE id IN (SELECT worker_session_id FROM ","acp_managed_sessions) AND (?1 IS NULL OR track_id=?1)")).bind(track).execute(&mut **tx).await?;
+    sqlx::query(
+        r#"UPDATE worker_sessions
+              SET mcp_token_hash = NULL
+            WHERE id IN (SELECT worker_session_id FROM acp_managed_sessions)
+              AND (?1 IS NULL OR track_id = ?1)"#,
+    )
+    .bind(track)
+    .execute(&mut **tx)
+    .await?;
     Ok(ids)
 }
 

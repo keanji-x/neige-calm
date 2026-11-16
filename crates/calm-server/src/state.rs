@@ -854,6 +854,7 @@ impl AppState {
             &data_dir,
             current.mcp_shim.clone(),
             current.mcp_socket.clone(),
+            current.managed_tokens.clone(),
         )
         .expect("claude planner host");
         host.pre_c4 = current.pre_c4.clone();
@@ -880,12 +881,18 @@ impl AppState {
         mcp_shim: PathBuf,
         mcp_socket: PathBuf,
     ) -> Self {
-        let mut host = AcpPlannerHost::new(Some(config), data_dir, mcp_shim, mcp_socket)
-            .expect("ACP host")
-            .with_tool_names(crate::mcp_server::transport::SessionToolNames::new(
-                self.route.mcp_context.clone(),
-                crate::mcp_server::build_default_registry(),
-            ));
+        let mut host = AcpPlannerHost::new(
+            Some(config),
+            data_dir,
+            mcp_shim,
+            mcp_socket,
+            self.route.acp_planner.managed_tokens.clone(),
+        )
+        .expect("ACP host")
+        .with_tool_names(crate::mcp_server::transport::SessionToolNames::new(
+            self.route.mcp_context.clone(),
+            crate::mcp_server::build_default_registry(),
+        ));
         host.pre_c4 = self.route.acp_planner.pre_c4.clone();
         self.route.acp_planner = Arc::new(host);
         self.route.acp_planner.completion.bind(self.raw.clone());
@@ -1010,7 +1017,9 @@ impl AppState {
         gate_logs_dir: PathBuf,
     ) -> Self {
         let route_repo: Arc<dyn RouteRepo> = repo.clone();
-        let acp_planner = Arc::new(AcpPlannerHost::unconfigured_scratch().expect("ACP host"));
+        let tokens = crate::mcp_server::managed_tokens::ManagedSessionTokens::default();
+        let acp_planner =
+            Arc::new(AcpPlannerHost::scratch_with_tokens(tokens.clone()).expect("ACP host"));
         let terminal_renderer = TerminalRendererRegistry::new_with_repo(route_repo.clone());
         terminal_renderer.set_hook_settings_dir(codex.terminal_hook_settings_dir.clone());
         let card_role_cache = card_role_cache.unwrap_or_default();
@@ -1035,7 +1044,7 @@ impl AppState {
                 .expect("AppState::from_parts requires a sqlite-backed Repo"),
         ));
         let claude_planner = Arc::new(
-            ClaudePlannerHost::unconfigured_scratch()
+            ClaudePlannerHost::scratch_with_tokens(tokens)
                 .expect("a scratch Claude Planner host for AppState::from_parts"),
         );
         claude_planner.completion.bind(repo.clone());
@@ -1530,6 +1539,7 @@ impl AppState {
         .with_gate_run_wait(GateRunWait::for_idle(cfg.worker_liveness().idle));
         // #1791 §5.1 item 1: every Claude Planner credential is revoked and every Claude Planner
         // marker swept BEFORE the listener opens; unproved pre-C4 absence keeps recovery Held.
+        let tokens = crate::mcp_server::managed_tokens::ManagedSessionTokens::default();
         let claude_planner = Arc::new(ClaudePlannerHost::new(
             cfg.claude_planner_config
                 .as_deref()
@@ -1538,6 +1548,7 @@ impl AppState {
             &cfg.data_dir_resolved(),
             mcp_shim_bin.clone(),
             mcp_socket_path.clone(),
+            tokens.clone(),
         )?);
         claude_planner.completion.bind(repo.clone());
         crate::claude_planner::lifecycle::boot(repo.as_ref(), &claude_planner).await?;
@@ -1550,6 +1561,7 @@ impl AppState {
                 &cfg.data_dir_resolved(),
                 mcp_shim_bin.clone(),
                 mcp_socket_path.clone(),
+                tokens,
             )?
             // The listener's own context and registry: what an agent is told is what it is served.
             .with_tool_names(crate::mcp_server::transport::SessionToolNames::new(

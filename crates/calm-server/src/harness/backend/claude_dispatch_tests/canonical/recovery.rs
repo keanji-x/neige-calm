@@ -387,6 +387,7 @@ async fn reopen_session_with_boot(
             old.instructions_dir.parent().unwrap().parent().unwrap(),
             old.mcp_shim.clone(),
             old.mcp_socket.clone(),
+            Default::default(),
         )
         .unwrap(),
     );
