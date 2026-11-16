@@ -172,8 +172,9 @@ impl TurnTranslator {
                 if kind == "tool_call" && !update["title"].is_string() {
                     return Err(Error::Protocol("missing tool title"));
                 }
-                // ACP v1 name is informational: omitted/null leaves it unchanged.
-                if let Some(name) = update.get("name").and_then(Value::as_str) {
+                // ACP v1 optional patch values use omitted/null for no change.
+                let patch_value = |field| update.get(field).filter(|value| !value.is_null());
+                if let Some(name) = patch_value("name").and_then(Value::as_str) {
                     tool["name"] = json!(name);
                 }
                 for field in [
@@ -184,11 +185,22 @@ impl TurnTranslator {
                     "rawOutput",
                     "content",
                     "locations",
-                    "_meta",
                 ] {
-                    if let Some(value) = update.get(field) {
+                    let value = if kind == "tool_call_update"
+                        || matches!(field, "rawInput" | "rawOutput")
+                    {
+                        patch_value(field)
+                    } else {
+                        update.get(field)
+                    };
+                    if let Some(value) = value {
                         tool[field] = value.clone();
                     }
+                }
+                // ACP does not define _meta as a ToolCallUpdateFields patch.
+                // Retain the existing opaque metadata behavior separately.
+                if let Some(meta) = update.get("_meta") {
+                    tool["_meta"] = meta.clone();
                 }
                 let status = match tool["status"].as_str() {
                     Some("pending" | "in_progress") => "inProgress",
