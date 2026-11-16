@@ -714,17 +714,13 @@ async fn c4_acp_planner_switch_next_turns_use_engine_and_inherit_permission() {
         );
     }
     assert_eq!(generations[0], generations[1]);
-    let permission_log =
-        std::fs::read_to_string(fixture.root.path().join("permission-log.jsonl")).unwrap();
-    assert!(
-        permission_log
-            .lines()
-            .map(|line| serde_json::from_str::<Value>(line).unwrap())
-            .any(|entry| {
-                entry["event"] == "reply"
-                    && entry["outcome"] == json!({"outcome":"selected","optionId":"yes"})
-            }),
-        "{permission_log}"
+    let reply: Value = serde_json::from_slice(
+        &std::fs::read(fixture.root.path().join("permission-reply.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        reply["result"]["outcome"],
+        json!({"outcome":"selected","optionId":"yes"})
     );
     assert_eq!(prompts(&fixture, &AgentProvider::OpenCode), 4);
     fixture.shutdown_process(&state).await;
