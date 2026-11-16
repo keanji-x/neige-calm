@@ -89,14 +89,7 @@ fn patch<T: serde::de::DeserializeOwned>(value: &Value, key: &str) -> Result<Pat
     }
 }
 fn validate_content(content: &Value) -> Result<(), Error> {
-    // Rich ACP blocks stay opaque, as in the existing tool-content translation.
-    match content["type"].as_str() {
-        Some("text") if !content["text"].is_string() => {
-            Err(Error::Protocol("missing compaction text"))
-        }
-        Some(_) => Ok(()),
-        None => Err(Error::Protocol("missing compaction content type")),
-    }
+    super::content::decode(content, super::content::ContentContext::Compaction).map(drop)
 }
 
 #[derive(Clone, Debug, PartialEq)]

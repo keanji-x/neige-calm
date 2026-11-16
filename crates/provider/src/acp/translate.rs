@@ -1,6 +1,11 @@
 //! Pure ACP updates → PlannerEvent translation. Native tool names remain display metadata.
-use super::{Error, protocol::StopReason};
+use super::{
+    Error,
+    content::{self, Footprint},
+    protocol::StopReason,
+};
 use crate::events::{ItemPhase, PlannerEvent, PlannerEventKind};
+use calm_types::output_content::{OutputBlock, OutputChannel, OutputContentV1, OutputSegment};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
@@ -12,14 +17,48 @@ pub struct TurnContext {
     /// The agent publishes terminal updates for background tools across turns in a session.
     pub background_tool_completions: bool,
 }
+struct OpenOutput {
+    id: String,
+    segment: OutputSegment,
+    content: OutputContentV1,
+}
+impl OpenOutput {
+    fn can_merge(&self, next: &OutputBlock) -> bool {
+        matches!((self.content.blocks.last(),next), (Some(OutputBlock::Text {fields:a,chunk:ac,..}), OutputBlock::Text {fields:b,chunk:bc,..}) if a == b && ac == bc)
+    }
+    fn append(&mut self, block: OutputBlock, merge: bool) {
+        if merge {
+            if let (Some(OutputBlock::Text { text: old, .. }), OutputBlock::Text { text, .. }) =
+                (self.content.blocks.last_mut(), block)
+            {
+                old.push_str(&text);
+            }
+        } else {
+            self.content.blocks.push(block);
+        }
+    }
+    fn materialize(&self) -> Value {
+        let text = self.content.text();
+        let mut item = match self.segment.channel {
+            OutputChannel::Message => json!({"id":self.id,"type":"agentMessage","text":text}),
+            OutputChannel::Thought => {
+                json!({"id":self.id,"type":"reasoning","summary":[text],"content":[]})
+            }
+        };
+        item["outputContent"] = serde_json::to_value(&self.content).expect("output serializes");
+        item["outputSegment"] = serde_json::to_value(&self.segment).expect("segment serializes");
+        item
+    }
+}
 pub struct TurnTranslator {
     context: TurnContext,
     compactions: super::compaction::Compactions,
-    text: BTreeMap<String, (String, String)>,
+    tool_costs: BTreeMap<String, Footprint>,
     tools: BTreeMap<String, Value>,
     sequence: u64,
-    current: Option<(String, String)>,
-    text_bytes: usize,
+    current: Option<OpenOutput>,
+    retained: Footprint,
+    ended: bool,
     context_received: bool,
     // Failure barriers distinguish a later recovery tool from an already-running sibling.
     unanswered_tool_failures: BTreeMap<String, u64>,
@@ -31,11 +70,12 @@ impl TurnTranslator {
         Self {
             context,
             compactions: Default::default(),
-            text: BTreeMap::new(),
+            tool_costs: BTreeMap::new(),
             tools: BTreeMap::new(),
             sequence: 0,
             current: None,
-            text_bytes: 0,
+            retained: Footprint::default(),
+            ended: false,
             context_received: false,
             unanswered_tool_failures: BTreeMap::new(),
             tool_starts: BTreeMap::new(),
@@ -56,6 +96,9 @@ impl TurnTranslator {
         &self.compactions.entries
     }
     pub fn update(&mut self, params: &Value, at_ms: i64) -> Result<Vec<PlannerEvent>, Error> {
+        if self.ended {
+            return Err(Error::Protocol("output after turn end"));
+        }
         if params["sessionId"].as_str() != Some(&self.context.native_session_id) {
             return Err(Error::Protocol("update session identity mismatch"));
         }
@@ -79,65 +122,106 @@ impl TurnTranslator {
         }
         match kind {
             "agent_message_chunk" | "agent_thought_chunk" => {
-                let content = &update["content"];
-                let content_type = content["type"]
-                    .as_str()
-                    .ok_or(Error::Protocol("missing content type"))?;
-                if content_type != "text" {
-                    return Ok(events);
-                }
-                let delta = content["text"]
-                    .as_str()
-                    .ok_or(Error::Protocol("missing text chunk"))?;
-                if kind == "agent_message_chunk" && !delta.trim().is_empty() {
-                    self.unanswered_tool_failures.clear();
-                }
-                let native = update.get("messageId").and_then(Value::as_str);
-                let id = if let Some(id) = native {
-                    format!("acp-{}-{kind}-native-{id}", self.context.turn_id)
-                } else if let Some((channel, id)) = &self.current {
-                    if channel == kind {
-                        id.clone()
-                    } else {
-                        self.sequence += 1;
-                        format!("acp-{}-{kind}-auto-{}", self.context.turn_id, self.sequence)
+                let block =
+                    content::decode(&update["content"], content::ContentContext::OutputRetained)?;
+                let channel = if kind == "agent_message_chunk" {
+                    OutputChannel::Message
+                } else {
+                    OutputChannel::Thought
+                };
+                let mut fields = serde_json::Map::new();
+                if let Some(id) = update.get("messageId") {
+                    if !id.is_null() && !id.is_string() {
+                        return Err(Error::Protocol("invalid message affiliation"));
                     }
+                    fields.insert("messageId".into(), id.clone());
+                }
+                if let Some(meta) = update.get("_meta") {
+                    if !meta.is_null() && !meta.is_object() {
+                        return Err(Error::Protocol("invalid chunk metadata"));
+                    }
+                    fields.insert("chunkMeta".into(), meta.clone());
+                }
+                content::bounded_metadata(&Value::Object(fields.clone()))?;
+                // Chunk metadata belongs to each block; segment metadata records its first chunk.
+                let mut block = block;
+                if let Some(meta) = fields.get("chunkMeta") {
+                    block.set_chunk_meta(meta.clone());
+                }
+                content::validate_output_metadata(&block)?;
+                let same = self.current.as_ref().is_some_and(|open| {
+                    open.segment.channel == channel
+                        && open
+                            .segment
+                            .fields
+                            .get("messageId")
+                            .filter(|v| !v.is_null())
+                            == fields.get("messageId").filter(|v| !v.is_null())
+                });
+                let merge = same
+                    && self
+                        .current
+                        .as_ref()
+                        .is_some_and(|open| open.can_merge(&block));
+                let next = if !same {
+                    Some(
+                        self.sequence
+                            .checked_add(1)
+                            .ok_or(Error::Protocol("output ordinal overflow"))?,
+                    )
                 } else {
-                    self.sequence += 1;
-                    format!("acp-{}-{kind}-auto-{}", self.context.turn_id, self.sequence)
+                    None
                 };
-                if self
-                    .current
-                    .as_ref()
-                    .is_some_and(|(_, current)| current != &id)
-                {
+                let segment = next.map(|ordinal| OutputSegment {
+                    channel: channel.clone(),
+                    ordinal,
+                    fields: fields.clone(),
+                });
+                let mut cost = content::footprint(&block);
+                if merge {
+                    cost.material = 0;
+                } else if same {
+                    cost.material += 1;
+                } // comma in a nonempty retained block array
+                if let Some(segment) = &segment {
+                    // The first chunk metadata is mirrored on the immutable segment. Charge
+                    // its one logical copy on the block, as with compatibility/native mirrors.
+                    let mut segment = segment.clone();
+                    segment.fields.remove("chunkMeta");
+                    cost.material += content::json_size(
+                        &json!({"outputContent":OutputContentV1::new(Vec::new()),"outputSegment":segment}),
+                    );
+                }
+                let retained = self.retained.add(cost).check()?;
+                // No mutation, seal or observation precedes candidate validation.
+                if let Some(ordinal) = next {
                     self.complete_current(&mut events, at_ms);
+                    self.sequence = ordinal;
+                    let open = OpenOutput {
+                        id: format!("acp-output:{}", json!([self.context.turn_id, ordinal])),
+                        segment: segment.expect("new segment"),
+                        content: OutputContentV1::new(Vec::new()),
+                    };
+                    events.push(self.item(open.materialize(), ItemPhase::Started, at_ms));
+                    self.current = Some(open);
                 }
-                self.current = Some((kind.into(), id.clone()));
-                self.text_bytes = self.text_bytes.saturating_add(delta.len());
-                if self.text_bytes > 16 * 1024 * 1024 {
-                    return Err(Error::Protocol("turn text exceeds byte limit"));
-                }
-                let first = !self.text.contains_key(&id);
-                let entry = self
-                    .text
-                    .entry(id.clone())
-                    .or_insert_with(|| (kind.into(), String::new()));
-                entry.1.push_str(delta);
-                let item = if kind == "agent_message_chunk" {
-                    json!({"id":id,"type":"agentMessage","text":""})
-                } else {
-                    json!({"id":id,"type":"reasoning","summary":[entry.1],"content":[]})
-                };
-                if first || kind == "agent_thought_chunk" {
-                    events.push(self.item(item, ItemPhase::Started, at_ms));
-                }
-                if kind == "agent_message_chunk" {
-                    events.push(self.event(PlannerEventKind::ReplyDelta {
-                        turn_id: self.context.turn_id.clone(),
-                        item_id: id,
-                        delta: delta.into(),
-                    }));
+                let delta = block.text().to_owned();
+                let open = self.current.as_mut().expect("accepted segment");
+                open.append(block, merge);
+                let id = open.id.clone();
+                self.retained = retained;
+                if channel == OutputChannel::Message {
+                    if !delta.trim().is_empty() {
+                        self.unanswered_tool_failures.clear();
+                    }
+                    // Transitional consumer compatibility, derived solely from the accepted block.
+                    if !delta.is_empty() {
+                        events.push(self.event(PlannerEventKind::ReplyDelta {
+                            turn_id: self.context.turn_id.clone(),
+                            item_id: id,
+                            delta,
+                        }));
+                    }
                 }
             }
             "tool_call" | "tool_call_update" => {
@@ -153,13 +237,8 @@ impl TurnTranslator {
                     // The current turn cannot own a tool it never saw start.
                     return Ok(events);
                 }
-                self.complete_current(&mut events, at_ms);
                 if kind == "tool_call" && self.tools.contains_key(id) {
                     return Err(Error::Protocol("duplicate tool call"));
-                }
-                if kind == "tool_call" {
-                    self.tool_sequence += 1;
-                    self.tool_starts.insert(id.to_owned(), self.tool_sequence);
                 }
                 let mut tool = if kind == "tool_call" {
                     json!({"toolCallId":id,"status":"pending"})
@@ -208,17 +287,41 @@ impl TurnTranslator {
                     Some("failed") => "failed",
                     _ => return Err(Error::Protocol("invalid tool call status")),
                 };
-                let content = tool_content(&tool)?;
-                let item = json!({"id":format!("acp-{}-tool-{id}",self.context.turn_id),"type":"dynamicToolCall","tool":tool["title"],"arguments":tool.get("rawInput").cloned().unwrap_or(Value::Null),"status":status,"result":{"content":content,"structuredContent":tool.get("rawOutput").cloned().unwrap_or(Value::Null)},"native":tool});
+                let blocks = content::tool_blocks(&tool)?;
+                let output = OutputContentV1::new(blocks);
+                let mut overhead = tool.clone();
+                overhead.as_object_mut().unwrap().remove("content");
+                content::bounded_metadata(&overhead)?;
+                let cost = output.blocks.iter().enumerate().fold(
+                    Footprint { text:0, material:content::json_size(&json!({"native":overhead,"outputContent":OutputContentV1::new(Vec::new())})) },
+                    |cost,(index,block)| cost.add(content::footprint(block)).add(Footprint {text:0,material:usize::from(index>0)}),
+                );
+                let retained = self
+                    .retained
+                    .replace(self.tool_costs.get(id).copied().unwrap_or_default(), cost)
+                    .check()?;
+                if self.tools.len() >= 4096 && !self.tools.contains_key(id) {
+                    return Err(Error::Protocol("turn tool count exceeds limit"));
+                }
+                let content = output
+                    .blocks
+                    .iter()
+                    .map(content::tool_compatibility)
+                    .collect::<Vec<_>>();
+                self.complete_current(&mut events, at_ms);
+                if kind == "tool_call" {
+                    self.tool_sequence += 1;
+                    self.tool_starts.insert(id.to_owned(), self.tool_sequence);
+                }
+                self.retained = retained;
+                self.tool_costs.insert(id.to_owned(), cost);
+                let item = json!({"id":format!("acp-{}-tool-{id}",self.context.turn_id),"type":"dynamicToolCall","tool":tool["title"],"arguments":tool.get("rawInput").cloned().unwrap_or(Value::Null),"status":status,"result":{"content":content,"structuredContent":tool.get("rawOutput").cloned().unwrap_or(Value::Null)},"native":tool,"outputContent":output});
                 let phase = if matches!(status, "completed" | "failed") {
                     ItemPhase::Completed
                 } else {
                     ItemPhase::Started
                 };
                 events.push(self.item(item, phase, at_ms));
-                if self.tools.len() >= 4096 && !self.tools.contains_key(id) {
-                    return Err(Error::Protocol("turn tool count exceeds limit"));
-                }
                 if status == "failed"
                     && self
                         .tools
@@ -265,7 +368,7 @@ impl TurnTranslator {
     /// Keep an explicit interruption authoritative; explain a silent failure only when its tool
     /// identity matches a permission this turn declined.
     pub fn finish_after_permission(
-        &self,
+        &mut self,
         reason: StopReason,
         declined: Option<&super::approvals::DeclinedPermission>,
         at_ms: i64,
@@ -284,7 +387,7 @@ impl TurnTranslator {
         self.finish(reason, at_ms)
     }
 
-    pub fn finish(&self, reason: StopReason, at_ms: i64) -> Vec<PlannerEvent> {
+    pub fn finish(&mut self, reason: StopReason, at_ms: i64) -> Vec<PlannerEvent> {
         let (status, error) = match reason {
             StopReason::Cancelled => ("interrupted", Value::Null),
             StopReason::Refusal => ("failed", json!({"message":"ACP agent refused the turn"})),
@@ -303,32 +406,51 @@ impl TurnTranslator {
     }
     /// The agent answered the prompt with a JSON-RPC error: the turn ended, and failed, with the
     /// agent's own text. Only a lost or malformed answer leaves the outcome unknown.
-    pub fn fail(&self, message: &str, at_ms: i64) -> Vec<PlannerEvent> {
+    pub fn fail(&mut self, message: &str, at_ms: i64) -> Vec<PlannerEvent> {
         self.terminal("failed", json!({"message":message}), at_ms)
     }
-    fn terminal(&self, status: &str, error: Value, at_ms: i64) -> Vec<PlannerEvent> {
+    fn terminal(&mut self, status: &str, error: Value, at_ms: i64) -> Vec<PlannerEvent> {
         let mut events = Vec::new();
-        if let Some((_, id)) = &self.current {
-            events.push(self.completed_text(id, at_ms));
+        if self.ended {
+            return events;
         }
+        self.complete_current_partial(&mut events, at_ms, status != "completed");
+        self.ended = true;
         events.push(self.event(PlannerEventKind::TurnCompleted {
             turn: json!({"id":self.context.turn_id,"status":status,"error":error}),
         }));
         events
     }
     fn complete_current(&mut self, events: &mut Vec<PlannerEvent>, at_ms: i64) {
-        if let Some((_, id)) = self.current.take() {
-            events.push(self.completed_text(&id, at_ms));
+        self.complete_current_partial(events, at_ms, false);
+    }
+    fn complete_current_partial(
+        &mut self,
+        events: &mut Vec<PlannerEvent>,
+        at_ms: i64,
+        partial: bool,
+    ) {
+        if let Some(open) = self.current.take() {
+            let mut event = self.item(open.materialize(), ItemPhase::Completed, at_ms);
+            if partial && let PlannerEventKind::Item { params, .. } = &mut event.kind {
+                params["_partial"] = json!(true);
+            }
+            events.push(event);
         }
     }
-    fn completed_text(&self, id: &str, at_ms: i64) -> PlannerEvent {
-        let (kind, text) = &self.text[id];
-        let item = if kind == "agent_message_chunk" {
-            json!({"id":id,"type":"agentMessage","text":text})
-        } else {
-            json!({"id":id,"type":"reasoning","summary":[text],"content":[]})
-        };
-        self.item(item, ItemPhase::Completed, at_ms)
+    /// Best-effort content observation for a caller handling disconnect/protocol failure.
+    /// Does not produce TurnCompleted or decide receipt/END authority.
+    pub fn materialize_partial(&mut self, at_ms: i64) -> Vec<PlannerEvent> {
+        let mut events = Vec::new();
+        if !self.ended {
+            self.complete_current_partial(&mut events, at_ms, true);
+            self.ended = true;
+        }
+        events
+    }
+    /// Flushing never seals or retransmits a complete body.
+    pub fn flush(&self) -> Vec<PlannerEvent> {
+        Vec::new()
     }
     fn item(&self, item: Value, phase: ItemPhase, at_ms: i64) -> PlannerEvent {
         let mut params =
@@ -350,35 +472,4 @@ impl TurnTranslator {
             kind,
         }
     }
-}
-
-fn tool_content(tool: &Value) -> Result<Vec<Value>, Error> {
-    let Some(content) = tool.get("content") else {
-        return Ok(Vec::new());
-    };
-    let content = content
-        .as_array()
-        .ok_or(Error::Protocol("invalid tool content"))?;
-    let mut output = Vec::new();
-    for part in content {
-        match part["type"].as_str() {
-            Some("content") => {
-                if !part["content"].is_object() || !part["content"]["type"].is_string() {return Err(Error::Protocol("invalid tool content block"));}
-                output.push(part["content"].clone());
-            },
-            Some("diff") => {
-                let path=part["path"].as_str().ok_or(Error::Protocol("diff has no path"))?;
-                let new=part["newText"].as_str().ok_or(Error::Protocol("diff has no new text"))?;
-                let old=part["oldText"].as_str().unwrap_or("");
-                output.push(json!({"type":"text","text":format!("{path}\n---\n{old}\n+++\n{new}")}));
-            },
-            Some("terminal") => {
-                let id=part["terminalId"].as_str().ok_or(Error::Protocol("terminal content has no identity"))?;
-                output.push(json!({"type":"text","text":format!("Agent terminal: {id}")}));
-            },
-            Some(_) => output.push(json!({"type":"text","text":"The agent returned an ACP content extension; its native record is retained."})),
-            None => return Err(Error::Protocol("tool content has no kind")),
-        }
-    }
-    Ok(output)
 }

@@ -2,6 +2,7 @@
 pub mod approvals;
 pub mod compaction;
 pub mod configuration;
+pub mod content;
 pub mod diagnostics;
 pub mod grok_compaction;
 pub mod permission;
@@ -30,3 +31,9 @@ mod tool_name_tests;
 
 #[cfg(test)]
 mod tool_patch_tests;
+
+#[cfg(test)]
+mod ordered_output_tests;
+
+#[cfg(test)]
+mod output_contract_tests;
