@@ -136,6 +136,7 @@ it.each([20, 120, 300, 900])('reports production rendering/update boundaries wit
   await page.viewport(1400, 900);
   resetMetrics();
   const start = performance.now();
+  await commands.mockChatPerformanceImage(count === 120);
   const view = mount(count);
   try {
     await page.getByRole('button', { name: /^Conversation Measured chat/ }).click();
@@ -153,8 +154,8 @@ it.each([20, 120, 300, 900])('reports production rendering/update boundaries wit
     await frames();
     expect(loadedRows()).toBe(count);
     if (count === 120) {
-      expect(page.getByText('Image unavailable: Probe image',{exact:true}).elements()).toHaveLength(7);
-      expect(document.querySelectorAll('img[alt="Probe image"]').length).toBe(0);
+      expect(document.querySelectorAll('img[alt="Probe image"]').length).toBe(7);
+      await expect.poll(() => [...document.querySelectorAll<HTMLImageElement>('img[alt="Probe image"]')].filter((image) => image.complete && image.naturalWidth > 0).length).toBeGreaterThan(0);
       expect(page.getByText(/^echo probe-\d+$/).elements()).toHaveLength(12);
     } else expect(document.querySelectorAll('[data-nc-turn="unknown"], [data-nc-turn="agent"]').length).toBe(count + 1);
     const loaded = { durationMs: performance.now() - start, ...snapshot(), domElements: document.querySelectorAll('#root *').length,
@@ -184,6 +185,6 @@ it.each([20, 120, 300, 900])('reports production rendering/update boundaries wit
     expect(changing.parentRenders['composer'] ?? 0).toBe(0);
     expect(changing.parentRenders['navigation'] ?? 0).toBe(0);
     observer.disconnect(); unsubscribe();
-    await commands.recordChatPerformance(count, JSON.stringify({ count, scenario: count === 120 ? 'tools-and-blocked-markdown-images' : 'markdown-history', loaded, steady, changing }));
-  } finally { cleanup(); view.client.clear(); }
+    await commands.recordChatPerformance(count, JSON.stringify({ count, scenario: count === 120 ? 'tools-and-delayed-images' : 'markdown-history', loaded, steady, changing }));
+  } finally { cleanup(); view.client.clear(); await commands.mockChatPerformanceImage(false); }
 }, 30000);

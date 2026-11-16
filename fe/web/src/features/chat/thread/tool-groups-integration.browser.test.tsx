@@ -110,3 +110,25 @@ it.each(['reasoning','mcpToolCall'])('renders ordered typed text, resource links
     await waitFor(()=>expect(screen.queryByRole('img')).toBeNull());
   }
 });
+
+it.each(['agentMessage','reasoning','mcpToolCall'])('parses metadata-separated text once through %s history and partial disclosure', async type => {
+  const {buildTranscript} = await import('../../../../../core/domain/conversation.ts');
+  const row = (method:string, outputContent:unknown) => ({id:1,item_uuid:'split',item_type:type,method,worker_session_id:'s',card_id:'integration',track_id:'w1',thread_id:'thread',turn_id:'turn',created_at_ms:1,turn_error_text:null,
+    params:JSON.stringify({item:{tool:'fixture-tool',text:'legacy must not win',outputContent,...(type === 'mcpToolCall' ? {} : {outputSegment:{channel:type === 'reasoning' ? 'thought':'message',ordinal:0}})}})});
+  const props = {hasPendingMessages:false,canContinue:false,cards:{},stalled:false,conversation};
+  const content = {version:1,blocks:[{type:'text',text:'**hel',fields:{},chunk:{meta:{seq:1}}},{type:'text',text:'lo**',fields:{},chunk:{meta:{seq:2}}}]};
+  const view = render(<ChatThread {...props} turns={buildTranscript([row('item/started',content)])} />);
+  if (type !== 'agentMessage') fireEvent.click(screen.getByRole('button', {name:type === 'reasoning' ? /Thinking/:/Calling/}));
+  const assertBody = () => {
+    const body = screen.getByText('hello');
+    expect(body.tagName).toBe('STRONG');
+    expect(body.parentElement?.textContent).toBe('hello');
+    expect(screen.queryByText('legacy must not win')).toBeNull();
+  };
+  assertBody();
+  view.rerender(<ChatThread {...props} turns={buildTranscript([row('item/completed',content)])} />);
+  assertBody();
+  view.rerender(<ChatThread {...props} turns={buildTranscript([row('item/completed',null)])} />);
+  expect(screen.getByText('Output unavailable')).toBeTruthy();
+  expect(screen.queryByText('legacy must not win')).toBeNull();
+});

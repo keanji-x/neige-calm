@@ -5,7 +5,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { commands, page } from 'vitest/browser';
 
 import '../../../styles/entry.css';
-import type { Conversation } from '../../../../../core/domain/conversation.ts';
+import type { Conversation, ConversationTurn } from '../../../../../core/domain/conversation.ts';
 import { Drawer } from '../../../ui/drawer/public.tsx';
 import { StrictMode } from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -231,7 +231,7 @@ it('shares one conversation pixel lease and lets a deferred image switch and rel
   await waitFor(()=>expect(screen.getAllByRole('img')).toHaveLength(1));
 });
 
-it('makes zero implicit image or GitHub preview requests for legacy and malformed typed output',async()=>{
+it('makes zero implicit image or GitHub preview requests for present and malformed typed output',async()=>{
   await page.viewport(1280,800);
   expect(matchMedia('(hover: hover) and (pointer: fine)').matches).toBe(true);
   const probe='/acp-output-network-probe.png';
@@ -240,7 +240,7 @@ it('makes zero implicit image or GitHub preview requests for legacy and malforme
   const client=new QueryClient({defaultOptions:{queries:{retry:false}}});
   const markdown=`![local](${probe}) ![remote](https://attack.invalid/output.png) ![data](data:image/png;base64,AAAA) ![blob](blob:https://attack.invalid/id) [Issue](https://github.com/keanji-x/neige-calm/issues/3699)`;
   const paint=(output?:ReturnType<typeof decodeOutput>)=><QueryClientProvider client={client}><GitHubPreviewProvider port={{read}}><Reply text={markdown} output={output} imageFiles={{root:'/',files:{rawUrl}}} /></GitHubPreviewProvider></QueryClientProvider>;
-  const view=render(paint());
+  const view=render(paint(decodeOutput({version:1,blocks:[{type:'text',text:markdown,fields:{}}]},'typed')));
   const issue=screen.getByRole('link',{name:'Issue'});issue.focus();await page.getByRole('link',{name:'Issue'}).hover();
   await new Promise(resolve=>setTimeout(resolve,800));
   expect(performance.getEntriesByType('resource').filter(entry=>entry.name.includes('acp-output-network-probe') || entry.name.includes('attack.invalid') || entry.name.includes('/api/github/preview'))).toEqual([]);
@@ -306,4 +306,110 @@ it('keeps its own in-flight decode when the loading image is clicked again',asyn
     release();
     await screen.findByRole('img',{name:'Output image'});
   }finally{release();decode.mockRestore();}
+});
+
+it('loads a local screenshot in streamed and stored replies and fits a narrow conversation', async () => {
+  const screenshot = URL.createObjectURL(new Blob([
+    '<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="800">'
+    + '<rect width="1200" height="800" fill="#eef2f6"/>'
+    + '<rect width="1200" height="70" fill="#25344b"/>'
+    + '<text x="60" y="160" font-size="40">Screenshot preview</text></svg>',
+  ], { type: 'image/svg+xml' }));
+  try {
+    const conversation: Conversation = { provider: 'codex' as const, id: 'c1', trackId: 'w1', title: 'Planner', kind: 'codex', state: 'running', updatedAt: 0 };
+    const imageFiles = { root: '/work/track', files: { rawUrl: () => screenshot } };
+    const reply = (id: string, text: string): ConversationTurn => ({ id, author: 'agent', text, atMs: 1 });
+    const props = { conversation, imageFiles, canContinue: false, cards: {}, stalled: false };
+    const { container, rerender } = render(<div style={{ inlineSize: 320 }}>
+      <ChatThread hasPendingMessages={false} {...props} turns={[reply('live', 'Here is the screenshot.')]} />
+    </div>);
+    const text = 'Here is the screenshot.\n\n![Screenshot](/work/track/screenshots/page.svg)';
+    rerender(<div style={{ inlineSize: 320 }}>
+      <ChatThread hasPendingMessages={false} {...props} turns={[reply('live', text)]} />
+    </div>);
+    await waitFor(() => expect(container.querySelector<HTMLImageElement>('img')?.naturalWidth).toBe(1200));
+    const image = screen.getByRole('img', { name: 'Screenshot' });
+    expect(image.getBoundingClientRect().width).toBeGreaterThan(0);
+    expect(image.getBoundingClientRect().width).toBeLessThanOrEqual(320);
+    expect(container.firstElementChild?.scrollWidth).toBeLessThanOrEqual(320);
+    rerender(<div style={{ inlineSize: 320 }}>
+      <ChatThread hasPendingMessages={false} {...props} turns={[reply('stored', text)]} />
+    </div>);
+    await waitFor(() => expect(container.querySelector<HTMLImageElement>('img')?.naturalWidth).toBe(1200));
+  } finally {
+    URL.revokeObjectURL(screenshot);
+  }
+});
+
+
+it('opens a reply image in the Lightbox on click, dismisses only the Lightbox on Escape inside a Drawer, and leaves linked images as links', async () => {
+  const screenshot = URL.createObjectURL(new Blob([
+    '<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="800">'
+    + '<rect width="1200" height="800" fill="#eef2f6"/>'
+    + '<text x="60" y="160" font-size="40">Architecture diagram</text></svg>',
+  ], { type: 'image/svg+xml' }));
+  const onCloseDrawer = vi.fn();
+  try {
+    const imageFiles = { root: '/work/track', files: { rawUrl: () => screenshot } };
+    render(
+      <Drawer open title="Planner" onClose={onCloseDrawer}>
+        <Reply
+          text={'![Architecture diagram](/work/track/diagram.svg)\n\n![](/work/track/unnamed.svg)\n\n[![Linked badge](/work/track/diagram.svg)](https://example.com/docs)'}
+          imageFiles={imageFiles}
+        />
+      </Drawer>,
+    );
+
+    const linked = screen.getByRole('link', { name: 'Linked badge' });
+    expect(linked.getAttribute('href')).toBe('https://example.com/docs');
+    expect(linked.querySelector('button')).toBeNull();
+    expect(document.querySelector('dialog')).toBeNull();
+
+    const unnamedTrigger = screen.getByRole('button', { name: 'Open Thumbnail' });
+    expect(unnamedTrigger.getAttribute('aria-haspopup')).toBe('dialog');
+
+    const trigger = screen.getByRole('button', { name: 'Architecture diagram' });
+    expect(trigger.getAttribute('aria-label')).toBeNull();
+    expect(trigger.getAttribute('role')).toBeNull();
+    expect(trigger.getAttribute('tabindex')).toBeNull();
+    trigger.focus();
+    fireEvent.click(trigger);
+
+    const dialog = await screen.findByRole('dialog', { name: 'Architecture diagram' });
+    expect(within(dialog).getByRole('img', { name: 'Architecture diagram' }).getAttribute('src')).toBe(screenshot);
+    expect(within(dialog).getByRole('button', { name: 'Zoom' }).getAttribute('aria-pressed')).toBe('false');
+
+    fireEvent.keyDown(document, { key: 'Escape', bubbles: true, cancelable: true });
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Architecture diagram' })).toBeNull());
+    expect(onCloseDrawer).not.toHaveBeenCalled();
+    expect(document.activeElement).toBe(trigger);
+  } finally {
+    URL.revokeObjectURL(screenshot);
+  }
+});
+
+
+it('keeps continuous text runs and repeated images in their original presentation order', async () => {
+  const raster = OUTPUT_RASTERS[0];
+  const output = decodeOutput({version:1,blocks:[
+    {type:'text',text:'**hel',fields:{},chunk:{meta:{seq:1}}},
+    {type:'text',text:'lo**',fields:{},chunk:{meta:{seq:2}}},
+    {type:'image',mimeType:raster.mime,data:raster.data,fields:{name:'first'}},
+    {type:'text',text:'he',fields:{},chunk:{meta:{seq:3}}},
+    {type:'text',text:'llo',fields:{},chunk:{meta:{seq:4}}},
+    {type:'image',mimeType:raster.mime,data:raster.data,fields:{name:'second'}},
+    {type:'text',text:'tail',fields:{}},
+  ]}, 'ordered-runs');
+  const {container} = render(<Reply text="compatibility" imageFiles={null} output={output} />);
+  await screen.findByRole('img', {name:'first'});
+  const paragraphs = [...container.querySelectorAll('p')];
+  expect(paragraphs.map(element => element.textContent)).toEqual(['hello', 'hello', 'tail']);
+  expect(paragraphs[0].querySelector('strong')?.textContent).toBe('hello');
+  const order = [paragraphs[0], screen.getByRole('button', {name:'first'}), paragraphs[1], screen.getByRole('button', {name:'Load image · deferred'}), paragraphs[2]];
+  for (let index = 1; index < order.length; index++) {
+    expect(order[index - 1].compareDocumentPosition(order[index]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  }
+  fireEvent.click(screen.getByRole('button', {name:'Load image · deferred'}));
+  await screen.findByRole('img', {name:'second'});
+  expect(container.querySelectorAll('p')).toHaveLength(3);
 });

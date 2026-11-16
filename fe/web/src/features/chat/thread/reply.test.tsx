@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
 
 import { trackWorkspaceRawFileUrl } from '../../../../../core/domain/fs.ts';
@@ -10,19 +10,72 @@ function imageFiles(root = '/work/track', trackId = 'track-1'): ReplyImageFiles 
   return { root, files: { rawUrl: (path) => trackWorkspaceRawFileUrl(trackId, path) } };
 }
 
-it.each(['https://attack.invalid/image.png','//attack.invalid/image.png','screenshots/page.png','/work/track/file.png','file:///work/track/file.png','data:image/png;base64,AAAA','blob:https://attack.invalid/id'])('does not read Markdown image %s', destination=>{
-  const rawUrl=vi.fn(()=>'/forbidden');
-  render(<Reply imageFiles={{root:'/work/track',files:{rawUrl}}} text={`![Output](${destination})`} />);
-  expect(screen.queryByRole('img')).toBeNull();
-  expect(screen.getByText('Image unavailable: Output')).toBeTruthy();
-  expect(rawUrl).not.toHaveBeenCalled();
+it.each([
+  ['screenshots/page.png', 'screenshots%2Fpage.png'],
+  ['./screenshots/page.png', 'screenshots%2Fpage.png'],
+  ['/work/track/screenshots/page.png', 'screenshots%2Fpage.png'],
+  ['file:///work/track/screenshots/page.png', 'screenshots%2Fpage.png'],
+  ['/work/track/screenshots/%E6%88%AA%E5%9B%BE%20one.png', 'screenshots%2F%E6%88%AA%E5%9B%BE%20one.png'],
+])('resolves local image destination %s through the Track file port', (destination, path) => {
+  render(<Reply text={`![Screenshot](${destination})`} imageFiles={imageFiles()} />);
+  expect(screen.getByRole('img', { name: 'Screenshot' }).getAttribute('src'))
+    .toBe(`/api/tracks/track-1/workspace/readfile-raw?path=${path}`);
 });
-it('allows only explicit http(s) links and never delegates output links to workspace navigation',()=>{
-  const renderLink=vi.fn();
-  render(<Reply imageFiles={imageFiles()} renderLink={renderLink} text={'[Local](/file) [Remote](https://example.com)'} />);
-  expect(screen.getAllByRole('link')).toHaveLength(1);
-  expect(screen.getByRole('link').getAttribute('href')).toBe('https://example.com');
-  expect(renderLink).not.toHaveBeenCalled();
+
+it.each([
+  '../outside.png', '/work/other/secret.png', '/work/track-other/secret.png',
+  'file:///etc/secret.png', '%2e%2e/outside.png', 'ftp://example.com/image.png',
+])('does not request a local image outside the workspace: %s', (destination) => {
+  const rawUrl = vi.fn(() => '/must-not-be-requested');
+  render(<Reply text={`![Screenshot](${destination})`} imageFiles={{ root: '/work/track', files: { rawUrl } }} />);
+  expect(rawUrl).not.toHaveBeenCalled();
+  expect(screen.queryByRole('img')).toBeNull();
+  expect(screen.getByText('Image unavailable: Screenshot')).toBeTruthy();
+});
+
+it('waits for the workspace instead of loading a browser-relative image', () => {
+  const text = '![Screenshot](screenshots/page.png)';
+  const { rerender } = render(<Reply text={text} imageFiles={null} />);
+  expect(screen.queryByRole('img')).toBeNull();
+  rerender(<Reply text={text} imageFiles={imageFiles()} />);
+  expect(screen.getByRole('img', { name: 'Screenshot' }).getAttribute('src'))
+    .toBe('/api/tracks/track-1/workspace/readfile-raw?path=screenshots%2Fpage.png');
+});
+
+it('keeps network images and leaves code fences and ordinary links untouched', () => {
+  const { container } = render(<Reply imageFiles={imageFiles()} text={
+    '![Remote](https://example.com/image.png)\n\n[Download](screenshots/page.png)\n\n'
+    + '```md\n![Example](screenshots/page.png)\n```'
+  } />);
+  expect(screen.getByRole('img', { name: 'Remote' }).getAttribute('src')).toBe('https://example.com/image.png');
+  expect(screen.getByRole('link', { name: 'Download' }).getAttribute('href')).toBe('screenshots/page.png');
+  expect(container.querySelector('pre')?.textContent).toContain('![Example](screenshots/page.png)');
+  expect(screen.getAllByRole('img')).toHaveLength(1);
+});
+
+it('shows a failed image as unavailable and recovers when the streamed destination changes', () => {
+  const files = imageFiles();
+  const { rerender } = render(<Reply text="![Screenshot](missing.png)" imageFiles={files} />);
+  fireEvent.error(screen.getByRole('img', { name: 'Screenshot' }));
+  expect(screen.queryByRole('img')).toBeNull();
+  expect(screen.getByText('Image unavailable: Screenshot')).toBeTruthy();
+  rerender(<Reply text="![Screenshot](screenshots/page.png)" imageFiles={files} />);
+  expect(screen.getByRole('img', { name: 'Screenshot' }).getAttribute('src'))
+    .toBe('/api/tracks/track-1/workspace/readfile-raw?path=screenshots%2Fpage.png');
+});
+
+it('reuses a stored reply through unrelated parent updates and still accepts changed content', () => {
+  const rawUrl = vi.fn(() => '/bound-image.png');
+  const files: ReplyImageFiles = { root: '/work/track', files: { rawUrl } };
+  const text = '![Screenshot](image.png)';
+  const { rerender } = render(<div><Reply text={text} imageFiles={files} /><span>Parent one</span></div>);
+  const reads = rawUrl.mock.calls.length;
+  expect(reads).toBeGreaterThan(0);
+  rerender(<div><Reply text={text} imageFiles={files} /><span>Parent two</span></div>);
+  expect(rawUrl).toHaveBeenCalledTimes(reads);
+  rerender(<div><Reply text={`${text}\n\nAdded live words.`} imageFiles={files} /><span>Parent three</span></div>);
+  expect(screen.getByText('Added live words.')).toBeTruthy();
+  expect(rawUrl.mock.calls.length).toBeGreaterThan(reads);
 });
 
 it('renders inline and display formulas in replies while keeping code literal', () => {
@@ -45,8 +98,8 @@ it('keeps currency text and still renders a later formula after emoji', () => {
 });
 
 it('preserves currency in shortcut reference labels and their destinations', () => {
-  render(<Reply imageFiles={null} text={'[cost $5 and $10]\n\n[cost $5 and $10]: https://example.com/details'} />);
-  expect(screen.getByRole('link', { name: 'cost $5 and $10' }).getAttribute('href')).toBe('https://example.com/details');
+  render(<Reply imageFiles={null} text={'[cost $5 and $10]\n\n[cost $5 and $10]: /details'} />);
+  expect(screen.getByRole('link', { name: 'cost $5 and $10' }).getAttribute('href')).toBe('/details');
 });
 
 it('keeps raw HTML literal and refuses dangerous links', () => {
@@ -69,11 +122,11 @@ it('does not turn untrusted TeX into links and keeps invalid expressions readabl
 
 
 it.each([
-  '[item $5] costs $10\n\n[item $5]: https://example.com/url',
-  '[item $5]: https://example.com/url "$10"\n\nSee [item $5]',
+  '[item $5] costs $10\n\n[item $5]: /url',
+  '[item $5]: /url "$10"\n\nSee [item $5]',
 ])('keeps currency reference links usable after math masking: %s', (text) => {
   render(<Reply imageFiles={null} text={text} />);
-  expect(screen.getByRole('link', { name: 'item $5' }).getAttribute('href')).toBe('https://example.com/url');
+  expect(screen.getByRole('link', { name: 'item $5' }).getAttribute('href')).toBe('/url');
 });
 
 
@@ -83,18 +136,18 @@ it.each([
   '[shown][item $5] with',
   '[item $5][] with',
 ])('renders currency reference links alongside real math: %s', (prefix) => {
-  const { container } = render(<Reply imageFiles={null} text={`${prefix} $x$\n\nSee [item $5]\n\n[item $5]: https://example.com/url`} />);
+  const { container } = render(<Reply imageFiles={null} text={`${prefix} $x$\n\nSee [item $5]\n\n[item $5]: /url`} />);
   expect(screen.getAllByRole('link')).toHaveLength(2);
-  for (const link of screen.getAllByRole('link')) expect(link.getAttribute('href')).toBe('https://example.com/url');
+  for (const link of screen.getAllByRole('link')) expect(link.getAttribute('href')).toBe('/url');
   expect(container.querySelectorAll('math')).toHaveLength(1);
   expect(container.querySelector('annotation')?.textContent).toBe('x');
   expect(container.textContent).not.toContain('£');
 });
 
 it('renders a currency reference image alongside real math', () => {
-  const { container } = render(<Reply imageFiles={imageFiles('/')} text={'![item $5] costs $10 and $x$\n\n[item $5]: https://example.com/url'} />);
-  expect(screen.queryByRole('img')).toBeNull();
-  expect(screen.getByText('Image unavailable: item $5')).toBeTruthy();
+  const { container } = render(<Reply imageFiles={imageFiles('/')} text={'![item $5] costs $10 and $x$\n\n[item $5]: /url'} />);
+  expect(screen.getByRole('img', { name: 'item $5' }).getAttribute('src'))
+    .toBe('/api/tracks/track-1/workspace/readfile-raw?path=url');
   expect(container.querySelectorAll('math')).toHaveLength(1);
   expect(container.querySelector('annotation')?.textContent).toBe('x');
   expect(container.textContent).toContain('costs $10 and');
@@ -103,21 +156,21 @@ it('renders a currency reference image alongside real math', () => {
 
 
 it.each([
-  ['[item \\$5] with $x$\n\n[item \\$5]: https://example.com/url', 'link', 'item $5', true],
-  ['![item \\$5] with $x$\n\n[item \\$5]: https://example.com/url', 'image', 'item $5', true],
-  ['[shown \\$5][ref]\n\n[ref]: https://example.com/url', 'link', 'shown $5', false],
-  ['[shown \\$5][item \\$5] with $x$\n\n[item \\$5]: https://example.com/url', 'link', 'shown $5', true],
-  ['[item \\$5][] with $x$\n\n[item \\$5]: https://example.com/url', 'link', 'item $5', true],
-  ['[item \\[1\\] $5] with $x$\n\n[item \\[1\\] $5]: https://example.com/url', 'link', 'item [1] $5', true],
+  ['[item \\$5] with $x$\n\n[item \\$5]: /url', 'link', 'item $5', true],
+  ['![item \\$5] with $x$\n\n[item \\$5]: /url', 'image', 'item $5', true],
+  ['[shown \\$5][ref]\n\n[ref]: /url', 'link', 'shown $5', false],
+  ['[shown \\$5][item \\$5] with $x$\n\n[item \\$5]: /url', 'link', 'shown $5', true],
+  ['[item \\$5][] with $x$\n\n[item \\$5]: /url', 'link', 'item $5', true],
+  ['[item \\[1\\] $5] with $x$\n\n[item \\[1\\] $5]: /url', 'link', 'item [1] $5', true],
 ] as const)('renders escaped currency references intact: %s', (text, type, label, hasMath) => {
   const { container } = render(<Reply imageFiles={imageFiles('/')} text={text} />);
-  if (type === 'link') expect(screen.getByRole('link', { name: label }).getAttribute('href')).toBe('https://example.com/url');
-  else expect(screen.getByText(`Image unavailable: ${label}`)).toBeTruthy();
+  if (type === 'link') expect(screen.getByRole('link', { name: label }).getAttribute('href')).toBe('/url');
+  else expect(screen.getByRole('img', { name: label }).getAttribute('src'))
+    .toBe('/api/tracks/track-1/workspace/readfile-raw?path=url');
   expect(container.querySelectorAll('math')).toHaveLength(hasMath ? 1 : 0);
   if (hasMath) expect(container.querySelector('annotation')?.textContent).toBe('x');
   expect(container.textContent).not.toContain('£');
 });
-
 it('shows unsupported audio, blob, terminal and unknown output without creating media or execution elements',async()=>{
   const {decodeOutput}=await import('../../../../../core/domain/conversation-output.ts');
   const output=decodeOutput({version:1,blocks:[
@@ -136,4 +189,63 @@ it('shows unsupported audio, blob, terminal and unknown output without creating 
   expect(container.querySelector('audio, video, img, iframe, a')).toBeNull();
   expect(container.textContent).not.toContain('AAA=');
   expect(container.textContent).not.toContain('compatibility must not win');
+});
+
+it.each([['**hel', 'lo**', 'strong'], ['he', 'llo', 'p']])('parses consecutive text chunks together: %s + %s', async (first, second, tag) => {
+  const { decodeOutput } = await import('../../../../../core/domain/conversation-output.ts');
+  const output = decodeOutput({version:1,blocks:[
+    {type:'text',text:first,fields:{},chunk:{meta:{seq:1}}},
+    {type:'text',text:second,fields:{},chunk:{meta:{seq:2}}},
+  ]}, 'metadata');
+  const before = JSON.stringify(output);
+  const { container } = render(<Reply text="compatibility" output={output} imageFiles={null} />);
+  expect((tag === 'strong' ? container.querySelector('strong') : container.querySelector('p'))?.textContent).toBe('hello');
+  expect(container.querySelectorAll('p')).toHaveLength(1);
+  expect(JSON.stringify(output)).toBe(before);
+});
+
+it.each(['https://attack.invalid/image.png','//attack.invalid/image.png','screenshots/page.png','/work/track/file.png','file:///work/track/file.png','data:image/png;base64,AAAA','blob:https://attack.invalid/id'])('does not read typed Markdown image %s', async destination => {
+  const { decodeOutput } = await import('../../../../../core/domain/conversation-output.ts');
+  const rawUrl = vi.fn(() => '/forbidden');
+  const text = `![Output](${destination})`;
+  const output = decodeOutput({version:1,blocks:[{type:'text',text,fields:{}}]}, 'typed');
+  render(<Reply imageFiles={{root:'/work/track',files:{rawUrl}}} text={text} output={output} />);
+  expect(screen.queryByRole('img')).toBeNull();
+  expect(screen.getByText('Image unavailable: Output')).toBeTruthy();
+  expect(rawUrl).not.toHaveBeenCalled();
+});
+
+it('never delegates typed links to the legacy owner', async () => {
+  const { decodeOutput } = await import('../../../../../core/domain/conversation-output.ts');
+  const renderLink = vi.fn();
+  const text = '[Local](/file) [Remote](https://example.com)';
+  render(<Reply imageFiles={imageFiles()} renderLink={renderLink} text={text}
+    output={decodeOutput({version:1,blocks:[{type:'text',text,fields:{}}]}, 'typed')} />);
+  expect(screen.getAllByRole('link')).toHaveLength(1);
+  expect(screen.getByRole('link').getAttribute('href')).toBe('https://example.com');
+  expect(renderLink).not.toHaveBeenCalled();
+});
+
+it.each([null, {version:2,blocks:[]}, {version:1,blocks:[{type:'text'}]}])('never falls back from a present invalid envelope %j', async value => {
+  const { decodeOutput } = await import('../../../../../core/domain/conversation-output.ts');
+  const rawUrl = vi.fn(), renderLink = vi.fn();
+  render(<Reply text="![local](screenshots/page.png) [file](./notes.md)" output={decodeOutput(value, 'bad')}
+    imageFiles={{root:'/work/track',files:{rawUrl}}} renderLink={renderLink} />);
+  expect(screen.getByText('Output unavailable')).toBeTruthy();
+  expect(screen.queryByRole('img')).toBeNull();
+  expect(rawUrl).not.toHaveBeenCalled();
+  expect(renderLink).not.toHaveBeenCalled();
+});
+
+it.each([
+  {type:'resource_link',uri:'https://example.com',name:'resource',fields:{}},
+  {type:'resource',resource:{uri:'urn:text',text:'resource body',fields:{}},fields:{}},
+  {type:'tool_diff',path:'file',newText:'diff body',fields:{}},
+])('ends a continuous text run at $type', async block => {
+  const { decodeOutput } = await import('../../../../../core/domain/conversation-output.ts');
+  const output = decodeOutput({version:1,blocks:[{type:'text',text:'**hel',fields:{}},block,{type:'text',text:'lo**',fields:{}}]}, 'boundary');
+  const {container} = render(<Reply text="" imageFiles={null} output={output} />);
+  expect(container.querySelector('strong')).toBeNull();
+  expect(screen.getByText('**hel')).toBeTruthy();
+  expect(screen.getByText('lo**')).toBeTruthy();
 });

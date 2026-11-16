@@ -450,9 +450,10 @@ it('shows the current canonical END outside pagination and removes it for the ne
 
 it('consumes native typed live at its Started position and fences older revisions, completion and erase',async()=>{
   await page.viewport(1280,800);
+  const chunks = (text:string) => [{type:'text',text:text.slice(0,3),fields:{},chunk:{meta:{seq:1}}},{type:'text',text:text.slice(3),fields:{},chunk:{meta:{seq:2}}}];
   const native=(method:string,text:string):ConversationDisplayItem=>({cursor:cursor(2),source:{kind:'native',item:{id:method==='item/started' ? 10:20,
     worker_session_id:'original-retained',card_id:'daily-planner',track_id:'daily',thread_id:'typed-thread',turn_id:'typed-turn',item_uuid:'typed-item',item_type:'agentMessage',method,created_at_ms:2,turn_error_text:null,
-    params:JSON.stringify({item:{text:'compatibility must not replace typed',outputContent:{version:1,blocks:[{type:'text',text,fields:{}}]},outputSegment:{channel:'message',ordinal:0}}}),
+    params:JSON.stringify({item:{text:'compatibility must not replace typed',outputContent:{version:1,blocks:chunks(text)},outputSegment:{channel:'message',ordinal:0}}}),
   }}});
   let rows=[human('before','jian','Jian',1,'Before anchor'),human('after','jian','Jian',3,'After anchor')];
   let revision='9007199254740993',body='Typed live body';
@@ -460,7 +461,7 @@ it('consumes native typed live at its Started position and fences older revision
   const ok=(value:unknown):ApiTransportResponse=>({status:200,statusText:'OK',body:value});
   const f=renderDailyFixture({identity,initial:'/track/daily?panel=conversations',reply:request=>{
     if(request.path.includes('/harness/items?contract=conversation_v1'))return ok({contract:'conversation_v1',source:'presentation',items:rows,next_cursor:null});
-    if(request.path.includes('/harness/live?contract=conversation_v1'))return ok({contract:'conversation_v1',turn:{thread_id:'typed-thread',turn_id:'typed-turn',items:[{item_id:'typed-item',text:'compatibility must not replace typed',output:{revision,segment:{channel:'message',ordinal:'0'},content:{version:1,blocks:[{type:'text',text:body,fields:{}}]}}}]}});
+    if(request.path.includes('/harness/live?contract=conversation_v1'))return ok({contract:'conversation_v1',turn:{thread_id:'typed-thread',turn_id:'typed-turn',items:[{item_id:'typed-item',text:'compatibility must not replace typed',output:{revision,segment:{channel:'message',ordinal:'0'},content:{version:1,blocks:chunks(body)}}}]}});
     if(request.path.includes('/planner/run?contract=conversation_v1'))return ok({card_id:'daily-planner',worker_session_id:'original-retained',phase:runningPhase,model:null,reasoning_effort:null,permission_mode:'never',blocked_reason:null,pending:[],pending_overflow:0,recovery:null,manual_compact_supported:false,attachments_supported:false,compact_outcome:null,context_usage_invalidated:false,running_turn:runningPhase==='turn_running' ? {turn_id:'typed-turn',elapsed_ms:1}:null,token_usage:null,input_contract:'canonical',history_replacement_supported:false,terminal_outcome:null,terminal_timeout:null,runtime_state:runningPhase==='turn_running' ? 'running':'idle',pending_inputs:[],active_input:null,native_turn_id:'typed-turn'});
     return undefined;
   }});
