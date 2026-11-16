@@ -698,7 +698,7 @@ async fn c4_acp_planner_switch_next_turns_use_engine_and_inherit_permission() {
              JOIN acp_resident_workspace_bindings b ON b.execution_id=e.execution_id
              WHERE b.worker_session_id=?",
         )
-        .bind(&replacement.new_worker.id)
+        .bind(replacement.new_worker.id.as_str())
         .fetch_one(fixture.repo.pool())
         .await
         .unwrap();

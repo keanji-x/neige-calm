@@ -157,7 +157,7 @@ pub async fn acp_submission_recover_turn(
                     return Ok(None);
                 };
                 if !matches!(receipt.state, AcpSubmissionState::Completed) {
-                    finish_tx(&mut tx, worker, &receipt.client_id, None).await?;
+                    acp_submission_finish_tx(&mut tx, worker, &receipt.client_id, None).await?;
                     receipt.state = AcpSubmissionState::Unknown;
                     receipt.outcome_json = None;
                 }
