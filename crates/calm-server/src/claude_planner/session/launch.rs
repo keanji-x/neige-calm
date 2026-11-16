@@ -34,7 +34,7 @@ impl ClaudePlannerSession {
                 CalmError::Conflict("claude planner harness is not installed yet".into()).into(),
             );
         };
-        let (start, row_bound, token, prior_total_tokens, settle_after_stop) = {
+        let (start, row_bound, prior_total_tokens, settle_after_stop) = {
             let state = shared.state();
             if state.shutting_down {
                 return Err(
@@ -49,7 +49,6 @@ impl ClaudePlannerSession {
             (
                 state.start,
                 state.row_bound,
-                state.mcp_token.clone(),
                 state.total_tokens,
                 state.settle_after_stop,
             )
@@ -141,13 +140,7 @@ impl ClaudePlannerSession {
         if params.seals.is_sealed(thread) {
             return Err(sealed(thread).into());
         }
-        // A revocation under a live harness (e.g. one an aborted deletion's recovery could not
-        // replace, §5.1 item 4) nulls the row's hash; the next spawn must not carry a credential that
-        // no longer authenticates.
-        let token = match token {
-            Some(token) if self.row_hash_present().await? => token,
-            _ => self.mint_mcp_token().await?,
-        };
+        let token = self.mint_mcp_token().await?;
         let mut driver_slot = shared.driver.lock().await;
 
         let prepared = async {

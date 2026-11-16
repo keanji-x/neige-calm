@@ -82,7 +82,6 @@ struct State {
     identity_hold: Option<IdentityHold>,
     settle_after_stop: Duration,
     total_tokens: i64,
-    mcp_token: Option<String>,
     shutting_down: bool,
     active: Option<ActiveTurn>,
 }
@@ -288,7 +287,6 @@ impl ClaudePlannerSession {
             identity_hold,
             settle_after_stop: SETTLE_AFTER_STOP,
             total_tokens: params.prior_total_tokens,
-            mcp_token: None,
             shutting_down: false,
             active: None,
         };
@@ -405,43 +403,18 @@ impl ClaudePlannerSession {
         &self.shared.params.track_id
     }
 
-    /// Whether the worker-session row still carries an MCP hash.
-    async fn row_hash_present(&self) -> Result<bool> {
-        let params = &self.shared.params;
-        let row = params
-            .repo
-            .session_get(&WorkerSessionId(params.worker_session_id.clone()))
-            .await?
-            .ok_or_else(|| {
-                CalmError::NotFound(format!("worker session {}", params.worker_session_id))
-            })?;
-        Ok(row.mcp_token_hash.is_some())
-    }
-
-    /// The harness's first-turn credential (§5.1 item 2): card row and session hash in one
-    /// transaction, the session write guarded on the row still being active. Runs under the
-    /// issuance lock, after the install and shutdown checks, so it happens at most once per harness
-    /// and never after a shutdown (again only if a revocation nulled the row's hash); the plaintext stays
-    /// in this session.
+    /// Resolve every launch against the DB through the process-lifetime managed store.
     async fn mint_mcp_token(&self) -> Result<String> {
         let params = &self.shared.params;
-        let card_id = params.card_id.clone();
-        let worker_session_id = params.worker_session_id.clone();
-        let master_key = params.host.mcp_session_key.clone();
-        let token = crate::db::write_in_tx_typed(params.repo.as_ref(), move |tx| {
-            Box::pin(async move {
-                crate::mcp_server::wiring::ensure_active_managed_planner_token(
-                    tx,
-                    &card_id,
-                    &worker_session_id,
-                    &master_key,
-                )
-                .await
-            })
-        })
-        .await?;
-        self.shared.state().mcp_token = Some(token.clone());
-        Ok(token)
+        params
+            .host
+            .managed_tokens
+            .ensure(
+                params.repo.as_ref(),
+                &crate::model::CardId(params.card_id.clone()),
+                &WorkerSessionId(params.worker_session_id.clone()),
+            )
+            .await
     }
 
     /// Record `Interrupted`, ask the CLI to interrupt, and arm the stop timer; a turn that is not

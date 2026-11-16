@@ -6,7 +6,9 @@ async fn sleep_and_wake(reopen: bool) {
     let root = Root::new("exit");
     let stack = Stack::boot(&root).await;
     let (track, card) = stack.create_claude_track().await;
-    let (outcome, _) = stack.run_turn(&root, &card, "exit", "before sleep").await;
+    let (outcome, token) = stack.run_turn(&root, &card, "exit", "before sleep").await;
+    let (mut reader, mut writer) = crate::support::mcp::connect(stack.mcp_socket()).await;
+    crate::support::mcp::handshake(&mut reader, &mut writer, &token).await;
     assert_eq!(outcome["status"], "completed");
     let runtime = stack.runtime(&card).await;
     let (status, body) = stack
@@ -36,7 +38,20 @@ async fn sleep_and_wake(reopen: bool) {
         assert_eq!(status, StatusCode::OK, "{body}");
         assert!(stack.state.harness.get(&runtime.id).is_some());
     }
-    let (outcome, _) = stack.run_turn(&root, &card, "exit", "after sleep").await;
+    let (outcome, resumed_token) = stack.run_turn(&root, &card, "exit", "after sleep").await;
+    assert_eq!(
+        token, resumed_token,
+        "hibernation preserves an unrevoked credential"
+    );
+    crate::support::mcp::send_frame(
+        &mut writer,
+        json!({
+            "jsonrpc":"2.0", "id":2, "method":"tools/list", "params":{}
+        }),
+    )
+    .await;
+    let reply = crate::support::mcp::recv_frame(&mut reader).await;
+    assert!(reply.get("result").is_some(), "{reply}");
     assert_eq!(outcome["status"], "completed");
     let awakened = stack.runtime(&card).await;
     assert_eq!(awakened.id, runtime.id);

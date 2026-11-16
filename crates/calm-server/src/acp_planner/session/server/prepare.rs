@@ -116,7 +116,7 @@ pub(super) async fn prepare(
         let mut attached_native = None;
         // The durable worker owns this attachment across reconnects and shared-process
         // generations. Keep the suffix length (and therefore the shim's tool-name budget)
-        // unchanged; active credentials are re-derived until explicitly revoked.
+        // unchanged; active credentials are reused until explicitly revoked.
         let key = format!(
             "{}-{}",
             registration.profile.mcp_server_key(),

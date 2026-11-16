@@ -9,12 +9,10 @@ pub(crate) use compensation::{
 use sqlx::{Sqlite, Transaction};
 
 use crate::db::sqlite::{
-    card_mcp_token_set_tx, session_active_mcp_token_state_tx,
-    session_mcp_token_set_epoch_if_active_tx, session_mcp_token_set_if_active_tx,
-    session_mcp_token_set_tx,
+    card_mcp_token_set_tx, session_mcp_token_set_if_active_tx, session_mcp_token_set_tx,
 };
 use crate::error::{CalmError, Result};
-use crate::mcp_server::auth::{CardMcpToken, SessionMcpKey, derive_session_mcp_token, hash_token};
+use crate::mcp_server::auth::{CardMcpToken, hash_token};
 use crate::model::CardRole;
 
 /// The key every provider registers the kernel MCP shim under: Codex `[mcp_servers.neige]`, Claude
@@ -161,70 +159,28 @@ pub async fn mint_and_persist_card_token(
     Ok(raw)
 }
 
-/// Ensure an active managed Planner/Assistant session has a valid MCP token and
-/// return its plaintext. When `worker_sessions.mcp_token_hash` is already
-/// present and matches the current `mcp_token_epoch`, the same token is
-/// deterministically re-derived without overwriting the hash (so existing
-/// stdio-shim connections stay valid across harness re-attaches without revocation). When the hash
-/// is `NULL` (initial mint or after revocation), the epoch advances and a fresh
-/// token hash is persisted.
-pub async fn ensure_active_managed_planner_token(
-    tx: &mut Transaction<'_, Sqlite>,
-    card_id: &str,
-    worker_session_id: &str,
-    master_key: &SessionMcpKey,
-) -> Result<String> {
-    let current: Option<String> = sqlx::query_scalar("SELECT session_id FROM cards WHERE id=?1")
-        .bind(card_id)
-        .fetch_optional(&mut **tx)
-        .await?
-        .flatten();
-    if current.as_deref() != Some(worker_session_id) {
-        return Err(CalmError::Conflict(
-            "Managed credential carrier changed".into(),
-        ));
-    }
-    let Some((stored_hash, epoch)) =
-        session_active_mcp_token_state_tx(tx, worker_session_id).await?
-    else {
-        return Err(CalmError::Conflict(format!(
-            "worker session {worker_session_id} is no longer active"
-        )));
-    };
-    if let Some(stored_hash) = stored_hash {
-        let candidate = derive_session_mcp_token(master_key, worker_session_id, epoch);
-        if hash_token(&candidate) == stored_hash {
-            return Ok(candidate);
-        }
-    }
-    let next_epoch = epoch + 1;
-    let raw = derive_session_mcp_token(master_key, worker_session_id, next_epoch);
-    let hashed = hash_token(&raw);
-    persist_card_mcp_token_hash(tx, card_id, &hashed).await?;
-    session_mcp_token_set_epoch_if_active_tx(tx, worker_session_id, &hashed, next_epoch).await?;
-    Ok(raw)
-}
-
 /// Explicit rotation helper retained for integration tests that exercise
 /// out-of-band credential rotation.
-#[allow(dead_code)]
+#[cfg(any(test, feature = "fixtures"))]
 pub async fn mint_and_persist_managed_planner_token(
     tx: &mut Transaction<'_, Sqlite>,
     card_id: &str,
     worker_session_id: &str,
 ) -> Result<String> {
-    let current: Option<String> = sqlx::query_scalar("SELECT session_id FROM cards WHERE id=?1")
-        .bind(card_id)
-        .fetch_optional(&mut **tx)
-        .await?
-        .flatten();
-    if current.as_deref() != Some(worker_session_id) {
+    if super::managed_tokens::carrier_hash(
+        tx,
+        &crate::model::CardId(card_id.to_owned()),
+        &calm_types::worker::WorkerSessionId(worker_session_id.to_owned()),
+    )
+    .await?
+    .is_none()
+    {
         return Err(CalmError::Conflict(
             "Managed credential carrier changed".into(),
         ));
     }
     let (raw, hashed) = set_card_mcp_token(tx, card_id).await?;
-    session_mcp_token_set_if_active_tx(tx, worker_session_id, &hashed).await?;
+    crate::db::sqlite::session_mcp_token_set_if_active_tx(tx, worker_session_id, &hashed).await?;
     Ok(raw)
 }
 
@@ -458,187 +414,5 @@ mod tests {
             })
             .await
             .expect("independent write operation")
-    }
-
-    #[tokio::test]
-    async fn ensure_active_managed_planner_token_reuses_until_revoked() {
-        let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
-        let area = repo
-            .area_create(
-                calm_types::organization::LEGACY_OWNER_USER_ID,
-                NewArea {
-                    name: "wiring-area".into(),
-                    color: "#000".into(),
-                    sort: None,
-                },
-            )
-            .await
-            .unwrap();
-        let track = repo
-            .track_create(NewTrack {
-                template_input: None,
-                area_id: area.id,
-                title: "wiring-ensure-token".into(),
-                sort: None,
-                cwd: String::new(),
-                template_id: None,
-                plugin_scope: None,
-                attach_folder: false,
-                theme: crate::routes::theme::RequestTheme::default_dark(),
-            })
-            .await
-            .unwrap();
-        let card_id = new_id();
-        let session_id = new_id();
-        let role_cache = CardRoleCache::new();
-        let write_db = (repo.db()).clone();
-        write_db
-            .writer()
-            .with_writer(|write_session| {
-                Box::pin(async move {
-                    let mut tx = write_session.begin_immediate().await.unwrap();
-                    card_create_with_id_tx(
-                        &mut tx,
-                        card_id.clone(),
-                        NewCard {
-                            track_id: track.id.clone(),
-                            title: None,
-                            kind: "codex".into(),
-                            sort: None,
-                            payload: serde_json::json!({"planner_provider": "claude"}),
-                        },
-                        CardRole::Planner,
-                        true,
-                        &role_cache,
-                    )
-                    .await
-                    .unwrap();
-                    crate::db::sqlite::session_insert_tx(
-                        &mut tx,
-                        calm_types::worker::WorkerSession {
-                            id: calm_types::worker::WorkerSessionId(session_id.clone()),
-                            track_id: track.id.clone(),
-                            provider: calm_types::worker::WorkerProviderKind::Claude,
-                            mode: calm_types::worker::SessionMode::Resumable,
-                            contract: calm_types::worker::WorkerContract::Planner,
-                            parent_session_id: None,
-                            requester_session_id: None,
-                            state: calm_types::worker::WorkerSessionState::Idle,
-                            mcp_token_hash: None,
-                            thread_id: None,
-                            agent_session_id: None,
-                            active_turn_id: None,
-                            terminal_run_id: None,
-                            card_id: Some(calm_truth::model::CardId(card_id.clone())),
-                            handle_state_json: None,
-                            liveness: calm_types::worker::LivenessTag::Alive,
-                            liveness_probed_at_ms: None,
-                            exit_code: None,
-                            exit_interpretation: None,
-                            spawn_op_id: None,
-                            last_activity_ms: None,
-                            last_thread_status: None,
-                            created_at_ms: 1,
-                            updated_at_ms: 1,
-                            completed_at_ms: None,
-                        },
-                    )
-                    .await
-                    .unwrap();
-                    sqlx::query("UPDATE cards SET session_id=?1 WHERE id=?2")
-                        .bind(&session_id)
-                        .bind(&card_id)
-                        .execute(&mut **tx)
-                        .await
-                        .unwrap();
-                    tx.commit().await.unwrap();
-
-                    let key_dir = tempfile::tempdir().unwrap();
-                    let key =
-                        crate::mcp_server::auth::get_or_generate_session_mcp_key(key_dir.path())
-                            .unwrap();
-
-                    let mut tx = write_session.begin_immediate().await.unwrap();
-                    let t1 =
-                        ensure_active_managed_planner_token(&mut tx, &card_id, &session_id, &key)
-                            .await
-                            .unwrap();
-                    tx.commit().await.unwrap();
-
-                    let mut tx = write_session.begin_immediate().await.unwrap();
-                    let t2 =
-                        ensure_active_managed_planner_token(&mut tx, &card_id, &session_id, &key)
-                            .await
-                            .unwrap();
-                    tx.commit().await.unwrap();
-                    assert_eq!(t1, t2, "active session re-attach must reuse the same token");
-
-                    // Exercise the production Claude revocation entry point.
-                    let mut tx = write_session.begin_immediate().await.unwrap();
-                    crate::db::sqlite::claude_planner_revoke_tx(
-                        &mut tx,
-                        crate::db::sqlite::ClaudePlannerScope::Card(&card_id),
-                    )
-                    .await
-                    .unwrap();
-                    tx.commit().await.unwrap();
-                    assert!(
-                        crate::db::sqlite::session_get_by_active_token_hash(
-                            repo.db().read_pool(),
-                            &hash_token(&t1),
-                        )
-                        .await
-                        .unwrap()
-                        .is_none()
-                    );
-
-                    let mut tx = write_session.begin_immediate().await.unwrap();
-                    let t3 =
-                        ensure_active_managed_planner_token(&mut tx, &card_id, &session_id, &key)
-                            .await
-                            .unwrap();
-                    tx.commit().await.unwrap();
-                    assert_ne!(
-                        t1, t3,
-                        "revocation must advance epoch and issue a new token"
-                    );
-
-                    // Simulate legacy random hash mismatch: must advance epoch and replace hash.
-                    let mut tx = write_session.begin_immediate().await.unwrap();
-                    sqlx::query(
-                        "UPDATE worker_sessions
-                            SET mcp_token_hash='legacy-random-hash'
-                          WHERE id=?1",
-                    )
-                    .bind(&session_id)
-                    .execute(&mut **tx)
-                    .await
-                    .unwrap();
-                    tx.commit().await.unwrap();
-
-                    let mut tx = write_session.begin_immediate().await.unwrap();
-                    let t4 =
-                        ensure_active_managed_planner_token(&mut tx, &card_id, &session_id, &key)
-                            .await
-                            .unwrap();
-                    tx.commit().await.unwrap();
-                    assert_ne!(t3, t4, "hash mismatch must advance epoch and rotate token");
-                    // The old worker can remain active while its card link changes.
-                    let mut tx = write_session.begin_immediate().await.unwrap();
-                    sqlx::query("UPDATE cards SET session_id=NULL WHERE id=?1")
-                        .bind(&card_id)
-                        .execute(&mut **tx)
-                        .await
-                        .unwrap();
-                    assert!(matches!(
-                        ensure_active_managed_planner_token(&mut tx, &card_id, &session_id, &key)
-                            .await,
-                        Err(CalmError::Conflict(_))
-                    ));
-                    tx.rollback().await.unwrap();
-                })
-            })
-            .await
-            .expect("ensure token test");
     }
 }

@@ -360,32 +360,15 @@ async fn bind_native(params: &SessionParams, thread: &str, native: &str) -> Resu
     .await
 }
 async fn mint_token(params: &SessionParams) -> Result<String> {
-    let card = params.card_id.clone();
-    let worker = params.worker_session_id.clone();
-    let master_key = params.host.mcp_session_key.clone();
-    write_in_tx_typed(params.repo.as_ref(), move |tx| {
-        Box::pin(async move {
-            let row = calm_truth::decision_gate::WriteTx::read_worker_session(
-                tx,
-                &WorkerSessionId(worker.clone()),
-            )
-            .await?
-            .ok_or_else(|| CalmError::Conflict("ACP credential carrier changed".into()))?;
-            if !row.state.is_active_authority()
-                || row.card_id.as_ref().map(|id| id.as_str()) != Some(card.as_str())
-            {
-                return Err(CalmError::Conflict("ACP credential carrier changed".into()));
-            }
-            crate::mcp_server::wiring::ensure_active_managed_planner_token(
-                tx,
-                &card,
-                &worker,
-                &master_key,
-            )
-            .await
-        })
-    })
-    .await
+    params
+        .host
+        .managed_tokens
+        .ensure(
+            params.repo.as_ref(),
+            &crate::model::CardId(params.card_id.clone()),
+            &WorkerSessionId(params.worker_session_id.clone()),
+        )
+        .await
 }
 async fn revoke(params: &SessionParams) -> Result<()> {
     revoke_worker(params.repo.as_ref(), &params.worker_session_id).await
@@ -395,7 +378,7 @@ async fn revoke_worker(repo: &dyn Repo, worker: &str) -> Result<()> {
     let worker = worker.to_owned();
     write_in_tx_typed(repo, move |tx| {
         Box::pin(async move {
-            sqlx::query("UPDATE worker_sessions SET mcp_token_hash=NULL, mcp_token_epoch=mcp_token_epoch+1 WHERE id=?1")
+            sqlx::query("UPDATE worker_sessions SET mcp_token_hash=NULL WHERE id=?1")
                 .bind(worker)
                 .execute(&mut **tx)
                 .await?;

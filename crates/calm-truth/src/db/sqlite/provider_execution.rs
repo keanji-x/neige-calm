@@ -295,7 +295,7 @@ pub async fn revoke_credential_for_execution(
         return Ok(false);
     };
     let changed = sqlx::query(
-        "UPDATE worker_sessions SET mcp_token_hash=NULL, mcp_token_epoch=mcp_token_epoch+1
+        "UPDATE worker_sessions SET mcp_token_hash=NULL
          WHERE id=? AND provider_execution_json=?",
     )
     .bind(session)

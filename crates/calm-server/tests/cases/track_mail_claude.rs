@@ -77,6 +77,7 @@ async fn mail_trace_reaches_a_claude_planner() {
             &w.dir.path().join("claude-data"),
             std::path::PathBuf::from("/nonexistent/neige-mcp-stdio-shim"),
             w.socket.clone(),
+            Default::default(),
         )
         .unwrap(),
     );

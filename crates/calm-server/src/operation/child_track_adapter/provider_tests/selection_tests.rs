@@ -184,6 +184,7 @@ async fn child_track_config_inherited_permission_overrides_registration() {
         root.path(),
         root.path().join("shim"),
         root.path().join("sock"),
+        Default::default(),
     )
     .unwrap();
     let adapter = ChildTrackAdapter::new(

@@ -204,6 +204,7 @@ mod tests {
             root.path(),
             root.path().join("shim"),
             root.path().join("sock"),
+            Default::default(),
         )
         .unwrap();
         for provider in AgentProvider::ALL {

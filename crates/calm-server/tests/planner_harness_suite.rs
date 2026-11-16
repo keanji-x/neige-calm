@@ -37,6 +37,8 @@ mod claude_planner_create_retry;
 mod claude_planner_credentials;
 #[path = "cases/claude_planner_live_replies.rs"]
 mod claude_planner_live_replies;
+#[path = "cases/claude_planner_managed_tokens.rs"]
+mod claude_planner_managed_tokens;
 #[path = "cases/claude_planner_models.rs"]
 mod claude_planner_models;
 #[path = "cases/claude_planner_replace.rs"]

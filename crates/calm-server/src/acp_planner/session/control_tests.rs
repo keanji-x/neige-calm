@@ -94,7 +94,22 @@ async fn acp_identical_local_turns_keep_two_owner_cancellation_separate() {
 async fn acp_token_reattach_reuses_without_revocation() {
     let (session, repo, _) = super::admission_tests::fixture().await;
     let first = mint_token(&session.shared.params).await.unwrap();
-    let second = mint_token(&session.shared.params).await.unwrap();
+    let params = &session.shared.params;
+    let host =
+        Arc::new(AcpPlannerHost::scratch_with_tokens(params.host.managed_tokens.clone()).unwrap());
+    let rebuilt = AcpPlannerSession::open(SessionParams {
+        engine: params.engine.clone(),
+        host,
+        provider: params.provider.clone(),
+        repo: params.repo.clone(),
+        seals: params.seals.clone(),
+        worker_session_id: params.worker_session_id.clone(),
+        card_id: params.card_id.clone(),
+        track_id: params.track_id.clone(),
+        cwd: params.cwd.clone(),
+        instructions: params.instructions.clone(),
+    });
+    let second = mint_token(&rebuilt.shared.params).await.unwrap();
     assert_eq!(
         first, second,
         "reattach must preserve existing shim credentials"
