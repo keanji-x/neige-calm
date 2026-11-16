@@ -212,31 +212,6 @@ async fn frames_can_be_fragmented_but_cannot_exceed_the_limit() {
     write.await.unwrap();
 }
 #[tokio::test]
-async fn initialize_requires_supported_version_and_required_capabilities_shape() {
-    for response in [
-        json!({"protocolVersion":2,"agentCapabilities":{}}),
-        json!({"protocolVersion":1}),
-        json!({"protocolVersion":1,"agentCapabilities":{"loadSession":"yes"}}),
-    ] {
-        let (connection, mut reader, mut writer) = peer();
-        let agent = tokio::spawn(async move {
-            let request = read(&mut reader).await;
-            assert_eq!(request["params"]["clientCapabilities"], json!({}));
-            send(
-                &mut writer,
-                json!({"jsonrpc":"2.0","id":request["id"],"result":response}),
-            )
-            .await;
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        });
-        assert!(matches!(
-            protocol::initialize(&connection.client, "client", "1").await,
-            Err(Error::Protocol(_))
-        ));
-        agent.await.unwrap();
-    }
-}
-#[tokio::test]
 async fn initialize_reports_auth_method_ids_and_extension_metadata_uninterpreted() {
     for (result, methods, meta) in [
         (
@@ -904,3 +879,6 @@ async fn orphan_request_flood_drains_a_shared_generation_without_failing_a_live_
         Err(WriteFailure::BeforeWrite(Error::Refused(_)))
     ));
 }
+
+#[path = "initialize_tests.rs"]
+mod initialize_tests;

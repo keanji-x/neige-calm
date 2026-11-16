@@ -41,6 +41,7 @@ pub struct PromptCapabilities {
 #[serde(rename_all = "camelCase")]
 pub struct InitializeResponse {
     pub protocol_version: u32,
+    #[serde(default)]
     pub agent_capabilities: AgentCapabilities,
     pub agent_info: Option<AgentInfo>,
     /// The methods `authenticate` accepts; ACP's default is none.
