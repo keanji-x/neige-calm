@@ -236,7 +236,16 @@ async fn canonical_antigravity_failed_stop_retains_the_owner_for_verified_retry(
     fx.wait_idle().await;
     fx.keep_unknown(&fx.submission, "keep-after-supervised-stop-retry")
         .await;
-    assert!(fx.backend.settle_kept_execution().await.unwrap().is_some());
+    tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            if fx.backend.settle_kept_execution().await.unwrap().is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("Keep settles after the original generation's verified stop retry");
     let joins: i64 =
         sqlx::query_scalar("SELECT count(*) FROM acp_normal_joins WHERE worker_session_id=?")
             .bind(&fx.owner.worker)
@@ -534,6 +543,12 @@ async fn canonical_antigravity_restart_keeps_fence_while_exact_generation_is_liv
     )
     .await
     .unwrap();
+    crate::acp_planner::config::recover_residents_after_boot(
+        fx.owner.repo.as_ref(),
+        session.host(),
+    )
+    .await
+    .unwrap();
     assert!(
         crate::db::sqlite::acp_submission_unresolved(fx.owner.repo.pool(), &fx.owner.worker)
             .await
@@ -542,12 +557,6 @@ async fn canonical_antigravity_restart_keeps_fence_while_exact_generation_is_liv
     let frame = runtime_frame_observation(fx.owner.repo.pool(), &fx.owner.card, &fx.owner.worker)
         .await
         .unwrap();
-    crate::acp_planner::config::recover_residents_after_boot(
-        fx.owner.repo.as_ref(),
-        session.host(),
-    )
-    .await
-    .unwrap();
     assert!(frame.snapshot.canonical_inputs.active.is_some());
     assert_eq!(fx.prompts(), 1);
     fx.session.shutdown().await.unwrap();

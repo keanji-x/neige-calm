@@ -5,9 +5,13 @@ Neige execution supervisor launches, stops and accounts for workspace
 attachments for both resident ACP providers. Launches require the configured Neige
 execution supervisor. This is L2 because destructive
 workspace operations rely on the supervisor's descendant-exit proof.
+Operator environment values, including multiline values, travel through the
+bounded private stdin release protocol. The encoded startup payload has the
+same 16 KiB limit as other supervised provider launches.
 
-Antigravity documents ACP session close and cancelling an in-flight prompt
-when it closes. The documented contract does not establish that every
+Antigravity documents ACP session close. Its 1.5.1 changelog specifies that
+closing a session ends an in-flight prompt as cancelled. The documented
+contract does not establish that every
 background process using the workspace has exited. A successful native
 close retires the session attachment, revokes its grant and lets sibling
 sessions remain on the same server. Its durable workspace obligation lasts

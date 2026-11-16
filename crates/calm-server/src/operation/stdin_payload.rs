@@ -37,6 +37,7 @@ pub(crate) fn validate_key(key: &str, source: KeySource) -> Result<()> {
 /// Private storage prevents callers from bypassing validation.
 pub(crate) struct PayloadKeys<'a> {
     keys: &'a [&'a str],
+    multiline: bool,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -50,7 +51,15 @@ impl<'a> PayloadKeys<'a> {
         for key in keys {
             validate_key(key, source)?;
         }
-        Ok(Self { keys })
+        Ok(Self {
+            keys,
+            multiline: false,
+        })
+    }
+
+    pub(crate) fn with_multiline(mut self) -> Self {
+        self.multiline = true;
+        self
     }
 
     /// Build and validate the entire buffer before any transport can write a byte.
@@ -64,14 +73,26 @@ impl<'a> PayloadKeys<'a> {
                 None => payload.push(b'0'),
                 Some(value) => {
                     let bytes = value.as_encoded_bytes();
-                    if bytes.contains(&b'\n') || bytes.contains(&0) {
+                    let multiline = bytes.contains(&b'\n');
+                    if (multiline && !self.multiline) || bytes.contains(&0) {
                         return Err(PayloadError::NewlineOrNul);
                     }
                     if bytes.len() > MAX_PAYLOAD_BYTES {
                         return Err(PayloadError::TooLarge);
                     }
-                    payload.push(b'1');
-                    payload.extend_from_slice(bytes);
+                    if multiline {
+                        payload.push(b'2');
+                        for &byte in bytes {
+                            match byte {
+                                b'\n' => payload.extend_from_slice(b"\\n"),
+                                b'\\' => payload.extend_from_slice(b"\\\\"),
+                                _ => payload.push(byte),
+                            }
+                        }
+                    } else {
+                        payload.push(b'1');
+                        payload.extend_from_slice(bytes);
+                    }
                 }
             }
             payload.push(b'\n');
@@ -93,10 +114,17 @@ impl<'a> PayloadKeys<'a> {
                 "IFS= read -r neige_forge_credential || exit 75\n\
                  case \"$neige_forge_credential\" in\n\
                  0) unset {key} ;;\n\
-                 1*) export {key}=\"${{neige_forge_credential#1}}\" ;;\n\
-                 *) exit 75 ;;\n\
-                 esac\n"
+                 1*) export {key}=\"${{neige_forge_credential#1}}\" ;;\n"
             ));
+            if self.multiline {
+                // Append a sentinel so command substitution retains trailing newlines.
+                // The fixed printf format decodes data without evaluating shell syntax.
+                script.push_str(&format!(
+                    "2*) neige_forge_credential=$(printf '%b.' \"${{neige_forge_credential#2}}\") || exit 75\n\
+                         export {key}=\"${{neige_forge_credential%.}}\" ;;\n",
+                ));
+            }
+            script.push_str("*) exit 75 ;;\nesac\n");
         }
         script.push_str("unset neige_forge_credential\n");
         script.push_str("IFS= read -r neige_forge_go || exit 75\n");
@@ -186,5 +214,34 @@ mod tests {
             keys.render(|_| Some("x".repeat(MAX_PAYLOAD_BYTES - 4).into())),
             Err(PayloadError::TooLarge)
         );
+    }
+
+    #[test]
+    fn multiline_payload_round_trips_shell_data_and_trailing_newlines() {
+        use std::io::Write;
+        use std::process::{Command, Stdio};
+
+        let value = "before\n\\c \\n $(exit 99)\né\n\n";
+        let keys = PayloadKeys::new(&["TOKEN"], KeySource::Kernel)
+            .unwrap()
+            .with_multiline();
+        let mut script = keys.read_prefix();
+        script.push_str("printf '%s' \"$TOKEN\"");
+        let mut child = Command::new("/bin/sh")
+            .arg("-c")
+            .arg(script)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(&keys.render(|_| Some(value.into())).unwrap())
+            .unwrap();
+        let output = child.wait_with_output().unwrap();
+        assert!(output.status.success());
+        assert_eq!(output.stdout, value.as_bytes());
     }
 }
