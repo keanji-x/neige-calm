@@ -474,13 +474,13 @@ impl PreparedAreaDeletion {
                 track.id.as_str(),
             )
             .await?;
-            crate::acp_planner::config::sweep_track(
-                route.repo.as_ref(),
-                &route.acp_planner,
-                track.id.as_str(),
-            )
-            .await?;
         }
+        crate::acp_planner::config::sweep_tracks(
+            route.repo.as_ref(),
+            &route.acp_planner,
+            self.tracks.iter().map(|track| track.id.as_str()),
+        )
+        .await?;
         crate::execution_quiesce::dispose_tracks(
             route.repo.as_ref(),
             &route.operation_runtime,

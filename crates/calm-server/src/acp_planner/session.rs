@@ -14,7 +14,7 @@ mod setup;
 use cancellation::IssueGuard;
 use input::InputContract;
 pub(super) use server::Server;
-pub(crate) use server::detach_worker;
+pub(crate) use server::{detach_worker, detach_workers};
 mod execution_end;
 use super::{config::AcpPlannerHost, execution::Process, process::setup_request};
 use crate::db::sqlite::{

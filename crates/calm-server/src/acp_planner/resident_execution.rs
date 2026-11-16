@@ -15,6 +15,10 @@ use workspace_runtime::execution::*;
 
 pub(crate) const CONSUMER: &str = "acp-resident";
 
+fn generation_alias(backend: &str, id: &ExecutionId) -> String {
+    format!("{CONSUMER}:{backend}:{}", id.as_str())
+}
+
 pub(super) struct ResidentExecution {
     id: ExecutionId,
     engine: ExecutionEngine,
@@ -35,10 +39,9 @@ impl ResidentExecution {
             .sqlite_db()
             .ok_or(CalmError::ExecutionUnavailable)?;
         let backend = registration.config.provider.wire_name();
-        let alias = format!("{CONSUMER}:{backend}");
         // A cancelled initialize can leave a committed generation without an
         // in-memory server. Settle that exact owner before starting another.
-        stop_previous(&pool, Some(&engine), Some(&alias)).await?;
+        stop_previous(&pool, Some(&engine), Some(backend)).await?;
         let id = ExecutionId::fresh()?;
         let dir = stderr::create(&host.agent_logs, id.as_str())?;
         let launch = registration
@@ -49,8 +52,8 @@ impl ResidentExecution {
         let intent = provider_execution::launch::wrapped_intent(
             LaunchOwner {
                 consumer: CONSUMER.into(),
-                owner: OperationRef(alias.clone()),
-                alias: ProcessAlias(alias),
+                owner: OperationRef(format!("{CONSUMER}:{backend}")),
+                alias: ProcessAlias(generation_alias(backend, &id)),
                 scope: ExecutionOwnership::Host {
                     backend: backend.to_owned(),
                 },
@@ -131,27 +134,21 @@ impl Drop for ResidentExecution {
 pub(crate) async fn stop_previous(
     pool: &SqliteDb,
     engine: Option<&ExecutionEngine>,
-    alias: Option<&str>,
+    backend: Option<&str>,
 ) -> Result<()> {
     // Fence every previous generation in one writer transaction before boot
     // recovery may drive any committed Run intent.
-    let alias = alias.map(str::to_owned);
-    let boot = alias.is_none();
+    let backend = backend.map(str::to_owned);
+    let boot = backend.is_none();
     let ids = pool
         .writer()
         .with_writer(|writer| {
             Box::pin(async move {
                 let mut tx = writer.begin_immediate().await?;
                 let mut ids = Vec::new();
-                for (execution_id, registered_alias) in
-                    sql::resident_inventory_tx(&mut tx, CONSUMER).await?
+                for execution_id in
+                    sql::resident_inventory_tx(&mut tx, CONSUMER, backend.as_deref()).await?
                 {
-                    if alias
-                        .as_ref()
-                        .is_some_and(|alias| alias != &registered_alias)
-                    {
-                        continue;
-                    }
                     let id = ExecutionId::try_from(execution_id).map_err(conflict)?;
                     sql::request(&mut tx, id.as_str(), "stop").await?;
                     ids.push(id);
@@ -175,14 +172,19 @@ pub(crate) async fn stop_previous(
 
 pub(super) async fn workspace_generations(
     host: &AcpPlannerHost,
-    worker: &str,
+    workers: &[&str],
 ) -> Result<(SqliteDb, Vec<String>)> {
     let pool = host
         .completion
         .repo()?
         .sqlite_db()
         .ok_or(CalmError::ExecutionUnavailable)?;
-    let ids = acp_resident::for_worker(pool.read_pool(), worker).await?;
+    let mut ids = Vec::new();
+    for worker in workers {
+        ids.extend(acp_resident::for_worker(pool.read_pool(), worker).await?);
+    }
+    ids.sort_unstable();
+    ids.dedup();
     Ok((pool, ids))
 }
 
@@ -271,7 +273,7 @@ pub(super) async fn has_drained_tx(
            AND settlement_json IS NOT NULL",
     )
     .bind(execution_id.as_str())
-    .bind(format!("{CONSUMER}:{}", provider.wire_name()))
+    .bind(generation_alias(provider.wire_name(), execution_id))
     .bind(CONSUMER)
     .fetch_optional(&mut **tx)
     .await?;

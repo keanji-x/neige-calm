@@ -116,20 +116,7 @@ pub(super) async fn drive(
     }
     .await;
     let persisted = settle.is_ok();
-    if let Err(error) = settle {
-        #[cfg(feature = "fixtures")]
-        super::super::test_seams::settlement_note(&params.worker_session_id, "failed");
-        tracing::error!(%error,"ACP settlement failed; durable submission remains fenced");
-        // Best effort checkpoint of the unknown fence. Spend at most one extra second:
-        // if the writer is still unavailable, `sending` itself remains unresolved and
-        // restart recovery marks it unknown. Never overwrite a completed CAS winner.
-        if let Some(pool) = params.repo.sqlite_db() {
-            let _ = tokio::time::timeout(
-                Duration::from_secs(1),
-                acp_submission_finish(&pool, &receipt.worker_session_id, &receipt.client_id, None),
-            )
-            .await;
-        }
+    if !persisted {
         turn = unknown_outcome(&receipt.turn_id);
         events = vec![PlannerEvent {
             thread_id: Some(receipt.thread_id.clone()),
@@ -284,6 +271,27 @@ pub(super) fn retain_item(retained: &mut Vec<Value>, event: &PlannerEvent) {
 
 /// Persistence pending is not execution unknown. This function has no provider access.
 pub(super) async fn settle_receipt(
+    pool: &crate::db::sqlite::SqliteDb,
+    receipt: &AcpSubmission,
+    outcome_json: Option<&str>,
+) -> Result<()> {
+    let result = settle_with_retry(pool, receipt, outcome_json).await;
+    if let Err(error) = &result {
+        #[cfg(feature = "fixtures")]
+        super::super::test_seams::settlement_note(&receipt.worker_session_id, "failed");
+        tracing::error!(%error, "ACP settlement failed; durable submission remains fenced");
+        // The receipt stays unresolved even if the writer remains unavailable.
+        // Never overwrite a completed CAS winner with an unknown outcome.
+        let _ = tokio::time::timeout(
+            Duration::from_secs(1),
+            acp_submission_finish(pool, &receipt.worker_session_id, &receipt.client_id, None),
+        )
+        .await;
+    }
+    result
+}
+
+async fn settle_with_retry(
     pool: &crate::db::sqlite::SqliteDb,
     receipt: &AcpSubmission,
     outcome_json: Option<&str>,

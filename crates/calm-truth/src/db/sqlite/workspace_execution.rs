@@ -203,15 +203,18 @@ pub async fn settlement_history(
 pub async fn resident_inventory_tx(
     tx: &mut Transaction<'_, Sqlite>,
     consumer: &str,
-) -> Result<Vec<(String, String)>, sqlx::Error> {
-    sqlx::query_as(
-        "SELECT execution_id,alias FROM workspace_executions
+    backend: Option<&str>,
+) -> Result<Vec<String>, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT execution_id FROM workspace_executions
          WHERE (desired <> 'retire' OR secrets_json IS NOT NULL)
            AND ((alias >= ?1 || ':' AND alias < ?1 || ';')
                  OR json_extract(intent_json, '$.consumer') = ?1)
+           AND (?2 IS NULL OR json_extract(intent_json, '$.track.backend') = ?2)
          ORDER BY execution_id",
     )
     .bind(consumer)
+    .bind(backend)
     .fetch_all(&mut **tx)
     .await
 }

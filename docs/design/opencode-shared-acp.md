@@ -10,10 +10,13 @@ Review tier L2 covers tool authority, provider execution, and recovery.
 
 A resident OpenCode generation is owned by the existing execution supervisor,
 independently of any card or Track. Attachments create durable workspace
-obligations before invoking native setup. Destructive cleanup revokes the
-affected attachment's credential, stops new work on its generation, and lets
-routed siblings drain. The execution owner's descendant-drain evidence clears
-workspace obligations, including on restart. ACP close can acknowledge an
+obligations before invoking native setup. The backend identifies the durable
+owner, and each generation uses a unique supervisor alias. Destructive cleanup
+revokes the affected credentials together and stops new work on that generation.
+A bulk deletion can interrupt work owned by its target Tracks. Routed work
+outside the deletion must finish first. The execution supervisor confirms
+that the process and its descendants have exited before workspace obligations
+are cleared, including after a restart. ACP close can acknowledge an
 interrupt before cleanup settles, and OpenCode can spawn outside its process
 group. [ACP close](https://github.com/anomalyco/opencode/blob/v2.3.0/packages/cli/src/acp/turn.ts#L451-L461)
 and [interrupt contract](https://github.com/anomalyco/opencode/blob/v2.3.0/packages/core/src/session/execution.ts#L27-L41).

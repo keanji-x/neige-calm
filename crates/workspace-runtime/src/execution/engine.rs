@@ -274,7 +274,7 @@ impl<S: Store + 'static, X: Executor + 'static> Engine<S, X> {
         self.wait_stored(id, Stored::is_settled).await
     }
 
-    /// Includes the executor's alias release and the store's terminal acknowledgement.
+    /// Wait for the executor's retirement tombstone and the store's terminal acknowledgement.
     pub async fn wait_retired(&self, id: &ExecutionId) -> Result<(), DriveError> {
         self.wait_stored(id, |row| matches!(row, Stored::Finished { .. }))
             .await

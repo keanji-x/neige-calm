@@ -313,8 +313,8 @@ async fn acp_compact_requires_declared_command() {
     let root = Root::new("unused");
     let stack = boot(&root).await;
     let (_, card) = create(&stack).await;
-    turn(&stack, &card, "first", 1).await;
     std::fs::write(root.path().join("scenario"), "compact-undeclared").unwrap();
+    turn(&stack, &card, "first", 1).await;
     assert!(!compact(&stack, &card).await.0.is_success());
     assert!(compact_prompts(&root).is_empty());
     stack.shutdown().await;

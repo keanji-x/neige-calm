@@ -472,23 +472,36 @@ pub async fn sweep_track(
     host: &AcpPlannerHost,
     track: &str,
 ) -> Result<()> {
-    let track = track.to_owned();
+    sweep_tracks(repo, host, [track]).await
+}
+
+pub(crate) async fn sweep_tracks<'a>(
+    repo: &dyn crate::db::RepoEventWrite,
+    host: &AcpPlannerHost,
+    tracks: impl IntoIterator<Item = &'a str>,
+) -> Result<()> {
+    let tracks: Vec<_> = tracks.into_iter().map(str::to_owned).collect();
     let proof = host.pre_c4.get().cloned();
     let ids = crate::db::write_in_tx_typed(repo, move |tx| {
         Box::pin(async move {
-            let mut ids = revoke_owned_tx(tx, Some(&track)).await?;
-            // A refusal rolls back revocation before any Stop can be requested.
-            crate::provider_execution::PreC4Sweep::require_absent(proof.as_ref(), &ids)?;
-            ids.extend(calm_truth::db::sqlite::acp_resident::workers_for_track(tx, &track).await?);
+            let mut ids = Vec::new();
+            for track in tracks {
+                let owned = revoke_owned_tx(tx, Some(&track)).await?;
+                // A refusal rolls back revocation before any Stop can be requested.
+                crate::provider_execution::PreC4Sweep::require_absent(proof.as_ref(), &owned)?;
+                ids.extend(owned);
+                ids.extend(
+                    calm_truth::db::sqlite::acp_resident::workers_for_track(tx, &track).await?,
+                );
+            }
             ids.sort_unstable();
             ids.dedup();
             Ok(ids)
         })
     })
     .await?;
-    for worker in &ids {
-        super::session::detach_worker(host, worker).await?;
-    }
+    let workers: Vec<_> = ids.iter().map(String::as_str).collect();
+    super::session::detach_workers(host, &workers).await?;
     let executions = crate::db::write_in_tx_typed(repo, move |tx| {
         Box::pin(async move {
             let mut executions = Vec::new();

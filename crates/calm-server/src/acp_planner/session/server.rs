@@ -396,10 +396,17 @@ async fn cleanup_unknown(
 }
 
 pub(crate) async fn detach_worker(host: &AcpPlannerHost, worker: &str) -> Result<()> {
+    detach_workers(host, &[worker]).await
+}
+
+pub(crate) async fn detach_workers(host: &AcpPlannerHost, workers: &[&str]) -> Result<()> {
+    if workers.is_empty() {
+        return Ok(());
+    }
     let (pool, previous) =
-        super::super::resident_execution::workspace_generations(host, worker).await?;
+        super::super::resident_execution::workspace_generations(host, workers).await?;
     for provider in host.shared_servers.keys() {
-        detach_worker_with_witness(host, worker, provider, None).await?;
+        detach_workers_for_provider(host, workers, provider, None).await?;
     }
     super::super::resident_execution::stop_detached_workspace(host, &pool, previous).await
 }
@@ -407,6 +414,15 @@ pub(crate) async fn detach_worker(host: &AcpPlannerHost, worker: &str) -> Result
 async fn detach_worker_with_witness(
     host: &AcpPlannerHost,
     worker: &str,
+    provider: &str,
+    expected: Option<(&str, &CleanupWitness)>,
+) -> Result<()> {
+    detach_workers_for_provider(host, &[worker], provider, expected).await
+}
+
+async fn detach_workers_for_provider(
+    host: &AcpPlannerHost,
+    workers: &[&str],
     provider: &str,
     expected: Option<(&str, &CleanupWitness)>,
 ) -> Result<()> {
@@ -425,8 +441,10 @@ async fn detach_worker_with_witness(
     };
     if let Some((native, witness)) = expected {
         let matches = server.generation.id == witness.generation.id
-            && server.bindings.get(worker).is_some_and(|binding| {
-                binding.native == native && Arc::ptr_eq(&binding.closed, &witness.closed)
+            && workers.iter().any(|worker| {
+                server.bindings.get(*worker).is_some_and(|binding| {
+                    binding.native == native && Arc::ptr_eq(&binding.closed, &witness.closed)
+                })
             });
         if !matches {
             return Err(CalmError::Conflict(
@@ -434,56 +452,66 @@ async fn detach_worker_with_witness(
             ));
         }
     }
-    if !server.bindings.contains_key(worker)
-        && !server.credential_owners.contains(worker)
-        && !server.touched_workers.contains(worker)
-    {
+    if !workers.iter().any(|worker| {
+        server.bindings.contains_key(*worker)
+            || server.credential_owners.contains(*worker)
+            || server.touched_workers.contains(*worker)
+    }) {
         return Ok(());
     }
-    if server.process.connection.client.terminal_error().is_some() {
-        // EOF is not process-stop evidence. Retire and confirm the original
-        // process before any driver may claim the generation is quiescent.
+    for &worker in workers {
+        if let Some(binding) = server.bindings.get_mut(worker) {
+            binding.closing = true;
+        }
+        if server.credential_owners.contains(worker) {
+            revoke_worker(host.completion.repo()?.as_ref(), worker).await?;
+            server.credential_owners.remove(worker);
+        }
+    }
+    let client = &server.process.connection.client;
+    if client.terminal_error().is_some() {
+        // EOF does not prove that native workspace users have exited.
         return retire(host, &mut owned).await;
     }
-    if let Some(binding) = server.bindings.get_mut(worker) {
-        binding.closing = true;
-    }
-    if server.credential_owners.contains(worker) {
-        revoke_worker(host.completion.repo()?.as_ref(), worker).await?;
-        server.credential_owners.remove(worker);
-    }
     if server.process.is_supervised() {
-        // Native close acknowledges an interrupt, which can precede actual
-        // exit. Drain other routed turns without holding the setup lock.
-        let client = &server.process.connection.client;
         client.retire_shared_when_idle();
-        if !client.can_recycle_shared() {
+        let can_retire = client.can_retire_shared_while(|native| {
+            expected.is_none()
+                && workers.iter().any(|worker| {
+                    server
+                        .bindings
+                        .get(*worker)
+                        .is_some_and(|binding| binding.native == native)
+                })
+        });
+        if !can_retire {
             return Err(CalmError::Conflict(
                 "ACP generation is draining other active sessions".into(),
             ));
         }
         return retire(host, &mut owned).await;
     }
-    let Some(binding) = server.bindings.get(worker) else {
-        return Ok(());
-    };
-    let gate = provider::send_boundary::PreSendGate::new(|| Box::pin(async { Ok(()) }));
-    if let Err(error) = setup_request(
-        &mut server.process.connection,
-        &server.process.commands,
-        "session/close",
-        protocol::encode_close_session(&binding.native),
-        &gate,
-    )
-    .await
-    {
-        server.process.connection.client.retire_shared_when_idle();
-        return Err(error.into());
+    for &worker in workers {
+        let Some(binding) = server.bindings.get(worker) else {
+            continue;
+        };
+        let gate = provider::send_boundary::PreSendGate::new(|| Box::pin(async { Ok(()) }));
+        if let Err(error) = setup_request(
+            &mut server.process.connection,
+            &server.process.commands,
+            "session/close",
+            protocol::encode_close_session(&binding.native),
+            &gate,
+        )
+        .await
+        {
+            server.process.connection.client.retire_shared_when_idle();
+            return Err(error.into());
+        }
+        binding.closed.store(true, Ordering::Release);
+        server.process.commands.forget(&binding.native);
+        server.bindings.remove(worker);
     }
-    // Credential revocation and the matching native close both succeeded.
-    binding.closed.store(true, Ordering::Release);
-    server.process.commands.forget(&binding.native);
-    server.bindings.remove(worker);
     Ok(())
 }
 
