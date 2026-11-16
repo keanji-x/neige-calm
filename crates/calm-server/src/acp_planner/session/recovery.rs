@@ -267,7 +267,12 @@ async fn recover_shared_claim(
                         &receipt.client_id,
                     )
                     .await?;
-                    if !sweep_confirmed || !restart_owner_stopped(tx, &provider, owner).await? {
+                    use crate::db::sqlite::AcpSharedRestartOwner;
+                    if !sweep_confirmed
+                        || !matches!(owner, Some(AcpSharedRestartOwner::Process(owner))
+                            if crate::proc_identity::observe_owned_pid(owner.pid, owner.start_time, &owner.boot_id)
+                                .leader_exited())
+                    {
                         return Ok(None);
                     }
                     client = Some(receipt.client_id.as_str());
@@ -283,26 +288,6 @@ async fn recover_shared_claim(
         recover_completed_stop(repo, card, worker, &track, receipt, association).await?;
     }
     Ok(())
-}
-
-async fn restart_owner_stopped(
-    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
-    provider: &AgentProvider,
-    owner: Option<crate::db::sqlite::AcpSharedRestartOwner>,
-) -> Result<bool> {
-    use crate::db::sqlite::AcpSharedRestartOwner;
-    let supervised = super::super::profile::AcpAgentProfile::of(provider)
-        .is_some_and(|profile| profile.supervise_resident);
-    match owner {
-        Some(AcpSharedRestartOwner::Process(owner)) if !supervised => Ok(
-            crate::proc_identity::observe_owned_pid(owner.pid, owner.start_time, &owner.boot_id)
-                .leader_exited(),
-        ),
-        Some(AcpSharedRestartOwner::Execution { execution_id }) if supervised => {
-            super::super::resident_execution::has_drained_tx(tx, provider, &execution_id).await
-        }
-        _ => Ok(false),
-    }
 }
 
 async fn recover_completed_stop(

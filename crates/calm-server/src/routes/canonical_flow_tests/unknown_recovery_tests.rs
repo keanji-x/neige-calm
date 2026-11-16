@@ -327,45 +327,27 @@ async fn acp_recovery(scenario: &str) {
                 workspace_runtime::execution::ExecutionState::OriginalGroupEmpty { status: Some(0) },
             ))
             .unwrap();
-            // Settlements are write-once. Add a distinct group-only history record
-            // through the execution store instead of rewriting the original proof.
-            let original: String = sqlx::query_scalar(
-                "SELECT intent_json FROM workspace_executions WHERE alias LIKE ?1 LIMIT 1",
+            // Install a group-only settlement for the receipt's exact generation.
+            // Normal operation keeps settlement evidence immutable.
+            let mut tx = write_session.begin_immediate().await.unwrap();
+            let owner = crate::db::sqlite::acp_shared_receipt_process_tx(
+                &mut tx, &worker, request["submission_id"].as_str().unwrap(),
+            ).await.unwrap();
+            let Some(crate::db::sqlite::AcpSharedRestartOwner::Execution { execution_id }) = owner else {
+                panic!("expected resident execution receipt");
+            };
+            sqlx::query("DROP TRIGGER workspace_executions_settlement_once")
+                .execute(&mut **tx).await.unwrap();
+            let changed = sqlx::query(
+                "UPDATE workspace_executions SET settlement_json=?1 WHERE execution_id=?2",
             )
-            .bind(format!("planner:{worker}:%"))
-            .fetch_one(fixture.repo.pool())
+            .bind(&settled)
+            .bind(execution_id.as_str())
+            .execute(&mut **tx)
             .await
             .unwrap();
-            let mut metadata: workspace_runtime::execution::ExecutionMetadata =
-                serde_json::from_str(&original).unwrap();
-            let id = workspace_runtime::execution::ExecutionId::fresh().unwrap();
-            metadata.id = id.clone();
-            metadata.alias.0 = format!("planner:{worker}:{}", id.as_str());
-            let mut tx = write_session.begin_immediate()
-                .await
-                .unwrap();
-            crate::db::sqlite::workspace_execution::insert(
-                &mut tx,
-                id.as_str(),
-                &track,
-                &metadata.alias.0,
-                &serde_json::to_string(&metadata).unwrap(),
-                "{}",
-            )
-            .await
-            .unwrap();
-            crate::db::sqlite::workspace_execution::settle_tx(
-                &mut tx,
-                id.as_str(),
-                &settled,
-                crate::model::now_ms(),
-            )
-            .await
-            .unwrap();
+            assert_eq!(changed.rows_affected(), 1);
             tx.commit().await.unwrap();
-            crate::db::sqlite::workspace_execution::finish(fixture.repo.db(), id.as_str())
-                .await
-                .unwrap();
             assert_eq!(
                 status(&app, &cookie, &uri, "abandon", request.clone()).await,
                 StatusCode::CONFLICT

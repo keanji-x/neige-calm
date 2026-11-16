@@ -444,16 +444,6 @@ pub(super) async fn boot_with_sweep<F: std::future::Future<Output = Result<()>>>
     Ok(())
 }
 
-/// Run after the execution owner verified that previous resident scopes drained.
-pub(crate) async fn recover_supervised_after_boot(repo: &dyn crate::db::Repo) -> Result<()> {
-    for provider in AgentProtocol::Acp.providers().filter(|provider| {
-        AcpAgentProfile::of(provider).is_some_and(|profile| profile.supervise_resident)
-    }) {
-        super::session::recover_shared_after_boot(repo, provider, true).await?;
-    }
-    Ok(())
-}
-
 /// Refuse before the route can supersede, shut down, or request any Stop.
 /// The boot-owned unproven set is fixed; later sessions are proven by construction.
 /// The sweep still rechecks inside its credential revocation transaction.

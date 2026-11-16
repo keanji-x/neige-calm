@@ -1669,7 +1669,6 @@ impl AppState {
             .collect::<Vec<_>>();
         let execution_engine =
             crate::execution_boot::recover(cfg, pool, &provider_consumers).await?;
-        crate::acp_planner::config::recover_supervised_after_boot(repo.as_ref()).await?;
         let execution = crate::execution_quiesce::ExecutionLifecycle::default();
         if let Some(engine) = &execution_engine {
             execution.bind(engine.clone());

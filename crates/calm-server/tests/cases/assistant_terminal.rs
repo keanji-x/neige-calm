@@ -155,25 +155,36 @@ pub(crate) async fn foreign_track(h: &Harness) -> String {
         .to_string()
 }
 
-async fn ok_as(h: &Harness, token: &str, name: &str, args: Value) -> Value {
-    let reply = h.call_with_token(token, name, args).await;
+async fn ok_as(h: &Harness, caller: (&str, Option<&str>), name: &str, args: Value) -> Value {
+    let (token, native) = caller;
+    let reply = h
+        .call_with_token_and_origin(token, name, args, native)
+        .await;
     assert!(reply.get("error").is_none(), "{reply}");
     reply["result"]["structuredContent"].clone()
 }
 
-async fn input_as(h: &Harness, token: &str, w: &Worker, key: &str, action: Value) -> Value {
+async fn input_as(
+    h: &Harness,
+    caller: (&str, Option<&str>),
+    w: &Worker,
+    key: &str,
+    action: Value,
+) -> Value {
     let before = ok_as(
         h,
-        token,
+        caller,
         "neige_terminal_read",
         json!({"attempt_id":w.task,"wait_ms":50}),
     )
     .await;
-    h.call_with_token(
+    let (token, native) = caller;
+    h.call_with_token_and_origin(
         token,
         "neige_terminal_input",
         json!({"attempt_id":w.task,"observation_id":before["observation_id"],
             "idempotency_key":key,"claim":true,"action":action}),
+        native,
     )
     .await
 }
@@ -197,11 +208,27 @@ async fn exercise_assistant_terminal(
     provider: calm_server::session_projection_repo::AgentProvider,
 ) {
     let h = Harness::start().await;
-    let (_, _, assistant) = agent_token_provider(&h, &h.track, CardRole::Assistant, provider).await;
+    let opencode = provider == calm_server::session_projection_repo::AgentProvider::OpenCode;
+    let (_, session, assistant) =
+        agent_token_provider(&h, &h.track, CardRole::Assistant, provider).await;
+    let native = opencode.then_some("test-opencode-native-session");
+    if let Some(native) = native {
+        h.sql
+            .db()
+            .writer()
+            .execute(
+                sqlx::query("UPDATE worker_sessions SET agent_session_id=?1 WHERE id=?2")
+                    .bind(native)
+                    .bind(session),
+            )
+            .await
+            .unwrap();
+    }
+    let caller = (assistant.as_str(), native);
     let w = worker_running(&h, "claude", &h.track, Some(ECHO_WORKER)).await;
     let shown = ok_as(
         &h,
-        &assistant,
+        caller,
         "neige_terminal_show",
         json!({"attempt_id":w.task}),
     )
@@ -210,7 +237,7 @@ async fn exercise_assistant_terminal(
     assert_eq!(shown["controllable"], true);
     let typed = input_as(
         &h,
-        &assistant,
+        caller,
         &w,
         "text",
         json!({"type":"text","text":"hello"}),
@@ -218,20 +245,13 @@ async fn exercise_assistant_terminal(
     .await;
     assert!(typed.get("error").is_none(), "{typed}");
     assert_eq!(typed["result"]["structuredContent"]["outcome"], "written");
-    let entered = input_as(
-        &h,
-        &assistant,
-        &w,
-        "enter",
-        json!({"type":"key","key":"Enter"}),
-    )
-    .await;
+    let entered = input_as(&h, caller, &w, "enter", json!({"type":"key","key":"Enter"})).await;
     assert_eq!(entered["result"]["structuredContent"]["outcome"], "written");
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     loop {
         let view = ok_as(
             &h,
-            &assistant,
+            caller,
             "neige_terminal_read",
             json!({"attempt_id":w.task,"wait_ms":30}),
         )
@@ -248,7 +268,7 @@ async fn exercise_assistant_terminal(
     }
     ok_as(
         &h,
-        &assistant,
+        caller,
         "neige_terminal_control",
         json!({"attempt_id":w.task,"action":"release"}),
     )
@@ -300,7 +320,7 @@ async fn an_assistant_reads_but_never_types_into_a_codex_task_worker_or_a_finish
     let codex = worker_running(&h, "codex", &h.track, Some(ECHO_WORKER)).await;
     let shown = ok_as(
         &h,
-        &assistant,
+        (&assistant, None),
         "neige_terminal_show",
         json!({"attempt_id":codex.task}),
     )
@@ -308,7 +328,7 @@ async fn an_assistant_reads_but_never_types_into_a_codex_task_worker_or_a_finish
     assert_eq!(shown["controllable"], false);
     let refused = input_as(
         &h,
-        &assistant,
+        (&assistant, None),
         &codex,
         "codex",
         json!({"type":"text","text":"x"}),
@@ -344,7 +364,7 @@ async fn an_assistant_reads_but_never_types_into_a_codex_task_worker_or_a_finish
     let finished = worker_running(&h, "claude", &h.track, Some(ECHO_WORKER)).await;
     let before = ok_as(
         &h,
-        &assistant,
+        (&assistant, None),
         "neige_terminal_read",
         json!({"attempt_id":finished.task,"wait_ms":50}),
     )
