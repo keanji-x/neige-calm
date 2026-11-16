@@ -52,7 +52,7 @@ fn expected_planner_toolset() -> Vec<&'static str> {
 }
 
 fn tool_names_from_response(resp: &serde_json::Value) -> Vec<String> {
-    let mut names = resp["result"]["tools"]
+    resp["result"]["tools"]
         .as_array()
         .expect("tools is an array")
         .iter()
@@ -62,9 +62,7 @@ fn tool_names_from_response(resp: &serde_json::Value) -> Vec<String> {
                 .expect("tool name is a string")
                 .to_string()
         })
-        .collect::<Vec<_>>();
-    names.sort();
-    names
+        .collect()
 }
 
 async fn tools_list_names_for_role(role: CardRole) -> Vec<String> {
@@ -313,6 +311,7 @@ async fn tools_list_for_shared_daemon_without_thread_returns_role_union() {
     assert!(resp.get("error").is_none(), "tools/list errored: {resp:#?}");
 
     let names = tool_names_from_response(&resp);
+    assert!(names.windows(2).all(|pair| pair[0] < pair[1]));
     assert!(
         names.contains(&"neige_task_accept".to_string()),
         "daemon-trust tools/list without threadId must advertise Planner task_accept, got: {names:?}"

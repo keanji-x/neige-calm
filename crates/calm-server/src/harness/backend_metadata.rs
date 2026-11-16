@@ -22,6 +22,7 @@ pub(crate) enum ToolDiscovery {
     DirectMcp,
     SessionToolList,
     SessionToolListWithTrackReads,
+    AntigravityEager,
 }
 
 pub(crate) struct BackendMetadata {
@@ -51,7 +52,7 @@ impl super::backend::PlannerBackend {
                 true,
                 crate::acp_planner::wiring::manual_compaction(provider),
                 false,
-                ToolDiscovery::SessionToolListWithTrackReads,
+                ToolDiscovery::AntigravityEager,
             ),
             AgentProvider::OpenCode => (
                 false,
@@ -99,7 +100,16 @@ impl super::backend::PlannerBackend {
 
 impl ToolDiscovery {
     pub(crate) fn lists_track_reads(self) -> bool {
-        matches!(self, Self::SessionToolListWithTrackReads)
+        matches!(
+            self,
+            Self::SessionToolListWithTrackReads | Self::AntigravityEager
+        )
+    }
+
+    pub(crate) fn eager_mcp_catalog_byte_budget(self) -> Option<usize> {
+        // Leave room for Antigravity's model-facing schema expansion and other customizations.
+        // AGY can omit large tools when its eager MCP catalog exceeds the context budget.
+        matches!(self, Self::AntigravityEager).then_some(48 * 1024)
     }
 
     pub(crate) fn render_planner(self, template: &str) -> String {
@@ -138,7 +148,9 @@ impl ToolDiscovery {
             Self::DirectMcp => {
                 "## Report tools\n\nNeige report tools are already in your tool list as `mcp__neige__<name>`; call them directly.\n\n"
             }
-            Self::SessionToolList | Self::SessionToolListWithTrackReads => {
+            Self::SessionToolList
+            | Self::SessionToolListWithTrackReads
+            | Self::AntigravityEager => {
                 "## Report tools\n\nUse the Neige MCP report tools in the tool list supplied by this session. Tool listing is not a grant; only Assistant tools are authorized.\n\n"
             }
         };
@@ -171,8 +183,15 @@ mod tests {
             assert!(
                 matches!(
                     metadata.discovery,
-                    ToolDiscovery::SessionToolList | ToolDiscovery::SessionToolListWithTrackReads
+                    ToolDiscovery::SessionToolList
+                        | ToolDiscovery::SessionToolListWithTrackReads
+                        | ToolDiscovery::AntigravityEager
                 ),
+                "{provider:?}"
+            );
+            assert_eq!(
+                metadata.discovery.eager_mcp_catalog_byte_budget().is_some(),
+                provider == AgentProvider::Antigravity,
                 "{provider:?}"
             );
             assert!(!metadata.steer, "{provider:?}");

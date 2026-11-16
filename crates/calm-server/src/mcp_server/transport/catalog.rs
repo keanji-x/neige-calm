@@ -1,5 +1,7 @@
 //! Shared catalog production; connection identity and plugin admission remain authoritative.
 use super::*;
+use crate::harness::backend_metadata::ToolDiscovery;
+use crate::plugin_results::PLUGIN_TOOL_PREFIX;
 
 /// One discovery owner for MCP listing and authenticated CLI lookup.
 /// Bootstrap remains limited to the daemon's initial MCP discovery; CLI accepts card-bound callers only.
@@ -9,7 +11,7 @@ pub(crate) async fn tool_descriptors_for_connection(
     connection_identity: &ConnectionIdentity,
     thread_id: Option<&str>,
 ) -> Result<Vec<ToolDescriptor>, RpcError> {
-    let descriptors = match connection_identity {
+    let mut descriptors = match connection_identity {
         ConnectionIdentity::DaemonTrust => match thread_id {
             Some(tid) => match resolve_thread_identity(ctx, Some(tid), "tools/list")
                 .await
@@ -45,7 +47,15 @@ pub(crate) async fn tool_descriptors_for_connection(
             }
         },
     };
+    order_mcp_listing(&mut descriptors);
     Ok(descriptors)
+}
+
+fn order_mcp_listing(tools: &mut [ToolDescriptor]) {
+    tools.sort_unstable_by(|left, right| {
+        (left.name.starts_with(PLUGIN_TOOL_PREFIX), &left.name)
+            .cmp(&(right.name.starts_with(PLUGIN_TOOL_PREFIX), &right.name))
+    });
 }
 
 /// What Neige's MCP server lists a card-bound session: the names its own connection's `tools/list`
@@ -102,7 +112,7 @@ impl SessionToolNames {
 pub(crate) struct SessionCatalog {
     pub(crate) role: CardRole,
     track_is_admin: bool,
-    lists_track_reads: bool,
+    discovery: ToolDiscovery,
     /// Every tool this caller may call, the managed-track restriction applied.
     callable: Vec<ToolDescriptor>,
     /// Kernel tools and running, in-scope natives whose declared `roles` exclude this role: served
@@ -129,11 +139,8 @@ impl SessionCatalog {
             .partition(|descriptor| descriptor.roles.contains(&identity.role));
         Ok(Self {
             role: identity.role,
-            lists_track_reads: crate::harness::backend::PlannerBackend::metadata(
-                &identity.provider,
-            )
-            .discovery
-            .lists_track_reads(),
+            discovery: crate::harness::backend::PlannerBackend::metadata(&identity.provider)
+                .discovery,
             track_is_admin: match ctx.sqlite_db.as_ref() {
                 Some(pool) => crate::area_admin::card_is_admin(pool.read_pool(), &identity.card_id)
                     .await
@@ -147,11 +154,12 @@ impl SessionCatalog {
 
     /// The `tools/list` view: role-listed callable tools, with Admin discovery restricted.
     pub(crate) fn listed(&self) -> impl Iterator<Item = &ToolDescriptor> {
-        self.callable
+        let eligible = self
+            .callable
             .iter()
             .filter(|descriptor| {
                 descriptor.listed_for.contains(&self.role)
-                    || (self.lists_track_reads
+                    || (self.discovery.lists_track_reads()
                         && matches!(
                             descriptor.name.as_str(),
                             crate::mcp_server::tools::track_state::TOOL_TRACK_STATUS
@@ -162,7 +170,12 @@ impl SessionCatalog {
             .filter(|descriptor| {
                 self.track_is_admin
                     || !crate::area_admin::ADMIN_TOOLS.contains(&descriptor.name.as_str())
-            })
+            });
+        match self.discovery.eager_mcp_catalog_byte_budget() {
+            Some(budget) => kernel_first_listing(eligible, budget),
+            None => eligible.collect(),
+        }
+        .into_iter()
     }
 
     pub(crate) fn callable(&self) -> &[ToolDescriptor] {
@@ -175,6 +188,111 @@ impl SessionCatalog {
             .iter()
             .find(|descriptor| descriptor.name == name)
             .map(|descriptor| descriptor.roles)
+    }
+}
+
+/// Keep eligible kernel tools and use the remaining space for the smallest plugin definitions.
+fn kernel_first_listing<'a>(
+    tools: impl Iterator<Item = &'a ToolDescriptor>,
+    budget: usize,
+) -> Vec<&'a ToolDescriptor> {
+    let (mut kernel, plugins): (Vec<_>, Vec<_>) =
+        tools.partition(|tool| !tool.name.starts_with(PLUGIN_TOOL_PREFIX));
+    // Charge the compact MCP declaration and a separator for each entry, plus the array brackets.
+    let bytes = |tool: &ToolDescriptor| tool.clone().into_mcp_value().to_string().len() + 1;
+    let mut remaining =
+        budget.saturating_sub(2 + kernel.iter().map(|tool| bytes(tool)).sum::<usize>());
+    let mut plugins: Vec<_> = plugins
+        .into_iter()
+        .map(|tool| (bytes(tool), tool))
+        .collect();
+    plugins.sort_unstable_by_key(|&(size, tool)| (size, tool.name.as_str()));
+    for (size, tool) in plugins {
+        if size > remaining {
+            break;
+        }
+        remaining -= size;
+        kernel.push(tool);
+    }
+    kernel
+}
+
+#[cfg(test)]
+mod listing_tests {
+    use super::*;
+
+    fn tool(name: &str, description: String) -> ToolDescriptor {
+        ToolDescriptor {
+            name: name.into(),
+            description,
+            input_schema: json!({"type": "object"}),
+            annotations: None,
+            roles: &[CardRole::Planner],
+            listed_for: &[CardRole::Planner],
+        }
+    }
+
+    #[test]
+    fn mcp_listing_orders_kernel_before_plugins_and_sorts_each_group() {
+        let mut tools = [
+            tool("plugin_b_cat", String::new()),
+            tool("neige_terminal_input", String::new()),
+            tool("plugin_a_cat", String::new()),
+            tool("neige_report_commit", String::new()),
+        ];
+        order_mcp_listing(&mut tools);
+        assert_eq!(
+            tools.map(|tool| tool.name),
+            [
+                "neige_report_commit",
+                "neige_terminal_input",
+                "plugin_a_cat",
+                "plugin_b_cat",
+            ]
+        );
+    }
+
+    #[test]
+    fn eager_listing_spends_its_remaining_budget_on_plugins_only() {
+        let catalog = SessionCatalog {
+            role: CardRole::Planner,
+            track_is_admin: false,
+            discovery: ToolDiscovery::AntigravityEager,
+            callable: vec![
+                tool("plugin_large_cat", "x".repeat(48 * 1024)),
+                tool("neige_terminal_input", "x".repeat(24 * 1024)),
+                tool("plugin_small_cat", String::new()),
+                tool("neige_report_commit", String::new()),
+            ],
+            role_refused: Vec::new(),
+        };
+        let names: BTreeSet<_> = catalog.listed().map(|tool| tool.name.as_str()).collect();
+        assert_eq!(
+            names,
+            BTreeSet::from([
+                "neige_terminal_input",
+                "neige_report_commit",
+                "plugin_small_cat"
+            ])
+        );
+        assert_eq!(catalog.callable().len(), 4);
+    }
+
+    #[test]
+    fn eager_listing_keeps_kernel_tools_even_when_they_exceed_the_budget() {
+        let tools = [
+            tool("plugin_small_cat", String::new()),
+            tool("neige_terminal_input", "x".repeat(1024)),
+            tool("neige_report_commit", String::new()),
+        ];
+        let names: BTreeSet<_> = kernel_first_listing(tools.iter(), 512)
+            .into_iter()
+            .map(|tool| tool.name.as_str())
+            .collect();
+        assert_eq!(
+            names,
+            BTreeSet::from(["neige_terminal_input", "neige_report_commit"])
+        );
     }
 }
 
