@@ -9,6 +9,8 @@ pub struct TurnContext {
     pub turn_id: String,
     pub native_session_id: String,
     pub usage: super::usage::UsageTracker,
+    /// The agent publishes terminal updates for background tools across turns in a session.
+    pub background_tool_completions: bool,
 }
 pub struct TurnTranslator {
     context: TurnContext,
@@ -139,10 +141,19 @@ impl TurnTranslator {
                 }
             }
             "tool_call" | "tool_call_update" => {
-                self.complete_current(&mut events, at_ms);
                 let id = update["toolCallId"]
                     .as_str()
                     .ok_or(Error::Protocol("missing tool call identity"))?;
+                if kind == "tool_call_update"
+                    && self.context.background_tool_completions
+                    && matches!(update["status"].as_str(), Some("completed" | "failed"))
+                    && !id.is_empty()
+                    && !self.tools.contains_key(id)
+                {
+                    // The current turn cannot own a tool it never saw start.
+                    return Ok(events);
+                }
+                self.complete_current(&mut events, at_ms);
                 if kind == "tool_call" && self.tools.contains_key(id) {
                     return Err(Error::Protocol("duplicate tool call"));
                 }

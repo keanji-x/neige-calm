@@ -134,6 +134,7 @@ pub(super) async fn issue(
         native,
         turn: uuid::Uuid::new_v4().to_string(),
         usage,
+        background_tool_completions: registration.profile.background_tool_completions,
         asks,
     };
     let result = dispatch::send(shared, input, prepared, carrier, presence).await?;
@@ -179,6 +180,13 @@ pub(super) async fn drive(
             outcome
         },
     };
+    if let Err(error) = &outcome {
+        tracing::warn!(
+            %error, provider = ?shared.params.provider,
+            worker = %receipt.worker_session_id, turn = %receipt.turn_id,
+            "Shared ACP turn ended without a known outcome before cleanup"
+        );
+    }
     // A completed native turn can no longer accept answers to its earlier permission requests.
     // Optional telemetry retains admission, never the approval window.
     approvals.close().await;

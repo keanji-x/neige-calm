@@ -418,6 +418,7 @@ fn translator() -> translate::TurnTranslator {
         thread_id: "thread".into(),
         turn_id: "turn".into(),
         native_session_id: "native".into(),
+        background_tool_completions: false,
         usage: super::usage::UsageTracker::new(super::usage::UsageSource::SessionUsage),
     })
 }
