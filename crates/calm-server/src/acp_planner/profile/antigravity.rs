@@ -8,6 +8,7 @@ use super::{
 pub(super) const PROFILE: AcpAgentProfile = AcpAgentProfile {
     context_snapshot: true,
     shared_server: true,
+    background_tool_completions: true,
     mcp_tool_name_budget: Some(tool_name_budget),
     usage: provider::acp::usage::UsageSource::SessionUsage,
     compaction: ContractCompaction {

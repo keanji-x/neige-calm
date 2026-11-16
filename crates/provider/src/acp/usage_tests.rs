@@ -66,6 +66,7 @@ fn xai_notification_uses_current_neige_turn_and_preserves_the_reply() {
         thread_id: "thread".into(),
         turn_id: "turn".into(),
         native_session_id: "native".into(),
+        background_tool_completions: false,
         usage: tracker(),
     });
     let events = translator.update(&frame(json!(24100)), 10).unwrap();

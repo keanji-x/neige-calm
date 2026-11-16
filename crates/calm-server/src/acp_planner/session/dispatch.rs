@@ -16,6 +16,7 @@ pub(super) struct PreparedTurn {
     pub native: String,
     pub turn: String,
     pub usage: UsageTracker,
+    pub background_tool_completions: bool,
     pub asks: AgentAsks,
 }
 
@@ -49,6 +50,7 @@ pub(super) async fn send(
         native,
         turn,
         usage,
+        background_tool_completions,
         asks,
     } = prepared;
     let TurnInput {
@@ -178,6 +180,7 @@ pub(super) async fn send(
         turn_id: turn.clone(),
         native_session_id: native.clone(),
         usage,
+        background_tool_completions,
     });
     let _ = shared.events.send(translator.started());
     let (send_pending, pending) = tokio::sync::oneshot::channel();

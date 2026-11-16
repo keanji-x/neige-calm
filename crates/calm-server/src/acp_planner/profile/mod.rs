@@ -35,6 +35,7 @@ pub(crate) struct AcpAgentProfile {
     /// Model-visible name budget for the stdio shim, based on the provider's actual server key.
     pub(crate) mcp_tool_name_budget: Option<fn(&str) -> usize>,
     pub(crate) usage: provider::acp::usage::UsageSource,
+    pub(crate) background_tool_completions: bool,
     /// Native maintenance support declared independently for each worker contract.
     pub(crate) compaction: ContractCompaction,
     /// Supports receipt-owned canonical Planner input; activation is independently gated.

@@ -588,6 +588,13 @@ for line in sys.stdin:
                 update({'sessionUpdate': 'usage_update', 'used': 24100, 'size': 200000,
                         'cost': {'amount': 0.012, 'currency': 'USD'}})
             finish(request, 'usage reported')
+        elif scenario == 'shared-background-tool':
+            update({'sessionUpdate': 'tool_call', 'toolCallId': 'background', 'title': 'Background command',
+                    'kind': 'execute', 'status': 'in_progress'})
+            finish(request, 'background command started')
+        elif scenario == 'shared-background-tool-late-update':
+            update({'sessionUpdate': 'tool_call_update', 'toolCallId': 'background', 'status': 'completed'})
+            finish(request, 'successor reply')
         elif scenario in ['shared-unknown', 'shared-close-error']:
             result(request, {'unexpected': True})
         elif scenario == 'shared-hold':

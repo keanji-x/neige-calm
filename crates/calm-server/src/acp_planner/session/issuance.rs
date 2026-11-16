@@ -308,6 +308,9 @@ impl AcpPlannerSession {
                         native,
                         turn,
                         usage,
+                        background_tool_completions: registration
+                            .profile
+                            .background_tool_completions,
                         asks,
                     },
                     Carrier::Managed(&mut guard),

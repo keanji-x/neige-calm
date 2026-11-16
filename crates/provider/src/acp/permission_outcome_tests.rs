@@ -11,6 +11,7 @@ fn outcome(frames: Vec<Value>, reason: StopReason, tool: &str) -> Value {
         thread_id: "thread".into(),
         turn_id: "turn".into(),
         native_session_id: "session".into(),
+        background_tool_completions: false,
         usage: super::usage::UsageTracker::new(super::usage::UsageSource::SessionUsage),
     });
     for frame in frames {

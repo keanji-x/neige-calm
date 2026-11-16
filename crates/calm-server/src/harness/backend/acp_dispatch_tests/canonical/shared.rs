@@ -18,6 +18,39 @@ async fn canonical_antigravity_normal_end_has_body_free_receipt_and_exact_end() 
 }
 
 #[tokio::test]
+async fn canonical_antigravity_late_background_tool_update_preserves_next_turn() {
+    let fx =
+        Fixture::with_provider(AgentProvider::Antigravity, "shared-background-tool", false).await;
+    fx.dispatch().await.unwrap();
+    fx.wait_idle().await;
+    assert!(fx.complete().await.is_some());
+
+    std::fs::write(
+        fx.dir.path().join("scenario"),
+        "shared-background-tool-late-update",
+    )
+    .unwrap();
+    let successor = fx.claim_successor().await;
+    fx.dispatch_submission(&successor).await;
+    fx.wait_idle().await;
+
+    let (_, _, state, outcome) = fx.receipt_bytes(&successor).await;
+    assert_eq!(state, "completed");
+    let outcome: serde_json::Value = serde_json::from_str(&outcome.unwrap()).unwrap();
+    assert_eq!(outcome["status"], "completed");
+    assert!(
+        outcome["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|item| { item["params"]["item"]["type"] != "dynamicToolCall" })
+    );
+    assert!(fx.complete().await.is_some());
+    assert!(fx.requests().iter().all(|r| r["method"] != "session/close"));
+    fx.session.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn canonical_antigravity_confirmed_close_allows_keep_and_same_process_continuation() {
     let fx = Fixture::with_provider(AgentProvider::Antigravity, "shared-unknown", false).await;
     fx.dispatch().await.unwrap();
