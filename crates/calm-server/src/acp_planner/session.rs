@@ -273,8 +273,11 @@ impl AcpPlannerSession {
             .is_some_and(|profile| profile.supervise_resident);
         let detached = if supervised {
             // The retiring generation must not wait on this worker's own route.
-            join_driver(&self.shared).await?;
-            detach_worker(&params.host, &params.worker_session_id).await
+            // A failed join still requires releasing the workspace attachment.
+            let joined = join_driver(&self.shared).await;
+            let detached = detach_worker(&params.host, &params.worker_session_id).await;
+            joined?;
+            detached
         } else {
             let detached = detach_worker(&params.host, &params.worker_session_id).await;
             // Cleanup errors never detach the writer.
