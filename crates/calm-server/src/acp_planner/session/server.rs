@@ -182,6 +182,9 @@ pub(super) async fn drive(
             outcome
         },
     };
+    if outcome.is_err() {
+        driver::publish_partial(&shared, &mut translator, &mut retained);
+    }
     if let Err(error) = &outcome {
         tracing::warn!(
             %error, provider = ?shared.params.provider,
@@ -322,12 +325,7 @@ async fn settle(
         tracing::error!(%error, "Shared ACP outcome projection failed");
     }
     if !known {
-        events = vec![PlannerEvent {
-            thread_id: Some(receipt.thread_id.clone()),
-            kind: PlannerEventKind::TurnCompleted {
-                turn: unknown_outcome(&receipt.turn_id),
-            },
-        }];
+        events = driver::unknown_events(&receipt.thread_id, &receipt.turn_id, events);
     }
     let mut state = shared.state.lock().expect("ACP state");
     if state

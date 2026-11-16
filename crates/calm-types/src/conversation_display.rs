@@ -378,7 +378,56 @@ impl ConversationActiveInput {
 pub struct ConversationLiveTurn {
     pub thread_id: String,
     pub turn_id: String,
-    pub items: Vec<crate::harness::HarnessLiveReply>,
+    pub items: Vec<ConversationLiveItem>,
+}
+
+/// Native live body. Historical HarnessLiveReply deliberately retains its old shape.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema, TS)]
+#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
+pub struct ConversationLiveItem {
+    pub item_id: String,
+    pub text: String,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_live_output"
+    )]
+    #[ts(optional)]
+    #[schema(nullable = false)]
+    pub output: Option<ConversationLiveOutput>,
+}
+fn present_live_output<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<Option<ConversationLiveOutput>, D::Error> {
+    ConversationLiveOutput::deserialize(d).map(Some)
+}
+/// Native typed snapshot; revision is decimal u64 text without browser rounding.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema, TS)]
+#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
+pub struct ConversationLiveOutput {
+    pub revision: String,
+    pub segment: ConversationLiveSegment,
+    pub content: crate::output_content::OutputContentV1,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema, TS)]
+#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
+#[ts(type = "{ channel: OutputChannel, ordinal: string } & { [key: string]: unknown }")]
+pub struct ConversationLiveSegment {
+    pub channel: crate::output_content::OutputChannel,
+    /// Decimal u64; the persisted segment continues to use its original numeric ordinal.
+    pub ordinal: String,
+    #[serde(flatten)]
+    #[schema(value_type = std::collections::BTreeMap<String, serde_json::Value>)]
+    pub fields: serde_json::Map<String, serde_json::Value>,
+}
+impl From<&crate::output_content::OutputSegment> for ConversationLiveSegment {
+    fn from(segment: &crate::output_content::OutputSegment) -> Self {
+        Self {
+            channel: segment.channel.clone(),
+            ordinal: segment.ordinal.to_string(),
+            fields: segment.fields.clone(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema, TS)]
@@ -436,4 +485,42 @@ pub enum ConversationTerminalStatus {
     Completed,
     Interrupted,
     Failed,
+}
+
+#[cfg(test)]
+mod live_output_tests {
+    use super::*;
+    use serde_json::{Value, json};
+    #[test]
+    fn native_live_output_omits_absence_rejects_null_and_preserves_decimal_u64() {
+        let legacy = json!({"item_id":"item","text":"legacy"});
+        let decoded: ConversationLiveItem = serde_json::from_value(legacy.clone()).unwrap();
+        assert_eq!(serde_json::to_value(decoded).unwrap(), legacy);
+        let segment = crate::output_content::OutputSegment {
+            channel: crate::output_content::OutputChannel::Thought,
+            ordinal: u64::MAX,
+            fields: serde_json::from_value(json!({"messageId":null,"chunkMeta":{"a":1}})).unwrap(),
+        };
+        let output = ConversationLiveOutput {
+            revision: u64::MAX.to_string(),
+            segment: (&segment).into(),
+            content: crate::output_content::OutputContentV1::new(vec![]),
+        };
+        let value = serde_json::to_value(output).unwrap();
+        assert_eq!(value["revision"], "18446744073709551615");
+        assert_eq!(value["segment"]["ordinal"], "18446744073709551615");
+        assert_eq!(value["segment"]["messageId"], Value::Null);
+        for bad in [
+            Value::Null,
+            json!({}),
+            json!({"revision":"1","segment":value["segment"],"content":{"version":2,"blocks":[]}}),
+        ] {
+            assert!(
+                serde_json::from_value::<ConversationLiveItem>(
+                    json!({"item_id":"item","text":"must not fallback","output":bad})
+                )
+                .is_err()
+            );
+        }
+    }
 }

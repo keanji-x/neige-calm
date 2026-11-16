@@ -56,6 +56,12 @@ pub enum PlannerEventKind {
         item_id: String,
         delta: String,
     },
+    /// Accepted typed output; consumed by the original in-memory live owner.
+    OutputAppend {
+        turn_id: String,
+        item_id: String,
+        op: OutputAppendOp,
+    },
     /// The running turn's whole plan, superseding the previous one; stored as is.
     PlanUpdated {
         params: Value,
@@ -93,4 +99,15 @@ impl ItemPhase {
             ItemPhase::Completed => "item/completed",
         }
     }
+}
+
+/// One operation per accepted chunk; text continuation only targets the last text block.
+#[derive(Debug, Clone)]
+pub enum OutputAppendOp {
+    AppendBlock {
+        block: calm_types::output_content::OutputBlock,
+    },
+    AppendText {
+        text: String,
+    },
 }

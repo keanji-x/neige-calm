@@ -6,7 +6,7 @@ use std::sync::Arc;
 use calm_types::harness::{HarnessLiveReplies, HarnessLiveReply};
 use serde_json::{Value, json};
 
-use super::live_replies::{LiveReplies, LiveReplyWriter, OpenReply};
+use super::live_replies::{LiveReplies, LiveReplyWriter, OpenReply, ReplyBody};
 use crate::ids::CardId;
 
 fn card() -> CardId {
@@ -140,7 +140,7 @@ fn settle_hands_back_the_open_replies_once_and_each_stays_live_until_stored() {
     let open = |item_id: &str, text: &str| OpenReply {
         item_id: item_id.into(),
         started: started(item_id),
-        text: text.into(),
+        body: ReplyBody::LegacyText(text.into()),
     };
     assert_eq!(
         writer.settle("turn-1"),
@@ -290,4 +290,134 @@ fn same_named_turn_in_a_new_thread_replaces_body_and_old_writer_cannot_relabel_i
     let turn = replies.read_conversation(&card(), "current").turn.unwrap();
     assert_eq!(turn.thread_id, "C");
     assert_eq!(turn.items[0].text, "C");
+}
+
+#[test]
+fn typed_live_replies_preserve_blocks_in_snapshot_and_partial() {
+    use provider::acp::{
+        translate::{TurnContext, TurnTranslator},
+        usage::UsageTracker,
+    };
+    use provider::events::PlannerEventKind;
+    let replies = LiveReplies::for_test();
+    let writer = installed(&replies, "runtime");
+    writer.turn_started_native("thread", "turn");
+    let mut translator = TurnTranslator::new(TurnContext {
+        thread_id: "thread".into(),
+        turn_id: "turn".into(),
+        native_session_id: "session".into(),
+        usage: UsageTracker::new(provider::acp::usage::UsageSource::SessionUsage),
+        background_tool_completions: false,
+    });
+    for content in [
+        json!({"type":"text","text":"he"}),
+        json!({"type":"text","text":"ad"}),
+        json!({"type":"image","data":"AA==","mimeType":"image/png"}),
+        json!({"type":"text","text":"tail"}),
+    ] {
+        for event in translator.update(&json!({"sessionId":"session","update":{"sessionUpdate":"agent_message_chunk","content":content}}), 1).unwrap() {
+            match event.kind {
+                PlannerEventKind::Item { params, .. } => writer.reply_started("turn", params["item"]["id"].as_str().unwrap(), &params["item"]),
+                PlannerEventKind::OutputAppend { turn_id, item_id, op } => { assert!(writer.output_append("thread", &turn_id, &item_id, op)); },
+                _ => {},
+            }
+        }
+    }
+    let snapshot = serde_json::to_value(replies.read_conversation(&card(), "runtime")).unwrap();
+    assert_eq!(
+        snapshot["turn"]["items"][0]["output"]["content"]["blocks"]
+            .as_array()
+            .map(Vec::len),
+        Some(3)
+    );
+    assert_eq!(snapshot["turn"]["items"][0]["text"], "headtail");
+    assert_eq!(snapshot["turn"]["items"][0]["output"]["revision"], "4");
+    let partial = writer.settle("turn");
+    assert_eq!(partial.len(), 1);
+    assert_eq!(partial[0].materialize_item()["text"], "headtail");
+    assert_eq!(
+        partial[0].materialize_item()["outputContent"]["blocks"]
+            .as_array()
+            .map(Vec::len),
+        Some(3)
+    );
+}
+
+fn typed_started() -> Value {
+    json!({"id":"typed", "type":"reasoning", "summary":[""], "content":[],
+        "outputContent":{"version":1,"blocks":[]},
+        "outputSegment":{"channel":"thought","ordinal":1,"messageId":null}})
+}
+fn text_op(text: &str) -> provider::events::OutputAppendOp {
+    provider::events::OutputAppendOp::AppendBlock {
+        block: calm_types::output_content::OutputBlock::Text {
+            text: text.into(),
+            fields: Default::default(),
+            chunk: Default::default(),
+        },
+    }
+}
+#[test]
+fn typed_live_replies_reject_wrong_identity_legacy_ops_terminal_and_lag() {
+    let replies = LiveReplies::for_test();
+    let old = installed(&replies, "old");
+    old.turn_started_native("thread", "turn");
+    old.reply_started("turn", "typed", &typed_started());
+    assert!(!old.output_append("wrong", "turn", "typed", text_op("bad")));
+    assert!(!old.output_append("thread", "wrong", "typed", text_op("bad")));
+    assert!(!old.output_append("thread", "turn", "missing", text_op("bad")));
+    assert!(!old.output_append(
+        "thread",
+        "turn",
+        "typed",
+        provider::events::OutputAppendOp::AppendText {
+            text: "no block".into()
+        }
+    ));
+    old.delta("turn", "typed", "legacy cannot write typed");
+    assert!(old.output_append("thread", "turn", "typed", text_op("kept")));
+    let snapshot = replies.read_conversation(&card(), "old");
+    assert_eq!(
+        snapshot.turn.as_ref().unwrap().items[0]
+            .output
+            .as_ref()
+            .unwrap()
+            .revision,
+        "1"
+    );
+    assert_eq!(snapshot.turn.as_ref().unwrap().items[0].text, "kept");
+    old.settle("turn");
+    assert!(!old.output_append("thread", "turn", "typed", text_op("late")));
+    assert_eq!(replies.read_conversation(&card(), "old"), snapshot);
+    let new = installed(&replies, "new");
+    new.turn_started_native("thread", "turn");
+    new.reply_started("turn", "typed", &typed_started());
+    assert!(!old.output_append("thread", "turn", "typed", text_op("stale writer")));
+    assert!(new.output_append("thread", "turn", "typed", text_op("kept")));
+    new.input_lost();
+    new.turn_started_native("thread", "turn");
+    new.reply_started("turn", "typed", &typed_started());
+    assert!(!new.output_append("thread", "turn", "typed", text_op("suffix")));
+    assert!(new.settle("turn").is_empty());
+    assert!(replies.read_conversation(&card(), "new").turn.is_none());
+}
+
+#[test]
+fn typed_live_replies_bad_envelope_does_not_open_or_fallback() {
+    let replies = LiveReplies::for_test();
+    let writer = installed(&replies, "runtime");
+    writer.turn_started_native("thread", "turn");
+    for invalid in [json!(null), json!({"version":2,"blocks":[]})] {
+        let mut item = typed_started();
+        item["outputContent"] = invalid;
+        writer.reply_started("turn", "typed", &item);
+        assert!(
+            replies
+                .read_conversation(&card(), "runtime")
+                .turn
+                .unwrap()
+                .items
+                .is_empty()
+        );
+    }
 }

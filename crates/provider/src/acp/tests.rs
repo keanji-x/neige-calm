@@ -519,9 +519,13 @@ fn streaming_reply_starts_empty_and_accumulates_exact_text_once() {
         } else {
             assert_eq!(events.len(), 1);
         }
-        assert!(
-            matches!(&events.last().unwrap().kind,PlannerEventKind::ReplyDelta{delta,..} if delta==text)
-        );
+        let PlannerEventKind::OutputAppend { op, .. } = &events.last().unwrap().kind else {
+            panic!("typed append");
+        };
+        match op {
+            crate::events::OutputAppendOp::AppendBlock { block } => assert_eq!(block.text(), *text),
+            crate::events::OutputAppendOp::AppendText { text: delta } => assert_eq!(delta, text),
+        }
     }
     let events = translator.finish(protocol::StopReason::EndTurn, 20);
     let PlannerEventKind::Item { params, phase, .. } = &events[0].kind else {

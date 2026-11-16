@@ -146,8 +146,8 @@ impl Fixture {
         tokio::time::timeout(Duration::from_secs(20), async {
             loop {
                 let event = events.recv().await.unwrap();
-                if matches!(event.kind, provider::events::PlannerEventKind::ReplyDelta { ref delta, .. }
-                    if delta == "held prompt received") {
+                if matches!(event.kind, provider::events::PlannerEventKind::OutputAppend { op: provider::events::OutputAppendOp::AppendBlock { ref block }, .. }
+                    if block.text() == "held prompt received") {
                     assert_eq!(event.thread_id.as_deref(), Some(self.owner.thread.as_str()));
                     break;
                 }

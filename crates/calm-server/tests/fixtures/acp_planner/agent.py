@@ -545,6 +545,19 @@ for line in sys.stdin:
                 time.sleep(0.01)
         if scenario in ['lost', 'checkpoint', 'load-replay-lost']:
             os._exit(0)
+        if scenario.startswith('rich-'):
+            for content in [{'type': 'text', 'text': 'head'},
+                            {'type': 'image', 'mimeType': 'image/png', 'data': 'AA=='},
+                            {'type': 'text', 'text': 'tail'}]:
+                update({'sessionUpdate': 'agent_message_chunk', 'content': content})
+            update({'sessionUpdate': 'tool_call', 'toolCallId': 'rich-tool', 'title': 'Seal message', 'status': 'completed'})
+            update({'sessionUpdate': 'agent_thought_chunk', 'content': {'type': 'audio', 'mimeType': 'audio/wav', 'data': 'AAA='}})
+            (root / 'rich-streamed').touch()
+            if scenario == 'rich-live':
+                while not (root / 'release-rich').exists():
+                    time.sleep(0.01)
+            result(request, {'unexpected': True} if scenario == 'rich-unknown' else {'stopReason': 'end_turn'})
+            continue
         vendor('queue/changed')
         if scenario == 'grok-assistant':
             assert xai and not always_approve, 'Grok Assistant runs under Never'

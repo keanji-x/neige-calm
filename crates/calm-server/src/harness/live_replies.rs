@@ -1,4 +1,4 @@
-//! The reply text a Planner turn is streaming before its `item/completed` row stores it (#1923 S2).
+//! The reply output a Planner turn is streaming before its `item/completed` row stores it (#1923 S2).
 //!
 //! The server has one [`LiveReplies`], owned by the
 //! [`HarnessRegistry`](crate::harness::HarnessRegistry), and `GET /api/cards/{id}/harness/live`
@@ -10,7 +10,10 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+use calm_types::conversation_display::{ConversationLiveItem, ConversationLiveOutput};
 use calm_types::harness::{HarnessLiveReplies, HarnessLiveReply};
+use calm_types::output_content::{OutputBlock, OutputContentV1, OutputSegment};
+use provider::events::OutputAppendOp;
 use serde_json::Value;
 
 use crate::ids::CardId;
@@ -43,13 +46,61 @@ struct LiveTurn {
     items: Vec<OpenReply>,
 }
 
-/// One open reply: the item its `item/started` carried and the text streamed into it so far.
+/// One open reply: its persisted start anchor and the accepted in-memory body.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct OpenReply {
     pub(crate) item_id: String,
     /// The `item` of the reply's `item/started` row.
     pub(crate) started: Value,
-    pub(crate) text: String,
+    pub(crate) body: ReplyBody,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum ReplyBody {
+    LegacyText(String),
+    Output {
+        segment: OutputSegment,
+        content: OutputContentV1,
+        revision: u64,
+    },
+}
+impl OpenReply {
+    pub(crate) fn text(&self) -> String {
+        match &self.body {
+            ReplyBody::LegacyText(text) => text.clone(),
+            ReplyBody::Output { content, .. } => content.text(),
+        }
+    }
+    pub(crate) fn materialize_item(&self) -> Value {
+        match &self.body {
+            ReplyBody::LegacyText(text) => {
+                let mut item = self.started.clone();
+                item["text"] = Value::String(text.clone());
+                item
+            }
+            ReplyBody::Output {
+                segment, content, ..
+            } => content.materialize_item(self.started.clone(), segment),
+        }
+    }
+    fn native(&self) -> ConversationLiveItem {
+        ConversationLiveItem {
+            item_id: self.item_id.clone(),
+            text: self.text(),
+            output: match &self.body {
+                ReplyBody::LegacyText(_) => None,
+                ReplyBody::Output {
+                    segment,
+                    content,
+                    revision,
+                } => Some(ConversationLiveOutput {
+                    revision: revision.to_string(),
+                    segment: segment.into(),
+                    content: content.clone(),
+                }),
+            },
+        }
+    }
 }
 
 impl LiveTurn {
@@ -88,7 +139,7 @@ impl LiveReplies {
                         .iter()
                         .map(|item| HarnessLiveReply {
                             item_id: item.item_id.clone(),
-                            text: item.text.clone(),
+                            text: item.text(),
                         })
                         .collect()
                 },
@@ -123,14 +174,7 @@ impl LiveReplies {
                 Some(ConversationLiveTurn {
                     thread_id: thread_id.clone(),
                     turn_id: turn.turn_id.clone(),
-                    items: turn
-                        .items
-                        .iter()
-                        .map(|item| HarnessLiveReply {
-                            item_id: item.item_id.clone(),
-                            text: item.text.clone(),
-                        })
-                        .collect(),
+                    items: turn.items.iter().map(OpenReply::native).collect(),
                 })
             });
         ConversationLiveReplies {
@@ -277,10 +321,31 @@ impl LiveReplyWriter {
             if let Some(turn) = LiveTurn::open(turn, turn_id)
                 && !turn.items.iter().any(|item| item.item_id == item_id)
             {
+                let body = if started.get("outputContent").is_some()
+                    || started.get("outputSegment").is_some()
+                {
+                    let (Ok(content), Ok(segment)) = (
+                        serde_json::from_value::<OutputContentV1>(started["outputContent"].clone()),
+                        serde_json::from_value::<OutputSegment>(started["outputSegment"].clone()),
+                    ) else {
+                        return;
+                    };
+                    // Started is an anchor only. A complete producer frame repairs lost input.
+                    if !content.blocks.is_empty() {
+                        return;
+                    }
+                    ReplyBody::Output {
+                        content,
+                        segment,
+                        revision: 0,
+                    }
+                } else {
+                    ReplyBody::LegacyText(String::new())
+                };
                 turn.items.push(OpenReply {
                     item_id: item_id.to_owned(),
                     started: started.clone(),
-                    text: String::new(),
+                    body,
                 });
             }
         });
@@ -291,10 +356,54 @@ impl LiveReplyWriter {
         self.with_turn(|turn| {
             if let Some(turn) = LiveTurn::open(turn, turn_id)
                 && let Some(item) = turn.items.iter_mut().find(|item| item.item_id == item_id)
+                && let ReplyBody::LegacyText(text) = &mut item.body
             {
-                item.text.push_str(delta);
+                text.push_str(delta);
             }
         });
+    }
+
+    /// Atomic memory-only operation, under the installed writer and actual thread/turn fence.
+    pub(crate) fn output_append(
+        &self,
+        thread_id: &str,
+        turn_id: &str,
+        item_id: &str,
+        op: OutputAppendOp,
+    ) -> bool {
+        self.with_turn(|turn| {
+            let Some(turn) = LiveTurn::open(turn, turn_id) else {
+                return false;
+            };
+            if turn.native_thread_id.as_deref() != Some(thread_id) {
+                return false;
+            }
+            let Some(item) = turn.items.iter_mut().find(|item| item.item_id == item_id) else {
+                return false;
+            };
+            let ReplyBody::Output {
+                content, revision, ..
+            } = &mut item.body
+            else {
+                return false;
+            };
+            let Some(next) = revision.checked_add(1) else {
+                return false;
+            };
+            match op {
+                OutputAppendOp::AppendBlock { block } => content.blocks.push(block),
+                OutputAppendOp::AppendText { text } => {
+                    let Some(OutputBlock::Text { text: tail, .. }) = content.blocks.last_mut()
+                    else {
+                        return false;
+                    };
+                    tail.push_str(&text);
+                }
+            }
+            *revision = next;
+            true
+        })
+        .unwrap_or(false)
     }
 
     /// The item's `item/completed` row is stored, so its text is durable and leaves the live state.

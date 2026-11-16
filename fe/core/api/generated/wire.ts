@@ -194,9 +194,21 @@ export type ConversationInputResolutionResult = { "kind": "keep", result: KeepCo
 
 export type ConversationInputTarget = { provider: AgentProvider, thread_id: string, native_session_id: string | null, local_turn_id: string | null, native_turn_id: string | null, rpc_request_id: string | null, };
 
+/**
+ * Native live body. Historical HarnessLiveReply deliberately retains its old shape.
+ */
+export type ConversationLiveItem = { item_id: string, text: string, output?: ConversationLiveOutput, };
+
+/**
+ * Native typed snapshot; revision is decimal u64 text without browser rounding.
+ */
+export type ConversationLiveOutput = { revision: string, segment: ConversationLiveSegment, content: OutputContentV1, };
+
 export type ConversationLiveReplies = { contract: ConversationReadContract, turn: ConversationLiveTurn | null, };
 
-export type ConversationLiveTurn = { thread_id: string, turn_id: string, items: Array<HarnessLiveReply>, };
+export type ConversationLiveSegment = { channel: OutputChannel, ordinal: string } & { [key: string]: unknown };
+
+export type ConversationLiveTurn = { thread_id: string, turn_id: string, items: Array<ConversationLiveItem>, };
 
 export type ConversationPage = { contract: ConversationReadContract, source: ConversationCursorSource, items: Array<ConversationDisplayItem>, next_cursor: ConversationCursor | null, };
 
@@ -593,6 +605,14 @@ export type MobileStatus = { provider: MobileProvider, tailnet: TailnetStatus | 
  * that exist: no `candidate_id` / `commit_sha` is minted for a delivery that produced none.
  */
 export type NoCandidateReason = { "kind": "delivery_pending", delivery_id: string, } | { "kind": "delivery_failed", delivery_id: string, } | { "kind": "no_delivery_row" };
+
+export type OutputBlock = { "type": "text", text: string, fields: { [key: string]: unknown }, chunk?: { [key: string]: unknown }, } | { "type": "image", data: string, mimeType: string, fields: { [key: string]: unknown }, chunk?: { [key: string]: unknown }, } | { "type": "audio", data: string, mimeType: string, fields: { [key: string]: unknown }, chunk?: { [key: string]: unknown }, } | { "type": "resource_link", uri: string, name: string, fields: { [key: string]: unknown }, chunk?: { [key: string]: unknown }, } | { "type": "resource", resource: OutputResource, fields: { [key: string]: unknown }, chunk?: { [key: string]: unknown }, } | { "type": "unknown_extension", raw: unknown, chunk?: { [key: string]: unknown }, } | { "type": "tool_diff", path: string, newText: string, fields: { [key: string]: unknown }, chunk?: { [key: string]: unknown }, } | { "type": "terminal_reference", terminalId: string, fields: { [key: string]: unknown }, chunk?: { [key: string]: unknown }, };
+
+export type OutputChannel = "message" | "thought";
+
+export type OutputContentV1 = { version: 1, blocks: Array<OutputBlock>, };
+
+export type OutputResource = { uri: string, text: string, fields: { [key: string]: unknown }, } | { uri: string, blob: string, fields: { [key: string]: unknown }, };
 
 export type Overlay = { id: string, plugin_id: string, 
 /**

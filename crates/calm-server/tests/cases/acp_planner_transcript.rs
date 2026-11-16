@@ -6,6 +6,7 @@ async fn partial_receipt_recovery_restores_native_item_order() {
     let root = Root::new("unused");
     let stack = boot(&root).await;
     let (_, card) = create(&stack).await;
+    std::fs::write(root.path().join("scenario"), "rich-normal").unwrap();
     turn(&stack, &card, "ordered recovery", 1).await;
     let runtime = stack.runtime(&card).await;
     let before = stack
@@ -23,6 +24,13 @@ async fn partial_receipt_recovery_restores_native_item_order() {
             .await
             .unwrap();
     let receipt: Value = serde_json::from_str(&receipt).unwrap();
+    assert_eq!(
+        receipt["items"][0]["params"]["item"]["outputContent"]["blocks"]
+            .as_array()
+            .unwrap()
+            .len(),
+        3
+    );
     let first = receipt["items"][0]["params"]["item"]["id"]
         .as_str()
         .unwrap();
@@ -56,6 +64,14 @@ async fn partial_receipt_recovery_restores_native_item_order() {
         .transcript_rows_of_thread(&card, runtime.thread_id.as_deref().unwrap())
         .await
         .unwrap();
+    let repaired = rows
+        .iter()
+        .find(|row| row.item_uuid.as_deref() == Some(first))
+        .unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(&repaired.params).unwrap(),
+        receipt["items"][0]["params"]
+    );
     let ids: Vec<&str> = receipt["items"]
         .as_array()
         .unwrap()

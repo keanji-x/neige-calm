@@ -10,18 +10,19 @@ use crate::harness::live_replies::{LiveReplyWriter, OpenReply};
 use crate::harness::state::{HarnessState, IssuingKind};
 use provider::events::ItemPhase;
 
-/// The stored item type of a reply, the one item type that streams.
+/// The legacy item type that streams without a typed output envelope.
 const REPLY_ITEM_TYPE: &str = "agentMessage";
 
-/// Called once an item event's row is stored: an `agentMessage` start opens a live reply, and a
-/// completion removes the item, whose text is now durable.
+/// Called after persistence: a legacy message or typed segment start opens a live reply;
+/// a completion retires the body that is now durable.
 pub(super) fn on_item(live: &LiveReplyWriter, phase: ItemPhase, params: &Value) {
     let Some(item_id) = params.pointer("/item/id").and_then(Value::as_str) else {
         return;
     };
     match phase {
         ItemPhase::Started => {
-            if params.pointer("/item/type").and_then(Value::as_str) == Some(REPLY_ITEM_TYPE)
+            if (params.pointer("/item/type").and_then(Value::as_str) == Some(REPLY_ITEM_TYPE)
+                || params.pointer("/item/outputSegment").is_some())
                 && let Some(turn_id) = item_turn_id(params)
             {
                 live.reply_started(turn_id, item_id, &params["item"]);
@@ -36,6 +37,7 @@ pub(super) fn on_item(live: &LiveReplyWriter, phase: ItemPhase, params: &Value) 
 /// settles it. The state machine is left as it is.
 pub(super) fn on_unaccepted_start(
     live: &LiveReplyWriter,
+    source_thread: Option<&str>,
     state: &HarnessState,
     issued_turn_id: Option<&str>,
     turn_id: &str,
@@ -46,7 +48,11 @@ pub(super) fn on_unaccepted_start(
     } = state
         && (target_turn_id == turn_id || issued_turn_id == Some(turn_id))
     {
-        live.turn_started(turn_id);
+        if let Some(thread) = source_thread.filter(|id| !id.is_empty()) {
+            live.turn_started_native(thread, turn_id);
+        } else {
+            live.turn_started(turn_id);
+        }
     }
 }
 
@@ -101,7 +107,7 @@ pub(super) async fn settle(
 }
 
 /// One partial reply as an `item/completed` row: the item its `item/started` carried, with the
-/// streamed text, marked `_partial` as provenance (the kernel wrote it). Once the row is stored
+/// accepted body, marked `_partial` as provenance (the kernel wrote it). Once the row is stored
 /// the reply leaves the live state, and the row is announced like any item.
 async fn store_partial(
     inner: &Arc<Inner>,
@@ -111,8 +117,7 @@ async fn store_partial(
     reply: OpenReply,
 ) -> crate::error::Result<()> {
     let method = ItemPhase::Completed.method();
-    let mut item = reply.started;
-    item["text"] = Value::String(reply.text);
+    let item = reply.materialize_item();
     let params = json!({
         "threadId": thread_id,
         "turnId": turn_id,
@@ -139,7 +144,7 @@ async fn store_partial(
             thread_id,
             Some(turn_id),
             Some(&reply.item_id),
-            Some(REPLY_ITEM_TYPE),
+            item.get("type").and_then(Value::as_str),
             method,
             &serde_json::to_string(&params)?,
             None,
@@ -155,7 +160,7 @@ async fn store_partial(
         inner,
         row_id,
         Some(reply.item_id),
-        Some(REPLY_ITEM_TYPE.into()),
+        item.get("type").and_then(Value::as_str).map(str::to_owned),
         Some(turn_id.into()),
         method.into(),
     )

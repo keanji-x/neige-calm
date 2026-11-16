@@ -165,3 +165,203 @@ async fn presentation_replay_repairs_missing_reference_and_announces_once() {
     complete(&fx, &mut peer, &thread, "repair-reference").await;
     stop(&fx, &mut peer).await;
 }
+
+fn output_translator(thread: &str, turn: &str) -> provider::acp::translate::TurnTranslator {
+    provider::acp::translate::TurnTranslator::new(provider::acp::translate::TurnContext {
+        thread_id: thread.into(),
+        turn_id: turn.into(),
+        native_session_id: "session".into(),
+        usage: provider::acp::usage::UsageTracker::new(
+            provider::acp::usage::UsageSource::SessionUsage,
+        ),
+        background_tool_completions: false,
+    })
+}
+fn output_chunks(
+    t: &mut provider::acp::translate::TurnTranslator,
+) -> Vec<provider::events::PlannerEvent> {
+    let mut events = Vec::new();
+    for content in [
+        json!({"type":"text","text":"head"}),
+        json!({"type":"image","mimeType":"image/png","data":"AA=="}),
+        json!({"type":"text","text":"tail"}),
+    ] {
+        events.extend(t.update(&json!({"sessionId":"session","update":{"sessionUpdate":"agent_message_chunk","content":content}}),1).unwrap());
+    }
+    events
+}
+
+#[tokio::test]
+async fn presentation_replay_typed_partial_keeps_blocks_and_failed_write_does_not_block_end() {
+    for refuse in [false, true] {
+        let fx = Fixture::new().await;
+        let (_client, mut peer) = connect(&fx.daemon).await;
+        let thread = start(&fx, &mut peer, fx.message.clone(), "typed-partial").await;
+        let inner = &fx.harness.inner;
+        let live = inner.live_claim.writer();
+        let before = presentation_events(&fx).await.len();
+        let mut translator = output_translator(&thread, "typed-partial");
+        crate::harness::run_loop::on_notification(inner, &live, translator.started())
+            .await
+            .unwrap();
+        let events = output_chunks(&mut translator);
+        for event in events {
+            crate::harness::run_loop::on_notification(inner, &live, event)
+                .await
+                .unwrap();
+        }
+        let snapshot = fx
+            .registry
+            .live_replies()
+            .read_conversation(&inner.card_id, &inner.worker_session_id);
+        let item = &snapshot.turn.as_ref().unwrap().items[0];
+        assert_eq!(item.output.as_ref().unwrap().content.blocks.len(), 3);
+        assert_eq!(item.output.as_ref().unwrap().revision, "3");
+        assert_eq!(
+            presentation_events(&fx).await.len(),
+            before + 1,
+            "chunks never write presentation rows"
+        );
+        if refuse {
+            fx.original
+                .repo
+                .db()
+                .writer()
+                .execute(sqlx::query(concat!(
+                    "CREATE TRIGGER refuse_typed_partial BEFORE INSERT ON events ",
+                    "WHEN NEW.kind='harness.presentation.changed' ",
+                    "BEGIN SELECT RAISE(ABORT,'partial unavailable'); END"
+                )))
+                .await
+                .unwrap();
+        }
+        notify_thread(
+            &fx.daemon,
+            &mut peer,
+            &thread,
+            "turn/completed",
+            json!({"id":"typed-partial","status":"failed"}),
+        )
+        .await;
+        fx.wait_phase(HarnessPhaseTag::TurnCompleted).await;
+        if refuse {
+            assert_eq!(
+                fx.registry
+                    .live_replies()
+                    .read_conversation(&inner.card_id, &inner.worker_session_id),
+                snapshot,
+                "failed display write keeps frozen visible gap even after authoritative END"
+            );
+            assert_eq!(presentation_events(&fx).await.len(), before + 1);
+            assert!(!live.output_append(
+                &thread,
+                "typed-partial",
+                &item.item_id,
+                provider::events::OutputAppendOp::AppendText {
+                    text: "late".into()
+                }
+            ));
+            fx.original
+                .repo
+                .db()
+                .writer()
+                .execute(sqlx::query("DROP TRIGGER refuse_typed_partial"))
+                .await
+                .unwrap();
+        } else {
+            let id = wait_item(&fx, &item.item_id).await;
+            let params = inner
+                .repo
+                .transcript_rows_of_thread(inner.card_id.as_str(), &thread)
+                .await
+                .unwrap()
+                .into_iter()
+                .find(|row| row.id == id)
+                .unwrap()
+                .params;
+            let params: Value = serde_json::from_str(&params).unwrap();
+            assert_eq!(params["_partial"], true);
+            assert_eq!(params["item"]["text"], "headtail");
+            assert_eq!(
+                params["item"]["outputContent"],
+                serde_json::to_value(&item.output.as_ref().unwrap().content).unwrap()
+            );
+            assert!(
+                fx.registry
+                    .live_replies()
+                    .read(&inner.card_id)
+                    .items
+                    .is_empty()
+            );
+        }
+        stop(&fx, &mut peer).await;
+    }
+}
+
+#[tokio::test]
+async fn presentation_replay_typed_receipt_overtakes_start_and_lag_cannot_accept_suffix() {
+    let fx = Fixture::new().await;
+    let (_client, mut peer) = connect(&fx.daemon).await;
+    let thread = start(&fx, &mut peer, fx.message.clone(), "typed-receipt").await;
+    let inner = &fx.harness.inner;
+    let live = inner.live_claim.writer();
+    let mut translator = output_translator(&thread, "typed-receipt");
+    crate::harness::run_loop::on_notification(inner, &live, translator.started())
+        .await
+        .unwrap();
+    let queued = output_chunks(&mut translator);
+    let final_events = translator.finish(provider::acp::protocol::StopReason::EndTurn, 2);
+    let completed = final_events
+        .iter()
+        .find_map(|event| match &event.kind {
+            provider::events::PlannerEventKind::Item {
+                phase: ItemPhase::Completed,
+                params,
+                ..
+            } => Some(params.clone()),
+            _ => None,
+        })
+        .unwrap();
+    crate::harness::transcript_receipt::settle_canonical(
+        inner.repo.as_ref(),
+        &inner.worker_session_id,
+        inner.card_id.as_str(),
+        &thread,
+        "typed-receipt",
+        &[json!({"method":"item/completed","params":completed})],
+    )
+    .await
+    .unwrap();
+    let before = presentation_events(&fx).await.len();
+    for event in queued {
+        crate::harness::run_loop::on_notification(inner, &live, event)
+            .await
+            .unwrap();
+    }
+    assert!(
+        fx.registry
+            .live_replies()
+            .read(&inner.card_id)
+            .items
+            .is_empty()
+    );
+    assert_eq!(presentation_events(&fx).await.len(), before);
+    let mut suffix = output_translator(&thread, "typed-receipt");
+    live.input_lost();
+    live.turn_started_native(&thread, "typed-receipt");
+    for event in output_chunks(&mut suffix) {
+        crate::harness::run_loop::on_notification(inner, &live, event)
+            .await
+            .unwrap();
+    }
+    assert!(
+        fx.registry
+            .live_replies()
+            .read_conversation(&inner.card_id, &inner.worker_session_id)
+            .turn
+            .is_none()
+    );
+    assert!(live.settle("typed-receipt").is_empty());
+    complete(&fx, &mut peer, &thread, "typed-receipt").await;
+    stop(&fx, &mut peer).await;
+}

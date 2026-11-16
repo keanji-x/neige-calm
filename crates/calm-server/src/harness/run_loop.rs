@@ -2742,7 +2742,13 @@ async fn on_notification(
                     state = ?state_snap,
                     "planner harness ignoring TurnStarted that does not match expected turn"
                 );
-                live_reply::on_unaccepted_start(live, &state_snap, issued.as_deref(), &turn_id);
+                live_reply::on_unaccepted_start(
+                    live,
+                    thread_id.as_deref(),
+                    &state_snap,
+                    issued.as_deref(),
+                    &turn_id,
+                );
                 return persist_snapshot(inner).await;
             }
             if matches!(state_snap, HarnessState::Compacting { .. }) {
@@ -2773,7 +2779,11 @@ async fn on_notification(
                 self_compact::clear_settled(inner).await;
             }
             *inner.last_turn_id.lock().await = Some(turn_id.clone());
-            live.turn_started(&turn_id);
+            if let Some(thread) = thread_id.as_deref().filter(|id| !id.is_empty()) {
+                live.turn_started_native(thread, &turn_id);
+            } else {
+                live.turn_started(&turn_id);
+            }
             if !already_running_same {
                 let mut state = inner.state.lock().await;
                 held::reset_held_time(inner);
@@ -3121,6 +3131,16 @@ async fn on_notification(
         } => {
             // Memory only: a delta writes neither a row nor the snapshot.
             live.delta(&turn_id, &item_id, &delta);
+            return Ok(());
+        }
+        PlannerEventKind::OutputAppend {
+            turn_id,
+            item_id,
+            op,
+        } => {
+            if let Some(thread) = thread_id.as_deref() {
+                live.output_append(thread, &turn_id, &item_id, op);
+            }
             return Ok(());
         }
         // The provider declares these frames have no harness state to change. In particular,

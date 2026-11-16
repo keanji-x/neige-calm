@@ -214,7 +214,12 @@ fn chunking_does_not_change_retained_content_or_persist_each_snapshot() {
                         starts += 1;
                         assert_eq!(params["item"]["outputContent"]["blocks"], json!([]));
                     }
-                    PlannerEventKind::ReplyDelta { delta: d, .. } => delta.push_str(&d),
+                    PlannerEventKind::OutputAppend { op, .. } => match op {
+                        crate::events::OutputAppendOp::AppendText { text } => delta.push_str(&text),
+                        crate::events::OutputAppendOp::AppendBlock { block } => {
+                            delta.push_str(block.text())
+                        }
+                    },
                     _ => panic!("unexpected observation"),
                 }
             }
@@ -417,4 +422,48 @@ fn sealed_media_stays_charged_and_rejection_preserves_the_open_segment() {
             .len(),
         1
     );
+}
+
+#[test]
+fn typed_chunks_emit_one_operation_for_message_and_thought_without_legacy_delta() {
+    for channel in ["agent_message_chunk", "agent_thought_chunk"] {
+        let mut t = translator();
+        for (index, content) in [
+            json!({"type":"text","text":""}),
+            json!({"type":"text","text":"tail"}),
+            image(),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let events =
+                update(&mut t, json!({"sessionUpdate":channel,"content":content})).unwrap();
+            assert!(
+                !events
+                    .iter()
+                    .any(|e| matches!(e.kind, PlannerEventKind::ReplyDelta { .. }))
+            );
+            assert_eq!(
+                events
+                    .iter()
+                    .filter(|e| !matches!(e.kind, PlannerEventKind::Item { .. }))
+                    .count(),
+                1,
+                "chunk {index} of {channel} must have one incremental operation"
+            );
+            assert_eq!(
+                events
+                    .iter()
+                    .filter(|e| matches!(
+                        e.kind,
+                        PlannerEventKind::Item {
+                            phase: ItemPhase::Started,
+                            ..
+                        }
+                    ))
+                    .count(),
+                usize::from(index == 0)
+            );
+        }
+    }
 }

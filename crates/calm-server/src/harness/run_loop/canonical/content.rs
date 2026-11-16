@@ -20,6 +20,15 @@ pub(in crate::harness::run_loop) async fn on_notification(
             item_id,
             delta,
         } => live.delta(&turn_id, &item_id, &delta),
+        PlannerEventKind::OutputAppend {
+            turn_id,
+            item_id,
+            op,
+        } => {
+            if let Some(thread) = source_thread {
+                live.output_append(thread, &turn_id, &item_id, op);
+            }
+        }
         PlannerEventKind::TokenUsage { params } => {
             observe_metadata(inner, Metadata::Usage(params)).await?;
         }

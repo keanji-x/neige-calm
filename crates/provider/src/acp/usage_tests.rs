@@ -82,7 +82,7 @@ fn xai_notification_uses_current_neige_turn_and_preserves_the_reply() {
     assert_eq!(usage["tokenUsage"]["modelContextWindow"], 200000);
     assert!(usage["tokenUsage"].get("total").is_none());
     assert!(events.iter().any(
-        |event| matches!(&event.kind, PlannerEventKind::ReplyDelta {delta,..} if delta=="reply")
+        |event| matches!(&event.kind, PlannerEventKind::OutputAppend { op: crate::events::OutputAppendOp::AppendBlock { block }, .. } if block.text()=="reply")
     ));
     let mut foreign = frame(json!(24100));
     foreign["sessionId"] = json!("other");

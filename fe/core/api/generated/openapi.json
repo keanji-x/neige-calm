@@ -16726,6 +16726,45 @@
           }
         ]
       },
+      "ConversationLiveItem": {
+        "type": "object",
+        "description": "Native live body. Historical HarnessLiveReply deliberately retains its old shape.",
+        "required": [
+          "item_id",
+          "text"
+        ],
+        "properties": {
+          "item_id": {
+            "type": "string"
+          },
+          "output": {
+            "$ref": "#/components/schemas/ConversationLiveOutput"
+          },
+          "text": {
+            "type": "string"
+          }
+        }
+      },
+      "ConversationLiveOutput": {
+        "type": "object",
+        "description": "Native typed snapshot; revision is decimal u64 text without browser rounding.",
+        "required": [
+          "revision",
+          "segment",
+          "content"
+        ],
+        "properties": {
+          "content": {
+            "$ref": "#/components/schemas/OutputContentV1"
+          },
+          "revision": {
+            "type": "string"
+          },
+          "segment": {
+            "$ref": "#/components/schemas/ConversationLiveSegment"
+          }
+        }
+      },
       "ConversationLiveReplies": {
         "type": "object",
         "required": [
@@ -16748,6 +16787,23 @@
           }
         }
       },
+      "ConversationLiveSegment": {
+        "type": "object",
+        "required": [
+          "channel",
+          "ordinal"
+        ],
+        "properties": {
+          "channel": {
+            "$ref": "#/components/schemas/OutputChannel"
+          },
+          "ordinal": {
+            "type": "string",
+            "description": "Decimal u64; the persisted segment continues to use its original numeric ordinal."
+          }
+        },
+        "additionalProperties": {}
+      },
       "ConversationLiveTurn": {
         "type": "object",
         "required": [
@@ -16759,7 +16815,7 @@
           "items": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/HarnessLiveReply"
+              "$ref": "#/components/schemas/ConversationLiveItem"
             }
           },
           "thread_id": {
@@ -19268,6 +19324,360 @@
             "description": "The first message. Validated exactly like `POST /api/cards/{id}/planner/input`, and\nbefore anything is minted, so a rejected message leaves no card behind."
           }
         }
+      },
+      "OutputBlock": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "text",
+              "fields",
+              "type"
+            ],
+            "properties": {
+              "chunk": {
+                "type": "object",
+                "additionalProperties": {},
+                "propertyNames": {
+                  "type": "string"
+                }
+              },
+              "fields": {
+                "type": "object",
+                "additionalProperties": {},
+                "propertyNames": {
+                  "type": "string"
+                }
+              },
+              "text": {
+                "type": "string"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "text"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "mimeType",
+              "fields",
+              "type"
+            ],
+            "properties": {
+              "chunk": {
+                "type": "object",
+                "additionalProperties": {},
+                "propertyNames": {
+                  "type": "string"
+                }
+              },
+              "data": {
+                "type": "string"
+              },
+              "fields": {
+                "type": "object",
+                "additionalProperties": {},
+                "propertyNames": {
+                  "type": "string"
+                }
+              },
+              "mimeType": {
+                "type": "string"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "image"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "mimeType",
+              "fields",
+              "type"
+            ],
+            "properties": {
+              "chunk": {
+                "type": "object",
+                "additionalProperties": {},
+                "propertyNames": {
+                  "type": "string"
+                }
+              },
+              "data": {
+                "type": "string"
+              },
+              "fields": {
+                "type": "object",
+                "additionalProperties": {},
+                "propertyNames": {
+                  "type": "string"
+                }
+              },
+              "mimeType": {
+                "type": "string"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "audio"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "uri",
+              "name",
+              "fields",
+              "type"
+            ],
+            "properties": {
+              "chunk": {
+                "type": "object",
+                "additionalProperties": {},
+                "propertyNames": {
+                  "type": "string"
+                }
+              },
+              "fields": {
+                "type": "object",
+                "additionalProperties": {},
+                "propertyNames": {
+                  "type": "string"
+                }
+              },
+              "name": {
+                "type": "string"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "resource_link"
+                ]
+              },
+              "uri": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "resource",
+              "fields",
+              "type"
+            ],
+            "properties": {
+              "chunk": {
+                "type": "object",
+                "additionalProperties": {},
+                "propertyNames": {
+                  "type": "string"
+                }
+              },
+              "fields": {
+                "type": "object",
+                "additionalProperties": {},
+                "propertyNames": {
+                  "type": "string"
+                }
+              },
+              "resource": {
+                "$ref": "#/components/schemas/OutputResource"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "resource"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "An inert extension, never interpreted as another known block.",
+            "required": [
+              "raw",
+              "type"
+            ],
+            "properties": {
+              "chunk": {
+                "type": "object",
+                "additionalProperties": {},
+                "propertyNames": {
+                  "type": "string"
+                }
+              },
+              "raw": {},
+              "type": {
+                "type": "string",
+                "enum": [
+                  "unknown_extension"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Tool wrappers retain ordering and the absent/null/empty old-file distinction.",
+            "required": [
+              "path",
+              "newText",
+              "fields",
+              "type"
+            ],
+            "properties": {
+              "chunk": {
+                "type": "object",
+                "additionalProperties": {},
+                "propertyNames": {
+                  "type": "string"
+                }
+              },
+              "fields": {
+                "type": "object",
+                "additionalProperties": {},
+                "propertyNames": {
+                  "type": "string"
+                }
+              },
+              "newText": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "tool_diff"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "terminalId",
+              "fields",
+              "type"
+            ],
+            "properties": {
+              "chunk": {
+                "type": "object",
+                "additionalProperties": {},
+                "propertyNames": {
+                  "type": "string"
+                }
+              },
+              "fields": {
+                "type": "object",
+                "additionalProperties": {},
+                "propertyNames": {
+                  "type": "string"
+                }
+              },
+              "terminalId": {
+                "type": "string"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "terminal_reference"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "OutputChannel": {
+        "type": "string",
+        "enum": [
+          "message",
+          "thought"
+        ]
+      },
+      "OutputContentV1": {
+        "type": "object",
+        "required": [
+          "version",
+          "blocks"
+        ],
+        "properties": {
+          "blocks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/OutputBlock"
+            }
+          },
+          "version": {
+            "type": "integer",
+            "format": "int32",
+            "maximum": 1,
+            "minimum": 1
+          }
+        }
+      },
+      "OutputResource": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "uri",
+              "text",
+              "fields"
+            ],
+            "properties": {
+              "fields": {
+                "type": "object",
+                "additionalProperties": {},
+                "propertyNames": {
+                  "type": "string"
+                }
+              },
+              "text": {
+                "type": "string"
+              },
+              "uri": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "uri",
+              "blob",
+              "fields"
+            ],
+            "properties": {
+              "blob": {
+                "type": "string"
+              },
+              "fields": {
+                "type": "object",
+                "additionalProperties": {},
+                "propertyNames": {
+                  "type": "string"
+                }
+              },
+              "uri": {
+                "type": "string"
+              }
+            }
+          }
+        ]
       },
       "Overlay": {
         "type": "object",

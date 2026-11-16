@@ -29,6 +29,9 @@ pub(super) async fn drive(
         &mut retained,
     )
     .await;
+    if outcome.is_err() {
+        publish_partial(&shared, &mut translator, &mut retained);
+    }
     // Preserve the cause before any cleanup can close pipes or terminate the process.
     // Execution output observations use this same execution identity.
     if let Err(error) = &outcome {
@@ -79,18 +82,11 @@ pub(super) async fn drive(
             "ACP agent process stop failed; the turn's outcome is unknown");
     }
     let cleanup_confirmed = stopped.is_ok() && revoked.is_ok();
-    let (mut events, known) = match outcome {
-        Ok(events) if stopped.is_ok() && revoked.is_ok() => (events, true),
-        _ => (
-            vec![PlannerEvent {
-                thread_id: Some(receipt.thread_id.clone()),
-                kind: PlannerEventKind::TurnCompleted {
-                    turn: unknown_outcome(&receipt.turn_id),
-                },
-            }],
-            false,
-        ),
-    };
+    let known = outcome.is_ok() && cleanup_confirmed;
+    let mut events = outcome.unwrap_or_default();
+    if !known {
+        events = unknown_events(&receipt.thread_id, &receipt.turn_id, events);
+    }
     let mut turn = events
         .iter()
         .find_map(|event| match &event.kind {
@@ -113,10 +109,7 @@ pub(super) async fn drive(
     };
     if settlement != ReceiptSettlement::Completed {
         turn = unknown_outcome(&receipt.turn_id);
-        events = vec![PlannerEvent {
-            thread_id: Some(receipt.thread_id.clone()),
-            kind: PlannerEventKind::TurnCompleted { turn: turn.clone() },
-        }];
+        events = unknown_events(&receipt.thread_id, &receipt.turn_id, events);
     }
     let completion = async {
         use crate::provider_execution::{self as execution, CompletionEvidence, KnownEnd};
@@ -248,6 +241,33 @@ pub(super) async fn collect_turn(
         }
     }
 }
+/// Producer-owned complete content is observation only, even when the terminal is unknown.
+pub(super) fn publish_partial(
+    shared: &Shared,
+    translator: &mut TurnTranslator,
+    retained: &mut Vec<Value>,
+) {
+    for event in translator.materialize_partial(crate::model::now_ms()) {
+        retain_item(retained, &event);
+        let _ = shared.events.send(event);
+    }
+}
+/// Replacing execution evidence must not remove already produced content facts.
+pub(super) fn unknown_events(
+    thread: &str,
+    turn: &str,
+    mut events: Vec<PlannerEvent>,
+) -> Vec<PlannerEvent> {
+    events.retain(|event| matches!(event.kind, PlannerEventKind::Item { .. }));
+    events.push(PlannerEvent {
+        thread_id: Some(thread.into()),
+        kind: PlannerEventKind::TurnCompleted {
+            turn: unknown_outcome(turn),
+        },
+    });
+    events
+}
+
 pub(super) fn retain_item(retained: &mut Vec<Value>, event: &PlannerEvent) {
     if let PlannerEventKind::Item { params, phase, .. } = &event.kind
         && let Some(id) = params["item"]["id"].as_str()

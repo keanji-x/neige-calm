@@ -4,7 +4,7 @@ use super::{
     content::{self, Footprint},
     protocol::StopReason,
 };
-use crate::events::{ItemPhase, PlannerEvent, PlannerEventKind};
+use crate::events::{ItemPhase, OutputAppendOp, PlannerEvent, PlannerEventKind};
 use calm_types::output_content::{OutputBlock, OutputChannel, OutputContentV1, OutputSegment};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -38,16 +38,8 @@ impl OpenOutput {
         }
     }
     fn materialize(&self) -> Value {
-        let text = self.content.text();
-        let mut item = match self.segment.channel {
-            OutputChannel::Message => json!({"id":self.id,"type":"agentMessage","text":text}),
-            OutputChannel::Thought => {
-                json!({"id":self.id,"type":"reasoning","summary":[text],"content":[]})
-            }
-        };
-        item["outputContent"] = serde_json::to_value(&self.content).expect("output serializes");
-        item["outputSegment"] = serde_json::to_value(&self.segment).expect("segment serializes");
-        item
+        self.content
+            .materialize_item(json!({"id":self.id}), &self.segment)
     }
 }
 pub struct TurnTranslator {
@@ -207,22 +199,26 @@ impl TurnTranslator {
                 }
                 let delta = block.text().to_owned();
                 let open = self.current.as_mut().expect("accepted segment");
+                let op = if merge {
+                    OutputAppendOp::AppendText {
+                        text: delta.clone(),
+                    }
+                } else {
+                    OutputAppendOp::AppendBlock {
+                        block: block.clone(),
+                    }
+                };
                 open.append(block, merge);
                 let id = open.id.clone();
                 self.retained = retained;
-                if channel == OutputChannel::Message {
-                    if !delta.trim().is_empty() {
-                        self.unanswered_tool_failures.clear();
-                    }
-                    // Transitional consumer compatibility, derived solely from the accepted block.
-                    if !delta.is_empty() {
-                        events.push(self.event(PlannerEventKind::ReplyDelta {
-                            turn_id: self.context.turn_id.clone(),
-                            item_id: id,
-                            delta,
-                        }));
-                    }
+                if channel == OutputChannel::Message && !delta.trim().is_empty() {
+                    self.unanswered_tool_failures.clear();
                 }
+                events.push(self.event(PlannerEventKind::OutputAppend {
+                    turn_id: self.context.turn_id.clone(),
+                    item_id: id,
+                    op,
+                }));
             }
             "tool_call" | "tool_call_update" => {
                 let id = update["toolCallId"]

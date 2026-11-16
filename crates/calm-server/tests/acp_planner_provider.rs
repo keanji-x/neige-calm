@@ -10,6 +10,8 @@ mod acp_compact;
 mod acp_grok_compact;
 #[path = "cases/acp_images.rs"]
 mod acp_images;
+#[path = "cases/acp_output_live.rs"]
+mod acp_output_live;
 // Managed ACP acceptance through the production boot, REST routes and Harness.
 #[path = "cases/acp_grok_provider.rs"]
 mod acp_grok_provider;

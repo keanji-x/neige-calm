@@ -242,3 +242,129 @@ async fn canonical_acp_oversized_prompt_is_refused_before_receipt_in_both_runtim
         );
     }
 }
+
+#[tokio::test]
+async fn typed_live_replies_both_driver_streams_publish_complete_partial_without_end_authority() {
+    for provider in [AgentProvider::Grok, AgentProvider::Antigravity] {
+        let fx = Fixture::with_provider(provider, "rich-unknown", false).await;
+        let mut stream = fx.session.subscribe_events();
+        fx.dispatch().await.unwrap();
+        let mut items = Vec::new();
+        tokio::time::timeout(Duration::from_secs(20), async {
+            loop {
+                let event = stream.recv().await.unwrap();
+                match event.kind {
+                    provider::events::PlannerEventKind::Item {
+                        phase: provider::events::ItemPhase::Completed,
+                        params,
+                        ..
+                    } => items.push(params),
+                    provider::events::PlannerEventKind::TurnCompleted { turn } => {
+                        assert_eq!(turn["status"], "failed");
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+        })
+        .await
+        .unwrap();
+        let output: Vec<_> = items
+            .iter()
+            .filter(|v| v["item"].get("outputSegment").is_some())
+            .collect();
+        assert_eq!(
+            output.len(),
+            2,
+            "producer must seal both segments before unknown terminal: {items:?}"
+        );
+        assert_eq!(
+            output[0]["item"]["outputContent"]["blocks"]
+                .as_array()
+                .unwrap()
+                .len(),
+            3
+        );
+        assert_eq!(
+            output[1]["item"]["outputContent"]["blocks"][0]["type"],
+            "audio"
+        );
+        assert_eq!(output[1]["_partial"], true);
+        fx.wait_driver_finished().await;
+        assert!(
+            fx.complete().await.is_none(),
+            "content partial is not known END evidence"
+        );
+        let (state, outcome): (String, Option<String>) =
+            sqlx::query_as("SELECT state,outcome_json FROM acp_submissions")
+                .fetch_one(fx.owner.repo.pool())
+                .await
+                .unwrap();
+        assert_eq!(state, "unknown");
+        assert!(outcome.is_none());
+        fx.session.shutdown().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn typed_live_replies_receipt_failure_keeps_final_items_without_end_authority() {
+    for provider in [AgentProvider::Grok, AgentProvider::Antigravity] {
+        let fx = Fixture::with_provider(provider, "rich-normal", false).await;
+        fx.owner
+            .repo
+            .db()
+            .writer()
+            .execute(sqlx::query(concat!(
+                "CREATE TRIGGER refuse_rich_receipt BEFORE UPDATE ON acp_submissions ",
+                "WHEN NEW.state='completed' ",
+                "BEGIN SELECT RAISE(ABORT,'receipt unavailable'); END"
+            )))
+            .await
+            .unwrap();
+        let mut stream = fx.session.subscribe_events();
+        fx.dispatch().await.unwrap();
+        let mut output = Vec::new();
+        tokio::time::timeout(Duration::from_secs(20), async {
+            loop {
+                let event = stream.recv().await.unwrap();
+                match event.kind {
+                    provider::events::PlannerEventKind::Item {
+                        phase: provider::events::ItemPhase::Completed,
+                        params,
+                        ..
+                    } if params["item"].get("outputSegment").is_some() => output.push(params),
+                    provider::events::PlannerEventKind::TurnCompleted { turn } => {
+                        assert_eq!(turn["status"], "failed");
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(output.len(), 2);
+        assert_eq!(
+            output[0]["item"]["outputContent"]["blocks"]
+                .as_array()
+                .unwrap()
+                .len(),
+            3
+        );
+        assert_eq!(
+            output[1]["item"]["outputContent"]["blocks"][0]["type"],
+            "audio"
+        );
+        assert!(output[1].get("_partial").is_none());
+        fx.wait_driver_finished().await;
+        assert!(fx.complete().await.is_none());
+        let (state, outcome): (String, Option<String>) =
+            sqlx::query_as("SELECT state,outcome_json FROM acp_submissions")
+                .fetch_one(fx.owner.repo.pool())
+                .await
+                .unwrap();
+        assert_eq!(state, "unknown");
+        assert!(outcome.is_none());
+        fx.session.shutdown().await.unwrap();
+    }
+}
