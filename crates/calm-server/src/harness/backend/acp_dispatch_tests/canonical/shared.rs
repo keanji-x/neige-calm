@@ -184,7 +184,7 @@ async fn canonical_antigravity_unconfirmed_revocation_cannot_manufacture_keep_cl
 }
 
 #[tokio::test]
-async fn canonical_antigravity_unconfirmed_process_stop_cannot_release_kept_input() {
+async fn canonical_antigravity_failed_stop_retains_the_owner_for_verified_retry() {
     let fx = Fixture::with_provider(AgentProvider::Antigravity, "lost", false).await;
     let fired = crate::test_seams::install_operation_fault_for_test(
         "acp-control-reap",
@@ -196,14 +196,14 @@ async fn canonical_antigravity_unconfirmed_process_stop_cannot_release_kept_inpu
         .unwrap();
     fx.wait_idle().await;
     fx.keep_unknown(&fx.submission, "keep-without-reap").await;
-    assert!(fx.backend.settle_kept_execution().await.unwrap().is_none());
+    assert!(fx.backend.settle_kept_execution().await.unwrap().is_some());
     let joins: i64 =
         sqlx::query_scalar("SELECT count(*) FROM acp_normal_joins WHERE worker_session_id=?")
             .bind(&fx.owner.worker)
             .fetch_one(fx.owner.repo.pool())
             .await
             .unwrap();
-    assert_eq!(joins, 0);
+    assert_eq!(joins, 1);
     assert!(fx.complete().await.is_none());
     assert_eq!(fx.prompts(), 1);
     fx.session.shutdown().await.unwrap();

@@ -238,7 +238,7 @@ async fn canonical_acp_completed_crash_recovery_preserves_receipt_and_projection
 #[tokio::test]
 async fn canonical_acp_sending_unknown_crash_recovery_after_authenticated_keep_stays_held() {
     for scenario in ["hold", "lost"] {
-        let fx = Fixture::with_storage(scenario, true).await;
+        let fx = Fixture::with_provider(AgentProvider::Grok, scenario, true).await;
         fx.dispatch().await.unwrap();
         if scenario == "lost" {
             fx.wait_idle().await;
@@ -293,7 +293,8 @@ async fn canonical_acp_sending_unknown_crash_recovery_after_authenticated_keep_s
                     let prompts = fx.prompts();
                     for _ in 0..2 {
                         let owner = reopen(&owner, owner.db_url.clone()).await;
-                        let (backend, session, _held) = session_for(&owner, &fx.dir);
+                        let (backend, session, _held) =
+                            session_for_provider(&owner, &fx.dir, fx.provider.clone());
                         backend.recover_retained().await.unwrap();
                         assert!(!complete(&owner, &backend).await);
                         let admission =

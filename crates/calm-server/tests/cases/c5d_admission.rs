@@ -64,12 +64,14 @@ async fn fixture(
         "exit"
     });
     let mut config = root.config(true);
-    if provider == "opencode" {
+    if provider == "grok" {
         let path = root.path().join("acp.json");
         std::fs::write(&path, json!({"agents":[{
-            "provider":"opencode", "command":"/usr/bin/python3",
+            "provider":"grok", "command":"/usr/bin/python3",
             "args":["-u", concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/acp_planner/agent.py")],
-            "env":{"ACP_FIXTURE_ROOT":root.path()}, "min_agent_version":"1.0.0"
+            "env":{"ACP_FIXTURE_ROOT":root.path(), "ACP_FIXTURE_IDENTITY":"meta",
+                "ACP_FIXTURE_VERSION":"1.0.70", "ACP_FIXTURE_AUTH_METHODS":"cached_token",
+                "ACP_FIXTURE_VENDOR":"xai"}, "min_agent_version":"1.0.62"
         }]}).to_string()).unwrap();
         std::fs::write(root.path().join("scenario"), "reply").unwrap();
         config.acp_planner_config = Some(path);
@@ -293,7 +295,7 @@ async fn race_with_history(provider: &str, entry: Entry, delete: bool, prime: bo
     );
     if entry.compact() {
         root.set_scenario("compact");
-        std::fs::write(root.path().join("scenario"), "compact-success").unwrap();
+        std::fs::write(root.path().join("scenario"), "grok-compact-success").unwrap();
     } else {
         root.set_scenario("hold");
         std::fs::write(root.path().join("scenario"), "hold").unwrap();
@@ -506,18 +508,18 @@ macro_rules! cases {
 }
 cases! {
     c5d_claude_resume_clean, c5d_claude_resume_delete: "claude", Resume;
-    c5d_acp_resume_clean, c5d_acp_resume_delete: "opencode", Resume;
+    c5d_acp_resume_clean, c5d_acp_resume_delete: "grok", Resume;
     c5d_claude_retry_clean, c5d_claude_retry_delete: "claude", Retry;
     c5d_claude_historical_clean, c5d_claude_historical_delete: "claude", Historical;
     c5d_claude_canonical_clean, c5d_claude_canonical_delete: "claude", Canonical;
-    c5d_acp_historical_clean, c5d_acp_historical_delete: "opencode", Historical;
-    c5d_acp_canonical_clean, c5d_acp_canonical_delete: "opencode", Canonical;
+    c5d_acp_historical_clean, c5d_acp_historical_delete: "grok", Historical;
+    c5d_acp_canonical_clean, c5d_acp_canonical_delete: "grok", Canonical;
     c5d_claude_historical_compact_clean, c5d_claude_historical_compact_delete: "claude", HistoricalCompact;
     c5d_claude_historical_planner_compact_clean, c5d_claude_historical_planner_compact_delete: "claude", HistoricalPlannerCompact;
     c5d_claude_canonical_compact_clean, c5d_claude_canonical_compact_delete: "claude", CanonicalCompact;
     c5d_claude_canonical_planner_compact_clean, c5d_claude_canonical_planner_compact_delete: "claude", CanonicalPlannerCompact;
-    c5d_acp_canonical_compact_clean, c5d_acp_canonical_compact_delete: "opencode", CanonicalCompact;
-    c5d_acp_canonical_planner_compact_clean, c5d_acp_canonical_planner_compact_delete: "opencode", CanonicalPlannerCompact;
+    c5d_acp_canonical_compact_clean, c5d_acp_canonical_compact_delete: "grok", CanonicalCompact;
+    c5d_acp_canonical_planner_compact_clean, c5d_acp_canonical_planner_compact_delete: "grok", CanonicalPlannerCompact;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -526,5 +528,5 @@ async fn c5d_claude_canonical_first_commit_delete() {
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn c5d_acp_canonical_first_commit_delete() {
-    race_with_history("opencode", Entry::Canonical, true, false).await;
+    race_with_history("grok", Entry::Canonical, true, false).await;
 }

@@ -256,7 +256,8 @@ async fn drain(pool: &SqliteDb, engine: &ExecutionEngine, id: &ExecutionId) -> R
     {
         return Err(conflict("resident ACP descendants have not drained"));
     }
-    request(pool, engine, id, Desired::Retire).await
+    request(pool, engine, id, Desired::Retire).await?;
+    engine.wait_retired(id).await.map_err(conflict)
 }
 
 pub(super) async fn has_drained_tx(

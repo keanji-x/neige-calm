@@ -206,7 +206,7 @@ pub async fn resident_inventory_tx(
 ) -> Result<Vec<(String, String)>, sqlx::Error> {
     sqlx::query_as(
         "SELECT execution_id,alias FROM workspace_executions
-         WHERE desired <> 'retire'
+         WHERE (desired <> 'retire' OR secrets_json IS NOT NULL)
            AND ((alias >= ?1 || ':' AND alias < ?1 || ';')
                  OR json_extract(intent_json, '$.consumer') = ?1)
          ORDER BY execution_id",

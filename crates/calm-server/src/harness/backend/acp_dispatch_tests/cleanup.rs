@@ -66,14 +66,11 @@ impl Failure {
     }
 }
 async fn historical(failure: Failure) {
-    let (_backend, mut session, owner, dir) = fixture().await;
+    let (_backend, mut session, owner, dir, _) =
+        fixture_storage_for(AgentProvider::Grok, false).await;
     if matches!(failure, Failure::SpawnRevoke) {
-        let (_backend, replacement, _held) = session_for_command(
-            &owner,
-            &dir,
-            AgentProvider::OpenCode,
-            "/missing-acp-executable",
-        );
+        let (_backend, replacement, _held) =
+            session_for_command(&owner, &dir, AgentProvider::Grok, "/missing-acp-executable");
         session = replacement;
     }
     let pause = pause_issue(&owner.worker, failure.stage());

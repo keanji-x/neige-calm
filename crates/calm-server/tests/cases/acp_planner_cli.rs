@@ -68,6 +68,21 @@ async fn resident_opencode_accepts_mcp_calls_only_from_the_credential_owner() {
     .await
     .unwrap();
     assert!(!stack.token_authenticates(&token).await);
+    assert_eq!(
+        turn(&stack, &card, "after generation retirement", 3).await["status"],
+        "completed"
+    );
+    assert_eq!(
+        stack.runtime(&card).await.session_id.as_deref(),
+        Some(native.as_str())
+    );
+    let fresh = std::fs::read_to_string(root.path().join(format!("{native}.test-token"))).unwrap();
+    assert_ne!(fresh, token);
+    assert!(stack.token_authenticates(&fresh).await);
+    assert!(!stack.token_authenticates(&token).await);
+    let prompts = requests(&root, "session/prompt");
+    assert_eq!(prompts[0]["_pid"], prompts[1]["_pid"]);
+    assert_ne!(prompts[1]["_pid"], prompts[2]["_pid"]);
     stack.shutdown().await;
 }
 
