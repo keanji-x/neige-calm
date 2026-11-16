@@ -1,1 +1,1 @@
-Planner only. Settle ready evaluation: keep moves baseline, discard logs, done ends. Returns status, seq. Changed retries conflict; regressions cannot be kept. Read objective.kr.
+Settle a ready evaluation. keep moves the baseline, discard logs the result, and done ends the objective. A regression cannot be kept. See objective.kr.

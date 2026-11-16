@@ -1,1 +1,1 @@
-Planner only. Close an objective; freeze usage. Returns status, seq. Read objective.budget.
+Close the objective and freeze its usage. See objective.budget.

@@ -1,1 +1,1 @@
-Planner-only view, served as `neige mail cat <mail_id>`: one mail to or from this Track, with its text. The recipient's first cat stamps read_at, the sender's read receipt; it wakes nobody. The last line names the next hop or an hourly quota refusal; --json gives next_hop (null at the limit) and refused.
+Read one mail in this Track. The recipient's first read sets read_at. Use the returned next hop to continue, or wait if the hourly quota is exhausted.

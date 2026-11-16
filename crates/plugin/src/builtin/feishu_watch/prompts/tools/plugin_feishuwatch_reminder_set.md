@@ -1,1 +1,1 @@
-Set one future reminder under the latest status version. A stable idempotency key makes retries safe after firing.
+Set a future reminder using the latest status version. Reuse the idempotency key on retry, even after firing.

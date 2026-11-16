@@ -1,1 +1,1 @@
-Planner + Assistant: report kind schemas and usage. Pass optional `kind` for one kind; {} returns all. Write with neige_report_commit upserts. Objective writes need Planner/User and capability. Discovery grants no execution authority.
+Read schemas and usage for report block kinds. Omit kind to list them all. Use the schema with neige_report_commit.

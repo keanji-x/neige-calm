@@ -1,1 +1,1 @@
-Bound-Track read: diff two commits for the current MCP-bound track. Arguments: `{ from, to?, path? }`; `to` defaults to current HEAD. Text blobs include unified patch hunks.
+Diff two commits in this Track, optionally limited to a path. Omit to for current HEAD.

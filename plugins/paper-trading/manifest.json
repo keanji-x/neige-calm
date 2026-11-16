@@ -29,7 +29,7 @@
   "exposes_tools": [
     {
       "name": "spy.plan",
-      "description": "SPY/cash profile only. Planner-only: persist an immutable target allocation with captured research/market sources and validity in the App ledger. Never reads or writes the broker. Then declare a read-only codex Worker task whose goal names the decision_id. One unresolved target per account. Each decision executes at most one configured allocation step (default 10% of account value); whole shares, cash reserve and a drift band affect achieved ratio.",
+      "description": "Planner: save an immutable SPY/cash target with captured evidence. One unresolved target per account. Each decision takes at most one configured allocation step. Then declare a read-only Codex worker task with the decision_id.",
       "input_schema": {
         "type": "object",
         "properties": {
@@ -79,7 +79,7 @@
     },
     {
       "name": "spy.execute",
-      "description": "SPY/cash profile only. Worker-only: durably request execution of the exact persisted, unexpired, queued decision (state becomes requested) and wake the App's background loop; this call itself never contacts the broker. The loop reconciles, then submits at most one regular-session DAY SPY.US market order to the pinned official PAPER account with no per-order confirmation; the App computes integer shares and cash-only sizing. Repeating the request for a requested decision records nothing; any other state is refused. Poll plugin_dev_neige_paper_trading_spy_status until the decision is settled, noop, rejected, canceled, expired or unknown, or until your stated limit; a requested decision's error says why it is waiting. Uncertain submissions are NEVER resubmitted.",
+      "description": "Worker: queue an unexpired SPY/cash decision for the configured PAPER account. The execution loop may submit one regular-session DAY SPY order. Poll plugin_dev_neige_paper_trading_spy_status until terminal or your limit. Reuse the exact decision_id to check an uncertain request.",
       "input_schema": {
         "type": "object",
         "properties": {
@@ -101,7 +101,7 @@
     },
     {
       "name": "spy.status",
-      "description": "Read persisted SPY/cash snapshot (price, quote time, market_open, and the broker calendar for calendar_date, the New York date it was read for: trading_day, half_day, regular_close_at), targets, order identities, actual fills and errors without contacting the broker. Check snapshot time. Requires host-provided owning Track and Planner/Worker identity.",
+      "description": "Read the saved SPY/cash snapshot, New York broker calendar, targets, fills and errors. Check snapshot time.",
       "input_schema": {
         "type": "object",
         "properties": {},
@@ -117,7 +117,7 @@
     },
     {
       "name": "spy.refresh",
-      "description": "Wake the App's background loop to read the broker and atomically reconcile SPY allocation orders/fills; returns the persisted status immediately. Never submits. Poll plugin_dev_neige_paper_trading_spy_status for the new snapshot time. Unknown broker outcomes remain blocked until exact order identity is recovered.",
+      "description": "Queue a broker refresh and reconcile SPY orders and fills. Poll plugin_dev_neige_paper_trading_spy_status for a newer snapshot.",
       "input_schema": {
         "type": "object",
         "properties": {},

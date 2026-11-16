@@ -16,7 +16,7 @@
   "exposes_tools": [
     {
       "name": "barra.series",
-      "description": "Read already-computed daily research metrics in the current Track for native chart.series blocks. BARRA:Beta, BARRA:Momentum, BARRA:ResidualVol are window-cumulative factor regression coefficients in percentage points, NOT tradable strategy returns. BARRA:Forecast and BARRA:Realized21D are annualized volatility percentages; BARRA:EqualWeight is the study-start-100 gross equal-weight reference index. Only fields=[close], period=day. No market fetch or calculation is triggered. Frozen mode conservatively excludes the latest result date to honor the host's completion contract.",
+      "description": "Read computed daily factor metrics for chart.series. Beta, Momentum and ResidualVol are cumulative regression coefficients in percentage points. Forecast and Realized21D are annualized volatility percentages. EqualWeight starts at 100. Use fields=[close] and period=day. Frozen mode excludes the latest date.",
       "input_schema": {
         "type": "object",
         "properties": {
@@ -34,7 +34,7 @@
     },
     {
       "name": "barra.start",
-      "description": "Start or update a daily US price-factor study in the current Track. Beta, momentum and residual volatility only; NOT MSCI Barra. Defaults to a fixed illustrative 30-stock universe and SPY benchmark, with selection/survivorship bias. Queues an immediate calculation and future daily updates; the background worker downloads public Yahoo data. No trades or model-generated code. Configuration changes are refused during an active calculation. No Track id argument.",
+      "description": "Start or update this Track's daily US price-factor study using beta, momentum and residual volatility. The default illustrative 30-stock universe has selection and survivorship bias, with SPY as benchmark. Queues a calculation and daily updates.",
       "input_schema": {
         "type": "object",
         "properties": {
@@ -49,19 +49,19 @@
     },
     {
       "name": "barra.status",
-      "description": "Read the current Track's study configuration, phase, error and latest successful summary. Does not fetch market data. The output states data date and scope limitations.",
+      "description": "Read this Track's factor study settings, phase, error and last successful result. Check the data date.",
       "input_schema": {"type": "object", "properties": {}, "additionalProperties": false},
       "annotations": {"title": "Research status", "readOnlyHint": true, "openWorldHint": false}
     },
     {
       "name": "barra.refresh",
-      "description": "Queue one recalculation for the current Track. The background worker subsequently fetches data; this call only queues work. Concurrent refreshes coalesce. A stopped study must be started first.",
+      "description": "Queue one recalculation for a running study. Concurrent requests coalesce.",
       "input_schema": {"type": "object", "properties": {}, "additionalProperties": false},
       "annotations": {"title": "Refresh research", "readOnlyHint": false, "destructiveHint": false, "openWorldHint": false}
     },
     {
       "name": "barra.stop",
-      "description": "Disable daily updates for the current Track and clear pending work. A calculation already in progress may finish internally; if stopped before publication its output is discarded. Existing published results and files are retained.",
+      "description": "Stop daily updates and clear pending work. Retains published results and files.",
       "input_schema": {"type": "object", "properties": {}, "additionalProperties": false},
       "annotations": {"title": "Stop research", "readOnlyHint": false, "destructiveHint": false, "openWorldHint": false}
     }

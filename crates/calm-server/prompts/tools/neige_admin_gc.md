@@ -1,1 +1,1 @@
-Hidden admin: prune the MCP-bound track's VCS history (keep the last `keep` commits + all active-session endpoints) then sweep unreferenced objects. Arguments: `{ track_id, keep, dry_run? }`. `track_id` MUST equal the caller's bound track (guardrail against wrong-track GC). `dry_run` reports counts without deleting. Returns `{ track_id, keep, dry_run, pruned_commits, swept_objects }`.
+Prune history for the bound Track, keeping the last keep commits and active session endpoints. Set track_id to the bound Track. Use dry_run to preview pruning and object sweep counts.

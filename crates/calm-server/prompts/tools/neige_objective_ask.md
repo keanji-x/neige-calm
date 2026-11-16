@@ -1,1 +1,1 @@
-Planner only. Ask user to approve the current standard; reuse an open ask. Returns approved or awaiting with ask_id. Read objective.kr
+Ask the user to approve the current objective standard. Reuses an open ask. See objective.kr.

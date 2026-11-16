@@ -1,1 +1,1 @@
-Configured Planner only. Health, batches and reminders; follow each next_after_* with its matching after_* argument.
+Read inspection health, batches and reminders. Use each next_after_* as its matching after_* on continuation.

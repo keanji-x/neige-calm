@@ -1,1 +1,1 @@
-Planner-only: {task_acceptance_guidance} attempt_id names a task attempt of this track. Records a semantic judgment and emits task.completed; it does not change execution status or enforce delivery/gate readiness.
+{task_acceptance_guidance} Record semantic acceptance of this Track's attempt_id. Execution, delivery and gate status are separate.

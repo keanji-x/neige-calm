@@ -1,1 +1,1 @@
-Replace own Track commitment's full task; entry_id and expected_version from ls. Times and DST as in add. Conflict: reread. A later start wakes again.
+Replace the full commitment task using entry_id and expected_version from plugin_calendar_ls. Use the times and timezone from plugin_calendar_add. Reread on conflict.

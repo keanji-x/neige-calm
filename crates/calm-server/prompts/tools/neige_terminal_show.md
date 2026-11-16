@@ -1,1 +1,1 @@
-Resolve exactly one attempt_id (from neige_task_ls) or terminal_id in your track to its worker, card, session and terminal, with available and controllable flags. available false means there is no viewer, not permission to start another session. A codex task's worker takes only action message (controllable false; input_refused says why). Never starts a viewer or a substitute session.
+Resolve an attempt_id from neige_task_ls or a terminal_id to its viewer and control state. For Codex workers, use neige_terminal_input with action=message.

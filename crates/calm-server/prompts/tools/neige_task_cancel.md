@@ -1,1 +1,1 @@
-Planner-only: cancel one task. A pending task is canceled before it starts. A running codex or claude task in this track is canceled and its worker stopped (turn interrupted, session ended, workspace released); a later report from it is rejected. dispatched, verifying, terminal-kind and child-track tasks cannot be canceled; the refusal names the status. Canceling twice succeeds. Canceling does not close the track.
+Cancel a pending task or stop a running Codex/Claude worker. Dispatched, verifying, terminal-kind and child-Track tasks cannot be canceled here.
