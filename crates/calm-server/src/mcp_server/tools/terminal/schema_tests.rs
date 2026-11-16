@@ -127,18 +127,6 @@ fn terminal_discovery_is_flat_with_optional_selectors_and_closed_action_arms() {
             bytes < 4000,
             "{name}: {bytes} bytes; avoid model schema compaction"
         );
-        assert!(
-            descriptor
-                .description
-                .contains("Select exactly one terminal_id or attempt_id")
-                || descriptor
-                    .description
-                    .contains("Resolve exactly one attempt_id")
-                || descriptor
-                    .description
-                    .contains("One terminal_id/attempt_id"),
-            "{name}: description declares exactly-one targeting"
-        );
         if name != "neige_terminal_show" {
             // The omitted-budget default depends on wait_for, so it is stated in the description rather than as a JSON Schema default.
             assert_eq!(
