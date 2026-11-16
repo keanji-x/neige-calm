@@ -427,12 +427,14 @@ impl ClaudePlannerSession {
         let params = &self.shared.params;
         let card_id = params.card_id.clone();
         let worker_session_id = params.worker_session_id.clone();
+        let master_key = params.host.mcp_session_key.clone();
         let token = crate::db::write_in_tx_typed(params.repo.as_ref(), move |tx| {
             Box::pin(async move {
-                crate::mcp_server::wiring::mint_and_persist_managed_planner_token(
+                crate::mcp_server::wiring::ensure_active_managed_planner_token(
                     tx,
                     &card_id,
                     &worker_session_id,
+                    &master_key,
                 )
                 .await
             })

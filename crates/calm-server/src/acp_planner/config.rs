@@ -230,6 +230,7 @@ pub struct AcpPlannerHost {
     pub(crate) pre_c4: std::sync::OnceLock<crate::provider_execution::PreC4Sweep>,
     pub mcp_shim: PathBuf,
     pub mcp_socket: PathBuf,
+    pub(crate) mcp_session_key: crate::mcp_server::auth::SessionMcpKey,
     /// What Neige's MCP server lists each session, for agents whose requests for its tools are
     /// approved by name; without it no tool is approved by name, so a request is the mode's.
     tool_names: Option<crate::mcp_server::transport::SessionToolNames>,
@@ -266,6 +267,7 @@ impl AcpPlannerHost {
             .map(|agent| (agent.provider.wire_name(), Default::default()))
             .collect();
         let (provider_execution, completion) = super::execution::owner();
+        let mcp_session_key = crate::mcp_server::auth::get_or_generate_session_mcp_key(data_dir)?;
         std::fs::create_dir_all(data_dir.join("acp-agent-logs"))?;
         Ok(Self {
             provider_execution,
@@ -276,6 +278,7 @@ impl AcpPlannerHost {
             instance: MarkerInstance::for_data_dir(data_dir, MARKER_KEY)?,
             mcp_shim,
             mcp_socket,
+            mcp_session_key,
             tool_names: None,
             shared_servers,
             context_queries: tokio::sync::Semaphore::new(1),
@@ -558,7 +561,16 @@ async fn revoke_owned_tx(
     track: Option<&str>,
 ) -> Result<Vec<String>> {
     let ids = crate::db::sqlite::acp_managed_session_ids(&mut **tx, track).await?;
-    sqlx::query(concat!("UPDATE worker_sessions SET mcp_token_hash=NULL WHERE id IN (SELECT worker_session_id FROM ","acp_managed_sessions) AND (?1 IS NULL OR track_id=?1)")).bind(track).execute(&mut **tx).await?;
+    sqlx::query(
+        r#"UPDATE worker_sessions
+              SET mcp_token_hash = NULL,
+                  mcp_token_epoch = mcp_token_epoch + 1
+            WHERE id IN (SELECT worker_session_id FROM acp_managed_sessions)
+              AND (?1 IS NULL OR track_id = ?1)"#,
+    )
+    .bind(track)
+    .execute(&mut **tx)
+    .await?;
     Ok(ids)
 }
 

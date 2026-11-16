@@ -76,8 +76,52 @@ pub async fn session_mcp_token_set_tx(
     Ok(())
 }
 
-/// The Claude Planner first-turn mint's session write (#1791 §5.1 token invariant): the only
-/// writer of a `(claude, planner)` row's hash, and only while the row is active. A row count other
+/// Read `(mcp_token_hash, mcp_token_epoch)` for an active worker session, or
+/// `None` if the row does not exist or is no longer active.
+pub async fn session_active_mcp_token_state_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    session_id: &str,
+) -> Result<Option<(Option<String>, i64)>> {
+    Ok(sqlx::query_as::<_, (Option<String>, i64)>(
+        r#"SELECT mcp_token_hash, mcp_token_epoch
+             FROM worker_sessions
+            WHERE id = ?1
+              AND state IN ('starting', 'running', 'idle', 'turn_pending')"#,
+    )
+    .bind(session_id)
+    .fetch_optional(&mut **tx)
+    .await?)
+}
+
+/// Update `(mcp_token_hash, mcp_token_epoch)` while the row is active.
+pub async fn session_mcp_token_set_epoch_if_active_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    session_id: &str,
+    hashed_token: &str,
+    epoch: i64,
+) -> Result<()> {
+    let res = sqlx::query(
+        r#"UPDATE worker_sessions
+              SET mcp_token_hash = ?1,
+                  mcp_token_epoch = ?2
+            WHERE id = ?3
+              AND state IN ('starting', 'running', 'idle', 'turn_pending')"#,
+    )
+    .bind(hashed_token)
+    .bind(epoch)
+    .bind(session_id)
+    .execute(&mut **tx)
+    .await?;
+    if res.rows_affected() != 1 {
+        return Err(CalmError::Conflict(format!(
+            "worker session {session_id} is no longer active"
+        )));
+    }
+    Ok(())
+}
+
+/// Explicit credential rotation for an active managed session. The normal ensure path writes
+/// the hash and epoch together; this writer also refuses inactive rows. A row count other
 /// than 1 (superseded or deleted since the carrier check) is an `Err`, so the caller's transaction,
 /// card write included, rolls back.
 pub async fn session_mcp_token_set_if_active_tx(
@@ -150,7 +194,9 @@ pub async fn claude_planner_revoke_tx(
         ClaudePlannerScope::Card(card_id) => (None, Some(card_id)),
     };
     sqlx::query(
-        r#"UPDATE worker_sessions SET mcp_token_hash = NULL
+        r#"UPDATE worker_sessions
+              SET mcp_token_hash = NULL,
+                  mcp_token_epoch = mcp_token_epoch + 1
             WHERE provider = 'claude' AND contract IN ('planner','assistant')
               AND (?1 IS NULL OR track_id = ?1)
               AND (?2 IS NULL OR card_id = ?2)"#,
@@ -657,6 +703,7 @@ pub async fn session_commit_exit_tx(
         r#"UPDATE worker_sessions
               SET state = ?1,
                   mcp_token_hash = CASE WHEN contract = 'assistant' THEN NULL ELSE mcp_token_hash END,
+                  mcp_token_epoch = CASE WHEN contract = 'assistant' THEN mcp_token_epoch + 1 ELSE mcp_token_epoch END,
                   liveness = 'exited',
                   liveness_probed_at_ms = ?2,
                   exit_code = ?3,
@@ -708,6 +755,7 @@ pub(super) async fn session_state_transition_at_tx(
         r#"UPDATE worker_sessions
               SET state = ?1,
                   mcp_token_hash = CASE WHEN contract = 'assistant' AND ?3 = 1 THEN NULL ELSE mcp_token_hash END,
+                  mcp_token_epoch = CASE WHEN contract = 'assistant' AND ?3 = 1 THEN mcp_token_epoch + 1 ELSE mcp_token_epoch END,
                   updated_at_ms = ?2,
                   completed_at_ms = CASE
                     WHEN ?3 = 1 THEN ?4
@@ -754,7 +802,16 @@ pub(super) async fn revoke_card_credentials_tx(
         .execute(&mut **tx)
         .await?
         .rows_affected();
-    let cleared = sqlx::query("UPDATE worker_sessions SET mcp_token_hash=NULL WHERE card_id=?1 AND mcp_token_hash IS NOT NULL").bind(card).execute(&mut **tx).await?.rows_affected();
+    let cleared = sqlx::query(
+        r#"UPDATE worker_sessions
+              SET mcp_token_hash = NULL,
+                  mcp_token_epoch = mcp_token_epoch + 1
+            WHERE card_id = ?1 AND mcp_token_hash IS NOT NULL"#,
+    )
+    .bind(card)
+    .execute(&mut **tx)
+    .await?
+    .rows_affected();
     if deleted != cards as u64 || cleared != mirrors as u64 {
         return Err(CalmError::Conflict("credential revocation count changed"));
     }

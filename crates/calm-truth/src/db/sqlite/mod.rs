@@ -187,8 +187,9 @@ pub use session_projection::{
 };
 pub use session_row::{
     ClaudePlannerScope, claude_planner_revoke_tx, claude_planner_session_ids,
-    session_commit_exit_tx, session_get_by_active_token_hash, session_get_by_id, session_get_tx,
-    session_insert_tx, session_mark_track_root_tx, session_mcp_token_set_if_active_tx,
+    session_active_mcp_token_state_tx, session_commit_exit_tx, session_get_by_active_token_hash,
+    session_get_by_id, session_get_tx, session_insert_tx, session_mark_track_root_tx,
+    session_mcp_token_set_epoch_if_active_tx, session_mcp_token_set_if_active_tx,
     session_mcp_token_set_tx, session_record_activity_by_thread_tx, session_record_activity_tx,
     session_set_liveness_tx, session_state_transition_tx, worker_session_status_transition_allowed,
 };
@@ -421,6 +422,8 @@ impl Repo for SqlxRepo {
 
 #[cfg(test)]
 mod mail_migration_tests;
+#[cfg(test)]
+mod mcp_token_migration_tests;
 #[cfg(test)]
 mod tests;
 

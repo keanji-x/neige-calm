@@ -126,6 +126,7 @@ pub struct ClaudePlannerHost {
     pub instructions_dir: PathBuf,
     pub mcp_shim: PathBuf,
     pub mcp_socket: PathBuf,
+    pub(crate) mcp_session_key: crate::mcp_server::auth::SessionMcpKey,
     pub calm_tools: ToolNames,
     /// Owns the data dir of [`Self::unconfigured_scratch`].
     _scratch: Option<tempfile::TempDir>,
@@ -146,6 +147,7 @@ impl ClaudePlannerHost {
                 .map(|descriptor| descriptor.name),
         );
         let instructions_dir = instructions_dir(data_dir)?;
+        let mcp_session_key = crate::mcp_server::auth::get_or_generate_session_mcp_key(data_dir)?;
         let (provider_execution, completion) = super::execution::owner(instructions_dir.clone());
         Ok(Self {
             completion,
@@ -157,6 +159,7 @@ impl ClaudePlannerHost {
             instructions_dir,
             mcp_shim,
             mcp_socket,
+            mcp_session_key,
             calm_tools,
             _scratch: None,
         })

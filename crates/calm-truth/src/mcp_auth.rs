@@ -53,8 +53,85 @@ pub fn verify_token(presented: &str, stored_hash: &str) -> bool {
 /// only; card identity still comes from per-call thread metadata. Persisted
 /// under `<data_dir>/secrets/mcp-daemon-token` so CODEX_HOME config stays stable.
 pub fn get_or_generate_daemon_token(data_dir: &Path) -> io::Result<String> {
+    get_or_generate_secret_file(
+        data_dir,
+        "mcp-daemon-token",
+        "daemon token file exists but is empty",
+    )
+}
+
+/// Server-wide secret key used to deterministically derive per-session MCP tokens
+/// from `(worker_session_id, mcp_token_epoch)` without persisting plaintext tokens
+/// in SQLite. Persisted under `<data_dir>/secrets/mcp-session-key`.
+#[derive(Clone)]
+pub struct SessionMcpKey(String);
+
+impl SessionMcpKey {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for SessionMcpKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("SessionMcpKey([REDACTED])")
+    }
+}
+
+pub fn get_or_generate_session_mcp_key(data_dir: &Path) -> io::Result<SessionMcpKey> {
+    get_or_generate_secret_file(
+        data_dir,
+        "mcp-session-key",
+        "session MCP key file exists but is empty",
+    )
+    .map(SessionMcpKey)
+}
+
+/// Deterministically derive a 64-char hex MCP token for `(worker_session_id, epoch)`
+/// using HMAC-SHA256 keyed by `master_key`.
+pub fn derive_session_mcp_token(
+    master_key: &SessionMcpKey,
+    worker_session_id: &str,
+    epoch: i64,
+) -> String {
+    const BLOCK_SIZE: usize = 64;
+    let key_bytes = master_key.as_str().as_bytes();
+    let mut key_block = [0u8; BLOCK_SIZE];
+    if key_bytes.len() > BLOCK_SIZE {
+        let digest = Sha256::digest(key_bytes);
+        key_block[..digest.len()].copy_from_slice(&digest);
+    } else {
+        key_block[..key_bytes.len()].copy_from_slice(key_bytes);
+    }
+
+    let mut ipad = [0x36u8; BLOCK_SIZE];
+    let mut opad = [0x5cu8; BLOCK_SIZE];
+    for i in 0..BLOCK_SIZE {
+        ipad[i] ^= key_block[i];
+        opad[i] ^= key_block[i];
+    }
+
+    let mut inner = Sha256::new();
+    inner.update(ipad);
+    inner.update(b"neige-session-mcp-v1\0");
+    inner.update(worker_session_id.as_bytes());
+    inner.update(b"\0");
+    inner.update(epoch.to_le_bytes());
+    let inner_digest = inner.finalize();
+
+    let mut outer = Sha256::new();
+    outer.update(opad);
+    outer.update(inner_digest);
+    hex::encode(outer.finalize())
+}
+
+fn get_or_generate_secret_file(
+    data_dir: &Path,
+    filename: &str,
+    empty_msg: &str,
+) -> io::Result<String> {
     let secrets_dir = data_dir.join("secrets");
-    let token_path = secrets_dir.join("mcp-daemon-token");
+    let token_path = secrets_dir.join(filename);
     fs::create_dir_all(&secrets_dir)?;
     fs::set_permissions(&secrets_dir, fs::Permissions::from_mode(0o700))?;
     match fs::read_to_string(&token_path) {
@@ -75,10 +152,7 @@ pub fn get_or_generate_daemon_token(data_dir: &Path) -> io::Result<String> {
             fs::set_permissions(&token_path, fs::Permissions::from_mode(0o600))?;
             let token = token.trim();
             if token.is_empty() {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "daemon token file exists but is empty",
-                ));
+                return Err(io::Error::new(io::ErrorKind::InvalidData, empty_msg));
             }
             return Ok(token.to_string());
         }
@@ -197,6 +271,65 @@ mod tests {
                 .kind(),
             io::ErrorKind::AlreadyExists,
             "daemon token writer must refuse to replace an existing token"
+        );
+    }
+
+    #[test]
+    fn session_mcp_key_and_derivation_are_stable_and_epoch_scoped() {
+        let tmp = tempfile::tempdir().unwrap();
+        let k1 = get_or_generate_session_mcp_key(tmp.path()).unwrap();
+        let k2 = get_or_generate_session_mcp_key(tmp.path()).unwrap();
+        assert_eq!(k1.as_str(), k2.as_str());
+        assert_eq!(k1.as_str().len(), 64);
+        assert_eq!(format!("{k1:?}"), "SessionMcpKey([REDACTED])");
+
+        let t0 = derive_session_mcp_token(&k1, "ws-1", 0);
+        let t0_again = derive_session_mcp_token(&k1, "ws-1", 0);
+        let t1 = derive_session_mcp_token(&k1, "ws-1", 1);
+        let other_ws = derive_session_mcp_token(&k1, "ws-2", 0);
+        assert_eq!(t0, t0_again);
+        assert_eq!(t0.len(), 64);
+        assert_ne!(t0, t1);
+        assert_ne!(t0, other_ws);
+    }
+    #[test]
+    fn session_mcp_key_file_permissions_and_empty_file_fail_closed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let key = get_or_generate_session_mcp_key(tmp.path()).unwrap();
+        let path = tmp.path().join("secrets/mcp-session-key");
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert_eq!(
+            fs::metadata(path.parent().unwrap())
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
+        assert_eq!(fs::read_to_string(&path).unwrap().trim(), key.as_str());
+        fs::write(&path, "\n").unwrap();
+        assert_eq!(
+            get_or_generate_session_mcp_key(tmp.path())
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::InvalidData
+        );
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "\n",
+            "never replace an existing master key"
+        );
+    }
+
+    #[test]
+    fn session_mcp_derivation_matches_hmac_sha256_vector() {
+        // Independent HMAC-SHA256 vector over the documented domain, session and LE epoch.
+        assert_eq!(
+            derive_session_mcp_token(&SessionMcpKey("k".repeat(64)), "ws-1", 7),
+            "a7274f4b4da6b28d7e270c5f412fbc572656458a30088af91db1d1c6adcff3ab"
         );
     }
 }

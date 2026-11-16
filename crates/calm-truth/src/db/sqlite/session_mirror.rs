@@ -414,7 +414,9 @@ async fn supersede_for_lifecycle_tx(
                   updated_at_ms = ?1,
                   completed_at_ms = COALESCE(completed_at_ms, ?1),
                   mcp_token_hash = CASE WHEN (contract = 'assistant' OR (provider IN (SELECT value FROM json_each(?3)) AND contract = 'planner'))
-                                        THEN NULL ELSE mcp_token_hash END
+                                        THEN NULL ELSE mcp_token_hash END,
+                  mcp_token_epoch = CASE WHEN (contract = 'assistant' OR (provider IN (SELECT value FROM json_each(?3)) AND contract = 'planner'))
+                                         THEN mcp_token_epoch + 1 ELSE mcp_token_epoch END
             WHERE id = ?2
               AND (state IN ('starting', 'running', 'idle', 'turn_pending') OR (?4 AND state='failed'))"#,
     )
@@ -651,6 +653,7 @@ pub(super) async fn session_fail_if_active_tx(
         r#"UPDATE worker_sessions
               SET state = 'failed',
                   mcp_token_hash = CASE WHEN contract = 'assistant' THEN NULL ELSE mcp_token_hash END,
+                  mcp_token_epoch = CASE WHEN contract = 'assistant' THEN mcp_token_epoch + 1 ELSE mcp_token_epoch END,
                   updated_at_ms = ?1,
                   completed_at_ms = ?1
             WHERE id = ?2
@@ -676,7 +679,9 @@ pub(super) async fn session_mark_superseded_tx(
                   updated_at_ms = ?1,
                   completed_at_ms = COALESCE(completed_at_ms, ?1),
                   mcp_token_hash = CASE WHEN (contract = 'assistant' OR (provider IN (SELECT value FROM json_each(?3)) AND contract = 'planner'))
-                                        THEN NULL ELSE mcp_token_hash END
+                                        THEN NULL ELSE mcp_token_hash END,
+                  mcp_token_epoch = CASE WHEN (contract = 'assistant' OR (provider IN (SELECT value FROM json_each(?3)) AND contract = 'planner'))
+                                         THEN mcp_token_epoch + 1 ELSE mcp_token_epoch END
             WHERE id = ?2"#,
     )
     .bind(now)
