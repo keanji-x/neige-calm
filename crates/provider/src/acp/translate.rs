@@ -172,6 +172,10 @@ impl TurnTranslator {
                 if kind == "tool_call" && !update["title"].is_string() {
                     return Err(Error::Protocol("missing tool title"));
                 }
+                // ACP v1 name is informational: omitted/null leaves it unchanged.
+                if let Some(name) = update.get("name").and_then(Value::as_str) {
+                    tool["name"] = json!(name);
+                }
                 for field in [
                     "title",
                     "kind",

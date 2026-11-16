@@ -24,3 +24,6 @@ mod usage_tests;
 
 #[cfg(test)]
 mod permission_outcome_tests;
+
+#[cfg(test)]
+mod tool_name_tests;
