@@ -204,6 +204,7 @@ const TRACK_PERSISTENT_COLUMNS: &[&str] = &[
     "admin_granted_at",
     "planner_revision",
     "planner_event_baseline",
+    "workspace_source_only",
 ];
 
 type PersistedTrackEvent = (

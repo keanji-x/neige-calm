@@ -6,6 +6,16 @@ use sqlx::{Sqlite, Transaction};
 use crate::error::{CalmError, Result};
 use crate::model::{TrackWorkspace, TrackWorkspaceKind};
 
+/// Whether creation explicitly selected a source directory that may only be
+/// upgraded to a worktree through the explicit workspace update path.
+pub async fn track_workspace_source_only(pool: &sqlx::SqlitePool, track_id: &str) -> Result<bool> {
+    sqlx::query_scalar("SELECT workspace_source_only FROM tracks WHERE id = ?1")
+        .bind(track_id)
+        .fetch_optional(pool)
+        .await?
+        .ok_or_else(|| CalmError::NotFound(format!("track {track_id}")))
+}
+
 /// Managed track owners whose retired workspace trash must remain recoverable.
 /// The caller holds the lifecycle fence while sampling this read inventory.
 pub async fn track_workspace_trash_retention_owners(

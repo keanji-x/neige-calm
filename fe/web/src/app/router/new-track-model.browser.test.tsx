@@ -193,6 +193,7 @@ it('keeps directory selection and cancellation usable through overflow', async (
     await user.keyboard('{Enter}');
     const options = await screen.findByRole('dialog', { name: 'Track options' });
     await user.click(within(options).getByRole('button', { name: 'Repo: Neige workspace' }));
+    await user.click(await screen.findByRole('menuitem', { name: /^Others…/ }));
     const cancelledDirectory = await screen.findByRole('dialog', { name: 'Choose a directory' });
     await user.click(within(cancelledDirectory).getByRole('button', { name: 'Cancel' }));
     await waitFor(() => { expect(screen.queryByRole('dialog', { name: 'Choose a directory' })).toBeNull(); });
@@ -200,6 +201,7 @@ it('keeps directory selection and cancellation usable through overflow', async (
     await waitFor(() => { expect(document.activeElement).toBe(more); });
     await user.click(more);
     await user.click(screen.getByRole('button', { name: 'Repo: Neige workspace' }));
+    await user.click(await screen.findByRole('menuitem', { name: /^Others…/ }));
     const directory = await screen.findByRole('dialog', { name: 'Choose a directory' });
     await user.click(await within(directory).findByRole('button', { name: 'Select this directory' }));
     await waitFor(() => { expect(screen.queryByRole('dialog', { name: 'Choose a directory' })).toBeNull(); });
@@ -228,6 +230,7 @@ it('restores the visible options trigger after a trusted pointer cancels directo
   try {
     await page.getByRole('button', { name: 'Track options', exact: true }).click();
     await page.getByRole('button', { name: 'Repo: Neige workspace', exact: true }).click();
+    await page.getByRole('menuitem', { name: /^Others…/ }).click();
     await page.getByRole('dialog', { name: 'Choose a directory', exact: true }).getByRole('button', { name: 'Cancel', exact: true }).click();
     await waitFor(() => { expect(screen.queryByRole('dialog', { name: 'Choose a directory' })).toBeNull(); });
     expect(screen.queryByRole('dialog', { name: 'Track options' })).toBeNull();

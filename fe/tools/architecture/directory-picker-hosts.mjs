@@ -14,19 +14,21 @@ import ts from 'typescript';
  */
 export const DIRECTORY_PICKER_HOSTS = Object.freeze({
   'web/src/ui/schema-form/fields/DirectoryField/public.tsx': 'component',
+  'web/src/features/area/directory-picker.tsx': 'component',
   'web/src/features/track/new-card/public.tsx': 'pushes-into-host-dialog',
   'web/src/features/area/editor/public.tsx': 'pushes-into-host-dialog',
   'web/src/features/area/new-track/public.tsx': 'owns-its-modal',
   'web/src/app/router/normal-empty-fixtures.tsx': 'owns-its-modal',
 });
 
-/** The two components whose rendering makes a file a picker host. */
-const COMPONENTS = new Set(['DirectoryField', 'DirectoryBrowser']);
+/** The components whose rendering makes a file a picker host. */
+const COMPONENTS = new Set(['DirectoryField', 'DirectoryBrowser', 'DirectoryPicker']);
 
 /** The modules that define them; read only to hold up the no-default-export premise. */
 export const PICKER_MODULES = Object.freeze([
   'web/src/ui/schema-form/fields/DirectoryField/public.tsx',
   'web/src/ui/directory-browser/public.tsx',
+  'web/src/features/area/directory-picker.tsx',
 ]);
 
 /** Call shapes that render their first argument; `jsx`/`jsxs`/`jsxDEV` are the automatic runtime's emit. */
@@ -73,7 +75,7 @@ function walk(node, visit) {
 }
 
 /**
- * Local names an import bound to one of the two components, namespace names a member access could reach them through, and local `const` aliases of either.
+ * Local names an import bound to one of the picker components, namespace names a member access could reach them through, and local `const` aliases of either.
  * @param {ts.SourceFile} source
  * @returns {{ bound: Set<string>, namespaces: Set<string> }}
  */
@@ -122,7 +124,7 @@ function boundNames(source) {
 }
 
 /**
- * Whether `node` names one of the two components: a bound local name, or a member access through an imported namespace.
+ * Whether `node` names one of the picker components: a bound local name, or a member access through an imported namespace.
  * @param {ts.Node | undefined} node
  * @param {{ bound: Set<string>, namespaces: Set<string> }} names
  * @returns {boolean}
@@ -137,7 +139,7 @@ function namesComponent(node, names) {
 }
 
 /**
- * Whether `contents` renders one of the two components.
+ * Whether `contents` renders one of the picker components.
  * @param {string} path relative path, only used to pick the parser's dialect
  * @param {string} contents
  * @returns {boolean}
@@ -229,7 +231,7 @@ export function checkDirectoryPickerHosts(webSrc = 'web/src', registry = DIRECTO
   for (const path of Object.keys(registry)) {
     if (!seen.has(path)) {
       problems.push(`${path} is registered as a directory picker host but renders neither `
-        + 'DirectoryField nor DirectoryBrowser — drop the stale registration');
+        + 'a picker component — drop the stale registration');
     }
   }
   return problems.length ? `directory-picker-hosts:\n  ${problems.join('\n  ')}` : '';

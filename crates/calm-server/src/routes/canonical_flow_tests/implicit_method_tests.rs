@@ -246,6 +246,37 @@ async fn mcp_dev_to_small_change_clears_previous_template_input() {
     f.shutdown_process(&state).await;
 }
 
+// Model a row created before source-only intent was stored, while keeping the
+// original canonical Planner carrier and workspace binding.
+async fn mark_as_legacy_attached(f: &Fixture, id: &str) {
+    f.repo
+        .db()
+        .writer()
+        .execute(sqlx::query("UPDATE tracks SET workspace_source_only = 0 WHERE id = ?1").bind(id))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn isolation_none_refuses_a_worker_without_selecting_a_worktree() {
+    let f = Fixture::new().await;
+    let (state, _app, _cookie, created) = attached(&f).await;
+    let id = created["id"].as_str().unwrap();
+    let operation = prepare_worker(&f, &state, id).await;
+    assert_eq!(operation.phase, crate::operation::Phase::Failed);
+    assert!(
+        operation
+            .last_error
+            .as_deref()
+            .is_some_and(|reason| { reason.contains("track-without-worktree") }),
+        "{:?}",
+        operation.last_error,
+    );
+    let track = f.repo.track_get(id).await.unwrap().unwrap();
+    assert!(track.workspace.worktree.is_none());
+    f.shutdown_process(&state).await;
+}
+
 #[tokio::test]
 async fn lazy_worktree_first_worker_preparation_keeps_canonical_planner_carrier() {
     let f = Fixture::new().await;
@@ -259,7 +290,9 @@ async fn lazy_worktree_first_worker_preparation_keeps_canonical_planner_carrier(
             .await
             .unwrap();
     assert!(thread.is_none());
-    prepare_worker(&f, &state, id).await;
+    mark_as_legacy_attached(&f, id).await;
+    let operation = prepare_worker(&f, &state, id).await;
+    assert_eq!(operation.phase, crate::operation::Phase::TxCommitted);
     let upgraded = f.repo.track_get(id).await.unwrap().unwrap();
     assert_eq!(
         upgraded.workspace.path,
@@ -306,7 +339,7 @@ async fn worker_operation(f: &Fixture, id: &str) -> String {
         .unwrap()
 }
 
-async fn prepare_worker(f: &Fixture, state: &AppState, id: &str) {
+async fn prepare_worker(f: &Fixture, state: &AppState, id: &str) -> crate::operation::Operation {
     let operation = worker_operation(f, id).await;
     let operations = crate::operation::SqlxOperationRepo::new(f.repo.db().clone());
     tokio::time::timeout(
@@ -318,15 +351,7 @@ async fn prepare_worker(f: &Fixture, state: &AppState, id: &str) {
     .await
     .expect("worker preparation must use the driver's already held Track fence")
     .unwrap();
-    assert!(matches!(
-        operations
-            .get_operation(&operation)
-            .await
-            .unwrap()
-            .unwrap()
-            .phase,
-        crate::operation::Phase::TxCommitted
-    ));
+    operations.get_operation(&operation).await.unwrap().unwrap()
 }
 
 #[cfg(feature = "fixtures")]
@@ -340,6 +365,7 @@ async fn lazy_worktree_cancellation_retains_track_fence_until_blocking_git_finis
     let id = created["id"].as_str().unwrap();
     let path = created["workspace"]["path"].as_str().unwrap();
     let path = std::fs::canonicalize(path).unwrap();
+    mark_as_legacy_attached(&f, id).await;
     let pause = PausePoint::default();
     install_pause_for_test(
         "track-metadata-before",
@@ -458,7 +484,9 @@ async fn preserve_bound_cwd(provider: calm_types::runtime::AgentProvider, lazy: 
     );
     if lazy {
         state.dispatcher.abort_event_listener_for_test();
-        prepare_worker(&f, &state, track).await;
+        mark_as_legacy_attached(&f, track).await;
+        let operation = prepare_worker(&f, &state, track).await;
+        assert_eq!(operation.phase, crate::operation::Phase::TxCommitted);
     } else {
         let response = app.clone().oneshot(Request::patch(format!("/api/tracks/{track}"))
         .header(header::COOKIE, &cookie).header(header::CONTENT_TYPE, "application/json")
@@ -595,7 +623,9 @@ async fn codex_selection_read_keeps_bound_cwd_after_lazy_upgrade() {
     .await;
     for (index, turn) in ["before-upgrade", "after-upgrade"].into_iter().enumerate() {
         if index == 1 {
-            prepare_worker(&f, &state, track).await;
+            mark_as_legacy_attached(&f, track).await;
+            let operation = prepare_worker(&f, &state, track).await;
+            assert_eq!(operation.phase, crate::operation::Phase::TxCommitted);
             let upgraded = f.repo.track_get(track).await.unwrap().unwrap();
             assert_ne!(upgraded.workspace.agent_cwd(), path.to_str().unwrap());
             post(

@@ -246,8 +246,8 @@ pub use track_tree::{
 };
 pub use track_workspace::{
     PlannerCleanEvidence, closed_worktree_candidate, closed_worktree_candidates,
-    track_workspace_freeze_tx, track_workspace_read_tx, track_workspace_trash_retention_owners,
-    track_workspace_write_tx,
+    track_workspace_freeze_tx, track_workspace_read_tx, track_workspace_source_only,
+    track_workspace_trash_retention_owners, track_workspace_write_tx,
 };
 
 use infra::check_no_unknown_future_migrations;

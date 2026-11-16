@@ -48,10 +48,12 @@ both the composer's submit gate and the route's spread ask that one function.
 What is *sent* is never trimmed: the kernel forwards the text to the agent
 verbatim, so the whitespace around the sentence is the reader's.
 
-With no folder, the request omits both `cwd` and `attach_folder` and the kernel
-creates a managed workspace. Accepting an inherited Area folder or choosing a
-different one sends `{ cwd, attach_folder: true, isolation: 'none' }` and attaches the Track to a
-directory the kernel does not own.
+With no folder, the request omits the folder and isolation fields and the kernel
+creates a managed workspace. The Repo menu defaults attached directories to
+`isolation: 'worktree'`. Selecting bare-folder mode sends `isolation: 'none'`.
+Conversation agents use the source folder in that mode. Task workers require
+an explicit upgrade to a worktree.
 
-The folder picker remains a route-local `Dialog` around `DirectoryBrowser` so
-it does not expand inline beneath the composer.
+The Repo menu opens the shared directory picker through Others. On the New
+Track route the picker owns a modal. Inside the Area editor it pushes a view
+onto the existing dialog.

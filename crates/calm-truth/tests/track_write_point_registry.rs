@@ -9,11 +9,12 @@ use std::path::{Path, PathBuf};
 use proc_macro2::{TokenStream, TokenTree};
 
 /// Columns owned by `tracks` alone, so no table-name reasoning is needed.
-const TRACK_COLUMNS: [&str; 6] = [
+const TRACK_COLUMNS: [&str; 7] = [
     "workspace_kind",
     "workspace_path",
     "workspace_frozen_at",
     "workspace_worktree_path",
+    "workspace_source_only",
     "template_id",
     "plugin_scope",
 ];
@@ -51,6 +52,11 @@ const EXPECTED_OTHER_WRITES: &[(&str, &str, &str)] = &[
          binding contract; ordinary fixtures use the production writer. New historical \
          cases reuse this seed. Only changing this fixed SQL edits the helper and this \
          existing registry entry; no new scan or invocation is introduced.",
+    ),
+    (
+        "crates/calm-server/src/routes/canonical_flow_tests/implicit_method_tests.rs",
+        "update tracks set workspace_source_only = 0 where id = ?1",
+        "Reconstructs the legacy attachment policy with its original canonical Planner carrier.",
     ),
     (
         "crates/calm-server/src/routes/canonical_flow_tests/p1_workspace_upload.rs",
@@ -102,6 +108,11 @@ const EXPECTED_TRACK_WRITE_SITES: &[(&str, &str, &str)] = &[
         "crates/calm-truth/src/db/sqlite/track.rs",
         "insert into tracks (id, area_id, title, sort, pinned_at, closed_at, admin_granted_at, template_id, plugin_scope, purpose, template_input, tree_task_budget, recipe_id, recipe_revision, created_at, updated_at) values (?1, ?2, ?3, ?4, null, null, null, ?5, ?6, ?7, ?8, null, ?9, ?10, ?11, ?12)",
         "The creation writer stamps the admitted template and its initial owner.",
+    ),
+    (
+        "crates/calm-truth/src/db/sqlite/track.rs",
+        "update tracks set workspace_source_only = 1 where id = ?1",
+        "Track creation records explicit source-only intent in the workspace transaction.",
     ),
     (
         "crates/calm-truth/src/db/sqlite/track.rs",

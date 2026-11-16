@@ -11,14 +11,16 @@ import { Icon } from '@astryxdesign/core/Icon';
 import { VStack } from '@astryxdesign/core/VStack';
 
 import { isBlankForKernel } from '../../../../../core/domain/track.ts';
+import { DirectoryPicker } from '../directory-picker.tsx';
 import type { ListDirectory } from '../../../ui/directory-browser/public.tsx';
-import { DirectoryBrowser } from '../../../ui/directory-browser/public.tsx';
-import { Dialog } from '../../../ui/dialog/public.tsx';
 import { useState } from '../../../ui/state/public.ts';
 import { triggerMenuKeyRoute } from '../../../ui/trigger-menu-keys/public.ts';
 import { NeigeMotion } from '../../../ui/brand/motion.tsx';
 import styles from './new-track.module.css';
 import { ComposerPreferences } from './composer-preferences.tsx';
+import type { RepoIsolationMode } from './repo-pill.tsx';
+
+export type { RepoIsolationMode };
 
 export type NewTrackDraft = Readonly<{
   /**
@@ -28,7 +30,7 @@ export type NewTrackDraft = Readonly<{
   message: string;
   /** Absolute path, or the key is absent: an empty string would take the attached branch with a path that cannot work. */
   cwd?: string;
-  isolation?: 'none';
+  isolation?: RepoIsolationMode;
 }>;
 
 export type NewTrackFormProps = Readonly<{
@@ -70,6 +72,7 @@ const FOLDER_CLEAR_LABEL = 'Use a Neige workspace instead';
 export type NewTrackFormState = Readonly<{
   message: string;
   cwd: string;
+  isolation?: RepoIsolationMode;
 }>;
 
 export function NewTrackForm({
@@ -79,7 +82,7 @@ export function NewTrackForm({
   const fieldId = useId();
   const [message, setMessage] = useState(initialDraft?.message ?? '');
   const [cwd, setCwd] = useState(initialDraft?.cwd ?? initialCwd ?? '');
-  const isolation = 'none' as const;
+  const [isolation, setIsolation] = useState<RepoIsolationMode>(initialDraft?.isolation ?? 'worktree');
   const [browsing, setBrowsing] = useState<DialogOrigin | null>(null);
   const composerHostRef = useRef<HTMLDivElement | null>(null);
   /* One array per trigger: `useTriggerMenu` drops an open menu when the list changes identity. */
@@ -87,8 +90,8 @@ export function NewTrackForm({
   const folderId = `${fieldId}-folder`;
 
   useEffect(() => {
-    onDraftChange?.({ message, cwd });
-  }, [message, cwd, onDraftChange]);
+    onDraftChange?.({ message, cwd, isolation });
+  }, [message, cwd, isolation, onDraftChange]);
 
   /* The caret starts in the field. Found by query, not ref: `ChatComposerInput`
    * forwards its DOM `ref` to the wrapper, which is not focusable. Mount-only, so
@@ -181,8 +184,10 @@ export function NewTrackForm({
                 {...(triggers === undefined ? {} : { triggers, debounceMs: 0 })} />
             </div>}
             footerActions={<ComposerPreferences browsing={browsing !== null}
-              folder={{ buttonId: folderId, value: cwd, clearLabel: FOLDER_CLEAR_LABEL,
-                onBrowse: (origin) => setBrowsing(origin), onClear: () => { setCwd(''); },
+              folder={{ buttonId: folderId, value: cwd, isolation, clearLabel: FOLDER_CLEAR_LABEL,
+                onIsolationChange: setIsolation,
+                onBrowse: (origin) => setBrowsing(origin),
+                onClear: () => { setCwd(''); setIsolation('worktree'); },
                 isDisabled: submitting || locked }}
             />}
             /* Model and Create stay together at the trailing edge. */
@@ -236,23 +241,19 @@ export function NewTrackForm({
 
       </VStack>
 
-      {/* The picker as a real modal: `Dialog` renders `null` while closed and owns the
+      {/* The picker as a real modal: shared `DirectoryPicker` owns the Dialog,
                 focus trap, Escape and click-outside. */}
-      <Dialog purpose="form"
-        origin={browsing ?? { kind: 'surface-center' }}
+      <DirectoryPicker
         open={browsing !== null}
-        onClose={() => setBrowsing(null)}
-        title="Choose a directory"
-        wide
-      >
-        <DirectoryBrowser
-          listDirectory={listDirectory}
-          initialPath={cwd === '' ? null : cwd}
-          mode="directory"
-          onCancel={() => setBrowsing(null)}
-          onSelect={(path) => { setCwd(path); setBrowsing(null); }}
-        />
-      </Dialog>
+        origin={browsing ?? { kind: 'surface-center' }}
+        initialPath={cwd === '' ? null : cwd}
+        listDirectory={listDirectory}
+        onCancel={() => setBrowsing(null)}
+        onSelect={(path) => {
+          setCwd(path);
+          setBrowsing(null);
+        }}
+      />
     </div>
   );
 }
