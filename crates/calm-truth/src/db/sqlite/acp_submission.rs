@@ -328,7 +328,7 @@ pub async fn acp_submission_finish(
         .with_writer(|write_session| {
             Box::pin(async move {
                 let mut tx = write_session.begin_immediate().await?;
-                finish_tx(&mut tx, worker, client, outcome).await?;
+                acp_submission_finish_tx(&mut tx, worker, client, outcome).await?;
                 tx.commit().await?;
                 Ok(())
             })
@@ -336,7 +336,7 @@ pub async fn acp_submission_finish(
         .await
         .map_err(crate::TruthError::from)?
 }
-async fn finish_tx(
+pub async fn acp_submission_finish_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     worker: &str,
     client: &str,
