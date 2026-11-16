@@ -34,15 +34,16 @@ impl ResidentQuiescence {
     async fn recheck_tx(&self, tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<()> {
         use crate::db::sqlite::{AcpSharedRestartOwner, acp_shared_receipt_process_tx};
         let owner = acp_shared_receipt_process_tx(tx, &self.worker, &self.submission).await?;
-        let unbound: bool = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM worker_sessions WHERE id=?1 AND mcp_token_hash IS NULL)
-             AND NOT EXISTS(SELECT 1 FROM acp_resident_workspace_bindings WHERE worker_session_id=?1)",
+        // Recovery fences tool calls before quiescence. The carrier replacement
+        // transaction compares ingress and revokes any remaining credentials.
+        let bound: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM acp_resident_workspace_bindings WHERE worker_session_id=?1)",
         )
         .bind(&self.worker)
         .fetch_one(&mut **tx)
         .await?;
         if !matches!(owner, Some(AcpSharedRestartOwner::Execution { execution_id }) if execution_id == self.execution)
-            || !unbound
+            || bound
             || !super::resident_execution::has_drained_tx(tx, &self.provider, &self.execution)
                 .await?
         {
@@ -73,9 +74,6 @@ pub(crate) async fn quiesce_for_abandonment(
             else {
                 return Ok(None);
             };
-            // A cold worker may have no live slot to carry out revocation.
-            // Keep this write in the same transaction as proof validation.
-            super::session::revoke_worker_tx(tx, &worker).await?;
             let proof = ResidentQuiescence {
                 worker,
                 submission: client,

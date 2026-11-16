@@ -362,7 +362,7 @@ async fn acp_recovery(scenario: &str) {
                 )
                 .await
                 .is_ok(),
-                "refusing the exit proof must roll back credential revocation"
+                "refusing the exit proof must preserve the existing credential"
             );
         } else {
             let run = super::presentation_read_feedback_tests::read_run(&app, &cookie, &card).await;
