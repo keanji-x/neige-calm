@@ -2,6 +2,7 @@
 // Report addresses come from the server; plugin reference text is built from catalog metadata.
 
 import { z } from 'zod';
+import type { TrackTemplate } from './track.js';
 import type { PluginListItem } from './plugins.js';
 
 import type {
@@ -52,7 +53,7 @@ export function mentionsOperation(
   };
 }
 
-export type MentionKind = 'tag' | 'track' | 'block' | 'plugin';
+export type MentionKind = 'tag' | 'track' | 'block' | 'plugin' | 'template';
 
 /** One row of the `@` menu and the chip it becomes. */
 export type MentionSuggestion = Readonly<{
@@ -106,16 +107,17 @@ function blockSuggestion(block: BlockMention): MentionSuggestion {
 }
 
 /**
- * What the text typed after `@` asks for. A leading `+`, `#`, `/` or `>` narrows the menu to plugins,
+ * What the text typed after `@` asks for. A leading `:`, `+`, `#`, `/` or `>` narrows the menu to templates, plugins,
  * tags, tracks or blocks (`kind`) and is not part of the search: `text` is the rest, the server's `q`.
  * Without one of them `kind` is `null` and `text` is everything typed, so a name that starts
  * with one of these characters is still found by typing it without that character.
  */
 export type MentionQuery = Readonly<{ kind: MentionKind | null; text: string }>;
 
-/** Also accepts a Chinese IME's punctuation: `＋`, `＃`, `、` and `》`. */
+/** Also accepts a Chinese IME's punctuation: `：`, `＋`, `＃`, `、` and `》`. */
 function prefixKind(char: string): MentionKind | null {
   switch (char) {
+    case ':': case '：': return 'template';
     case '+': case '＋': return 'plugin';
     case '#': case '＃': return 'tag';
     case '/': case '、': return 'track';
@@ -148,6 +150,7 @@ export function mentionSuggestionsOf(candidates: MentionCandidates, query: Menti
 export type SentMentionPart = Readonly<{ text: string; label: string | null }>;
 
 function sentMentionLabel(address: string): string | null {
+  if (/^template:[^\s`\p{Cc}]+$/u.test(address)) return address.slice(9);
   if (address.startsWith('tag:')) {
     const tag = address.slice(4);
     // Stored tags obey report_tags::normalize_tag; malformed prefixes must not consume later picks.
@@ -169,7 +172,7 @@ function sentMentionLabel(address: string): string | null {
  * Match complete backtick runs, including the longer fences and edge padding emitted by
  * the server. Unknown addresses and unfinished spans remain literal user text.
  */
-export function sentMentionParts(text: string): readonly SentMentionPart[] {
+function parseMentionParts(text: string, onMention?: (address: string) => void): readonly SentMentionPart[] {
   const parts: SentMentionPart[] = [];
   const openings = /@(`+)/g;
   let end = 0;
@@ -184,6 +187,7 @@ export function sentMentionParts(text: string): readonly SentMentionPart[] {
     if (address.startsWith(' ') && address.endsWith(' ')) address = address.slice(1, -1);
     const label = sentMentionLabel(address);
     if (label === null) continue;
+    onMention?.(address);
     openings.lastIndex = fences.lastIndex;
     if (opening.index > end) parts.push({ text: text.slice(end, opening.index), label: null });
     end = fences.lastIndex;
@@ -208,4 +212,44 @@ export function pluginMentionSuggestions(plugins: readonly PluginListItem[], typ
         insert: `Plugin reference (documentation only; kernel permissions still apply): ${JSON.stringify({ id: plugin.id, name: plugin.manifest_name, description })}`,
       };
     });
+}
+
+/** Recover display chips using the same parser as template extraction. */
+export function sentMentionParts(text: string): readonly SentMentionPart[] {
+  return parseMentionParts(text);
+}
+
+/** Template IDs in message order, preserving repeated mentions. */
+export function extractTemplateMentions(text: string): readonly string[] {
+  const ids: string[] = [];
+  parseMentionParts(text, address => {
+    if (address.startsWith('template:')) ids.push(address.slice(9));
+  });
+  return ids;
+}
+
+/** Return a template ID for `POST /api/tracks` only when the message names one known ready template without inputs. */
+export function selectedReadyTemplateId(
+  text: string,
+  templates: readonly TrackTemplate[],
+): string | undefined {
+  const templateIds = extractTemplateMentions(text);
+  if (templateIds.length !== 1) return undefined;
+  const template = templates.find(candidate => candidate.id === templateIds[0]);
+  return template?.availability.status === 'ready' && template.input_schema === undefined
+    ? template.id
+    : undefined;
+}
+
+/** Find templates by title, ID or description without requiring a type prefix. */
+export function templateMentionSuggestions(templates: readonly TrackTemplate[], typed: string): readonly MentionSuggestion[] {
+  const query = mentionQueryOf(typed);
+  if (query.kind !== null && query.kind !== 'template') return [];
+  const needle = query.text.trim().toLocaleLowerCase();
+  return templates.filter(template => `${template.title} ${template.id} ${template.description ?? ''}`.toLocaleLowerCase().includes(needle))
+    .sort((a, b) => a.title.localeCompare(b.title) || a.id.localeCompare(b.id))
+    .slice(0, 8).map(template => ({
+      id: `template:${template.id}`, kind: 'template', label: template.title,
+      chip: template.title, detail: template.description, insert: `@\`template:${template.id}\``,
+    }));
 }

@@ -6,6 +6,8 @@ import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import { availabilityOf } from '../../../../core/domain/agent-providers.ts';
 import { folderConflictMessage } from '../../../../core/domain/area.ts';
 import { ApiError, classifyFailure, NotSentError, refusedText, writeFailureOf } from '../../../../core/domain/failure-class.ts';
+import { selectedReadyTemplateId } from '../../../../core/domain/mentions.ts';
+import type { TrackTemplate } from '../../../../core/domain/track.ts';
 import { readErrorText } from '../../../../core/domain/read-failure.ts';
 import { isBlankForKernel, TRACK_CREATE_FAILURES, TRACK_CREATE_TEXT, trackCreateWorkspaceError, type NewTrackBodyWithoutFirstMessage } from '../../../../core/domain/track.ts';
 import { ModelPill, PlannerRolePill } from '../../features/chat/thread/model-pill.tsx';
@@ -61,7 +63,9 @@ function NewTrackEditor({ transport, unauthorized, workspace, session, store }: 
   const go = useGo();
   const listDirectory = createDirectoryLister(transport, unauthorized);
   /* The sentence is the new track's Planner's first message, and that Planner reads this Area's reports; there is no track yet to rank first. */
-  const mentionTrigger = useMentionTrigger(useMentionSearch(transport, unauthorized, areaId, null));
+  const templatesRef = useRef<readonly TrackTemplate[]>([]);
+  const onTemplates = useCallback((templates: readonly TrackTemplate[]) => { templatesRef.current = templates; }, []);
+  const mentionTrigger = useMentionTrigger(useMentionSearch(transport, unauthorized, areaId, null, onTemplates));
   const available = workspace.areasError === null && !workspace.areasLoading
     && workspace.areas.some((area) => area.id === areaId);
   const liveRef = useRef(true);
@@ -85,7 +89,9 @@ function NewTrackEditor({ transport, unauthorized, workspace, session, store }: 
       || current.canRetryAsNewTrack) return;
     const hadUnconfirmedRequest = replacementKey === undefined && current.request !== null;
     const attemptKey = replacementKey ?? current.key;
+    const templateId = selectedReadyTemplateId(draft.message, templatesRef.current);
     const body = {
+      ...(templateId === undefined ? {} : { template_id: templateId }),
       area_id: areaId,
       planner_provider: current.provider,
       theme: readHostThemeRgb(),

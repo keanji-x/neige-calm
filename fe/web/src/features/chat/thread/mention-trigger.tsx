@@ -13,6 +13,7 @@ import styles from './mention-trigger.module.css';
 
 /** The headings Astryx's `groupItems` draws, in the order the suggestions arrive. */
 const GROUP_HEADING: Readonly<Record<MentionKind, string>> = Object.freeze({
+  template: 'Templates',
   tag: 'Tags',
   track: 'Tracks',
   block: 'Blocks',
@@ -20,7 +21,7 @@ const GROUP_HEADING: Readonly<Record<MentionKind, string>> = Object.freeze({
 });
 
 const ITEM_MARKER: Readonly<Record<MentionKind, string>> = Object.freeze({
-  tag: '#', track: '/', block: '>', plugin: '+',
+  template: ':', tag: '#', track: '/', block: '>', plugin: '+',
 });
 
 /**
@@ -44,6 +45,7 @@ type MentionItem = SearchableItem<
 
 function categoryItems(suggestions: readonly MentionSuggestion[]): MentionItem[] {
   return ([
+    { kind: 'template', label: 'Templates', detail: 'Track starting point', prefix: '@:' },
     { kind: 'plugin', label: 'Plugins', detail: 'Plugin guides', prefix: '@+' },
     { kind: 'tag', label: 'Tags', detail: 'Group of tracks', prefix: '@#' },
     { kind: 'track', label: 'Tracks', detail: 'Full report', prefix: '@/' },

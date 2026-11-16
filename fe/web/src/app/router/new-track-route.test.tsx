@@ -112,6 +112,7 @@ async function pick(trigger: string, group: 'Codex' | 'Claude', item: string | R
 }
 
 function harness(options: {
+  templates?: readonly import('../../../../core/domain/track.ts').TrackTemplate[];
   areaDefaults?: Readonly<{ default_template_id: string | null; default_cwd: string | null }>;
   otherAreaDefaults?: Readonly<{ default_template_id: string | null; default_cwd: string | null }>;
   trackCreate?: ApiTransportResponse;
@@ -149,6 +150,9 @@ function harness(options: {
   const transport: ApiTransportPort = {
     send(request: ApiRequest): Promise<ApiTransportResponse> {
       sent.push(request);
+      if (request.path === '/api/track-templates') return Promise.resolve({ status: 200, statusText: 'OK', body: options.templates ?? [] });
+      if (request.path === '/api/plugins') return Promise.resolve({ status: 200, statusText: 'OK', body: [] });
+      if (request.path.includes('/mentions?')) return Promise.resolve({ status: 200, statusText: 'OK', body: { tags: [], tracks: [], blocks: [] } });
       const posted = request.body as { area_id?: string } | undefined;
       if (request.method === 'POST' && request.path === '/api/tracks' && options.loseFirstCreateAck && !firstCreateAckLost) {
         firstCreateAckLost = true;
@@ -1388,4 +1392,43 @@ it.each([
   await waitFor(() => expect(createdTrackRequests(sent)).toHaveLength(1));
   expect(createdTrackRequests(sent)[0]?.body).toEqual(request.body);
   expect(createdTrackRequests(sent)[0]?.headers?.['Idempotency-Key']).toBe(request.key);
+});
+
+it.each([
+  ['ready', undefined, 'use @`template:deploy`', true],
+  ['ready', { type: 'object' }, 'use @`template:deploy`', false],
+  ['ready', null, 'use @`template:deploy`', false],
+  ['requires_plugin', undefined, 'use @`template:deploy`', false],
+  ['ready', undefined, 'use @`template:unknown`', false],
+  ['ready', undefined, 'use @`template:deploy` @`template:other`', false],
+  ['ready', undefined, 'use @`template:deploy` @`template:deploy`', false],
+] as const)('creates from template only for one known ready reference without inputs (%s, %j, %s)', async (status, input_schema, message, selected) => {
+  const { sent } = harness({ templates: [{ id: 'deploy', title: 'Deploy', description: null, tasks: [], input_schema,
+    availability: status === 'ready' ? { status } : { status, plugin_id: 'example', plugin_name: 'Example' } }] });
+  await userEvent.click(await screen.findByRole('button', { name: 'New track in Work' }));
+  const composer = await findComposer();
+  expect(sent.some(request => request.path === '/api/track-templates')).toBe(false);
+  await userEvent.type(composer, '@:');
+  await screen.findByRole('option', { name: 'Deploy' });
+  await userEvent.keyboard('{Escape}{Control>}a{/Control}{Backspace}');
+  await userEvent.type(composer, message);
+  await userEvent.click(screen.getByRole('button', { name: 'Create track' }));
+  await waitFor(() => expect(createdTrackBodies(sent)).toHaveLength(1));
+  const body = createdTrackBodies(sent)[0];
+  expect(body).toHaveProperty('first_message', message);
+  if (selected) expect(body).toHaveProperty('template_id', 'deploy');
+  else expect(body).not.toHaveProperty('template_id');
+});
+
+it('leaves a pasted template reference to the first message when no catalog was loaded', async () => {
+  const { sent } = harness();
+  await userEvent.click(await screen.findByRole('button', { name: 'New track in Work' }));
+  const composer = await findComposer();
+  await userEvent.click(composer);
+  await userEvent.paste('use @`template:deploy`');
+  await userEvent.click(screen.getByRole('button', { name: 'Create track' }));
+  await waitFor(() => expect(createdTrackBodies(sent)).toHaveLength(1));
+  expect(createdTrackBodies(sent)[0]).toHaveProperty('first_message', 'use @`template:deploy`');
+  expect(createdTrackBodies(sent)[0]).not.toHaveProperty('template_id');
+  expect(sent.some(request => request.path === '/api/track-templates')).toBe(false);
 });

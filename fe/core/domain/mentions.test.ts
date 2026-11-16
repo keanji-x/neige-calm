@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { MentionCandidates } from '../api/generated/wire.js';
 import {
-  sentMentionParts, mentionCandidatesSchema, mentionQueryOf, mentionSuggestionsOf, mentionsOperation, type MentionQuery,
+  extractTemplateMentions, selectedReadyTemplateId, templateMentionSuggestions, sentMentionParts, mentionCandidatesSchema, mentionQueryOf, mentionSuggestionsOf, mentionsOperation, type MentionQuery,
 } from './mentions.js';
 
 const CANDIDATES: MentionCandidates = {
@@ -182,4 +182,67 @@ it('displays canonical server inserts without resolving identity or changing byt
   expect(sentMentionParts(report)).toEqual([{ text: report, label: '. notes `x`#~12345678 › b_1' }]);
   const empty = '@`/~area1234/~track123/report.md`';
   expect(sentMentionParts(empty)).toEqual([{ text: empty, label: '~track123' }]);
+});
+
+it.each([':plan', '：plan'])('recognizes template prefix %s', typed => {
+  expect(mentionQueryOf(typed)).toEqual({ kind: 'template', text: 'plan' });
+});
+
+it('finds template titles, IDs and descriptions with or without the prefix', () => {
+  const templates = [{ id: 'small-change', title: 'Small change', description: 'Review a patch',
+    availability: { status: 'ready' as const }, tasks: [] }];
+  for (const query of ['small', ':change', '：SMALL', 'patch']) {
+    expect(templateMentionSuggestions(templates, query)).toEqual([{
+      id: 'template:small-change', kind: 'template', label: 'Small change', chip: 'Small change',
+      detail: 'Review a patch', insert: '@`template:small-change`',
+    }]);
+  }
+  expect(templateMentionSuggestions(templates, '+small')).toEqual([]);
+  expect(templateMentionSuggestions(templates, 'missing')).toEqual([]);
+});
+
+it('recovers template chips and extracts only complete template references, including repetitions', () => {
+  expect(sentMentionParts('Use @`template:small-change`')).toEqual([
+    { text: 'Use ', label: null }, { text: '@`template:small-change`', label: 'small-change' },
+  ]);
+  expect(extractTemplateMentions('unfinished @`template:oops then @`template:first` @`` template:second `` @`template:first`'))
+    .toEqual(['first', 'second', 'first']);
+  for (const text of ['template:plain', '@:small', '@`template:`', '@`template:two words`', '@`template:unfinished', '@`tag:a`']) {
+    expect(extractTemplateMentions(text)).toEqual([]);
+  }
+});
+
+describe('selectedReadyTemplateId', () => {
+  const ready = {
+    id: 'dev',
+    title: 'Development',
+    description: null,
+    availability: { status: 'ready' as const },
+    tasks: [],
+  };
+  const needsPlugin = {
+    id: 'deploy',
+    title: 'Deploy',
+    description: null,
+    availability: { status: 'requires_plugin' as const, plugin_id: 'git', plugin_name: 'Git' },
+    tasks: [],
+  };
+  const withInput = {
+    id: 'form',
+    title: 'Form',
+    description: null,
+    availability: { status: 'ready' as const },
+    input_schema: { type: 'object' },
+    tasks: [],
+  };
+
+  it('returns the id only for a single known ready template without input_schema', () => {
+    expect(selectedReadyTemplateId('Run @`template:dev`', [ready, needsPlugin, withInput])).toBe('dev');
+    expect(selectedReadyTemplateId('Run @`template:deploy`', [ready, needsPlugin, withInput])).toBeUndefined();
+    expect(selectedReadyTemplateId('Run @`template:form`', [ready, needsPlugin, withInput])).toBeUndefined();
+    expect(selectedReadyTemplateId('Run @`template:unknown`', [ready, needsPlugin, withInput])).toBeUndefined();
+    expect(selectedReadyTemplateId('Run @`template:dev` and @`template:deploy`', [ready, needsPlugin, withInput])).toBeUndefined();
+    expect(selectedReadyTemplateId('Run @`template:dev` and @`template:dev`', [ready, needsPlugin, withInput])).toBeUndefined();
+    expect(selectedReadyTemplateId('No templates', [ready])).toBeUndefined();
+  });
 });
