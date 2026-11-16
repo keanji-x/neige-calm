@@ -1,1 +1,1 @@
-Planner-only: set this Track's method by template_id. For explicit template options, read guide/report.md. Discover with neige_catalog_ls and neige_catalog_cat. Preserves authored Report, updates Block 0, accumulates capabilities/plugin grants. Apply returned instructions; no session restart/wake. message records why.
+Set the Track's method using a template from neige_catalog_ls/cat. Read guide/report.md for template options. Preserves authored Report content. Apply the returned instructions in this session.

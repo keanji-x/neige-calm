@@ -12,7 +12,7 @@
   "exposes_tools": [
     {
       "name": "window_ls",
-      "description": "The open windows of the desktop and its apps. `windows` lists each open window as `{window_id, app, title, width, height}` (`app` is null for a window no app launched); `window_id` names one window until it closes and is never reused. `apps` lists each app as `{app, running, src}`: `src` is the path a Report `window` block shows that app's main window from (its most recent open window), so add `{ \"kind\": \"window\", \"payload\": { \"src\": <src> } }` to a Report to let the owner watch and use it. Showing a block, or `page_open`, starts an app that is not running.",
+      "description": "List desktop windows and apps. Use window_id to read or control a window. To show an app's main window in the Report, use its src in a window block. Showing the block can start the app.",
       "input_schema": {
         "type": "object",
         "properties": {},
@@ -27,7 +27,7 @@
     },
     {
       "name": "window_cat",
-      "description": "A PNG screenshot of one open window, taken after the window has had a moment (under a second) to draw, plus `{window_id, title, width, height}`. An effect that takes longer (a page still loading, an animation) needs another call. A closed window is an error (-32404), never an old image. Coordinates for `window_input` are pixels of this image.",
+      "description": "Capture a PNG of an open window. Use its pixel coordinates for window_input. Capture again if the UI is still changing.",
       "input_schema": {
         "type": "object",
         "properties": {
@@ -49,7 +49,7 @@
     },
     {
       "name": "window_input",
-      "description": "Sends pointer and keyboard input to one open window, in order, as the one seat the owner also uses (the last input wins). Coordinates are window pixels, as in `window_cat`. Events: `{type:\"click\", x, y, button?}` (`left` by default, `middle`, `right`); `{type:\"move\", x, y}`; `{type:\"scroll\", x, y, dx, dy}` (pixels, positive is right and down); `{type:\"key\", keys}`, one key or chord on a US layout such as `\"enter\"`, `\"ctrl+l\"`, `\"shift+tab\"` or `\"pagedown\"`; `{type:\"text\", text}`, printable US-ASCII plus newline and tab only (no IME: use `page_open` for a URL). Returns `{ok: true}`; read the result back with `window_cat`.",
+      "description": "Send ordered input to a window shared with the owner. Use window_cat pixel coordinates. Key chords use a US layout. Text supports printable US-ASCII, newline and tab. Use page_open for URLs and window_cat to verify the effect.",
       "input_schema": {
         "type": "object",
         "properties": {
@@ -93,7 +93,7 @@
     },
     {
       "name": "page_open",
-      "description": "Opens an http or https URL in Chrome's visible tab, the one the owner also sees, replacing what it showed; starts Chrome when it is not running. Returns `{url, title, loaded}` after the page's load event; `loaded: false` when the page committed but its load event had not come within 20 s (it may still go on). A navigation that gets no answer within 20 s at all is an error (-32503), and so is a page that failed to load. Refused (-32409), naming the pages, when no tab or more than one tab may be visible (a second window, a popup, a dialog). The title and url are cut at 1000 and 4096 characters.",
+      "description": "Navigate the single visible Chrome tab to an HTTP(S) URL, starting Chrome if needed. This changes the tab the owner sees. loaded=false means navigation committed and loading may continue.",
       "input_schema": {
         "type": "object",
         "properties": {
@@ -115,7 +115,7 @@
     },
     {
       "name": "page_cat",
-      "description": "The visible Chrome tab's `{url, title, text, text_truncated}`: `text` is the page's rendered text, cut at 100000 characters (`text_truncated` says whether it was); the title and url are cut at 1000 and 4096. Refused, naming the pages, when no tab or more than one tab may be visible (a second window, a popup, a dialog), and when Chrome is not running (-32503); it does not start Chrome.",
+      "description": "Read rendered text from the single visible Chrome tab. Use text_truncated to check coverage.",
       "input_schema": {
         "type": "object",
         "properties": {},

@@ -8,7 +8,7 @@
   "exposes_tools": [
     {
       "name": "git_worktree_add",
-      "description": "Lower git worktree add into a forge action",
+      "description": "Create a linked Git worktree through the kernel.",
       "kind": "forge-action",
       "input_schema": {
         "type": "object",
@@ -40,7 +40,7 @@
     },
     {
       "name": "git_worktree_remove",
-      "description": "Remove a linked worktree without force; keep its branch and record success",
+      "description": "Remove a linked worktree and keep its branch.",
       "kind": "forge-action",
       "input_schema": {
         "type": "object",
@@ -68,7 +68,7 @@
     },
     {
       "name": "git_commit",
-      "description": "Lower git commit into a forge action",
+      "description": "Create a Git commit through the kernel.",
       "kind": "forge-action",
       "input_schema": {
         "type": "object",
@@ -101,7 +101,7 @@
     },
     {
       "name": "gh_pr_list",
-      "description": "Lower GitHub pull request overlap scans into a forge action",
+      "description": "List GitHub PRs for overlap checks.",
       "kind": "forge-action",
       "input_schema": {
         "type": "object",
@@ -133,7 +133,7 @@
     },
     {
       "name": "gh_pr_diff",
-      "description": "Read a GitHub pull request's net diff of base_sha...head_sha (merge base to head), pinned to those commits rather than the PR's current head. The call waits and returns result.event.artifact_path, the file holding the diff",
+      "description": "Read the PR diff from the merge base to the exact head_sha, pinned to base_sha and head_sha. Read the returned artifact_path.",
       "kind": "forge-action",
       "input_schema": {
         "type": "object",
@@ -170,7 +170,7 @@
     },
     {
       "name": "gh_pr_checks",
-      "description": "Park this call to wait for a pull request's checks on its current head. By default return on the first failure; wait_for_all=true waits for every registered check to finish. A conflicting PR, changed head or deadline also ends the wait. The forge.pr.checks wake records the exact head, CI conclusion, mergeability, whether all checks completed, and failed check locators with available failure steps, error summaries and verified Actions job log links or an explicit diagnostic unavailability reason. While pending, repeating the same call returns the same receipt. After the wake, repeat the same call to read the recorded result. Replay is for same-key calls across program versions: the key encodes repo, pr, attempt and wait_for_all injectively for calls made from this version on, and a call stored by an earlier version is not replayed but starts a fresh read. Historical results retain their original fields. For fresh checks pass a new attempt. After any rerun of a workflow run, including one the user starts, wait with after_rerun: the run's checks stay pending until it reports a later attempt that completed, so the rerun attempt's stale failure cannot end the wait; failures of other runs still do, and a run that is not of the PR head is refused (the call fails).",
+      "description": "Wait for a PR's current head checks. Returns on the first failure by default. Use wait_for_all for every check. After a workflow rerun, pass after_rerun to wait for its newer attempt. A changed head, conflict or deadline ends the wait. After the wake, repeat the same call to read the recorded result. Use a new attempt for fresh checks.",
       "kind": "forge-action",
       "input_schema": {
         "type": "object",
@@ -230,7 +230,7 @@
     },
     {
       "name": "gh_ci_failure_evidence",
-      "description": "Read failure evidence of the GitHub Actions runs of one exact head: at most 4 completed, unsuccessful runs whose head_sha and repository match, at most 8 of their attempts' failed, timed-out or cancelled jobs with conclusion, failed steps and link, and each job's log tail (the last 200 lines, at most 16 KiB, sanitized line by line; log.truncated when cut) or log.status unavailable with a reason. A run is stale when its attempt changed during the read; truncated means a run, job or failed step was left out. The call waits and returns result.event.artifact_path, the JSON file holding the evidence; log text is never in the event or result. Repeating the same call replays the stored read; pass a new attempt for fresh evidence",
+      "description": "Read failed GitHub Actions runs and jobs for an exact head, with failed steps, links and available log tails. Read the returned JSON artifact_path. Check stale and truncated flags. Reuse attempt to replay, or use a new attempt to refresh.",
       "kind": "forge-action",
       "input_schema": {
         "type": "object",
@@ -269,7 +269,7 @@
     },
     {
       "name": "gh_pr_merge",
-      "description": "Lower GitHub pull request merges into a forge action",
+      "description": "Merge a GitHub PR through the kernel.",
       "kind": "forge-action",
       "input_schema": {
         "type": "object",
@@ -302,7 +302,7 @@
     },
     {
       "name": "gh_issue_create",
-      "description": "Create an issue with repo/title/body/idem. Read its real issue_number and issue_url with `neige op show <op_id>`, or retry identical arguments from the same card; Unknown failures must not be retried with a new idem.",
+      "description": "Create a GitHub issue. Read its number and URL with neige_op_show or repeat identical arguments from the same card. Reuse idem if the outcome is uncertain.",
       "kind": "forge-action",
       "input_schema": {
         "type": "object",
@@ -319,7 +319,7 @@
     },
     {
       "name": "gh_issue_search",
-      "description": "Search issues (not PRs), returning JSON number/url/state/title/body/labels. Bounded search is not a recovery oracle. Reuse attempt to replay, change it to refresh.",
+      "description": "Search GitHub issues. Reuse attempt to replay or change it to refresh.",
       "kind": "forge-action",
       "input_schema": {
         "type": "object",
@@ -337,7 +337,7 @@
     },
     {
       "name": "gh_issue_view",
-      "description": "Read issue JSON number/url/state/title/body/labels with an artifact and inline stdout; use a new attempt to refresh",
+      "description": "Read a GitHub issue and its JSON artifact. Use a new attempt to refresh.",
       "kind": "forge-action",
       "input_schema": {
         "type": "object",
@@ -371,7 +371,7 @@
     },
     {
       "name": "gh_issue_close",
-      "description": "Lower GitHub issue closes into a forge action",
+      "description": "Close a GitHub issue through the kernel.",
       "kind": "forge-action",
       "input_schema": {
         "type": "object",
@@ -400,7 +400,7 @@
     },
     {
       "name": "gh_issue_comment",
-      "description": "Post an issue comment through the kernel. Reuse idem and body on retries; use a new idem for another comment.",
+      "description": "Post a GitHub issue comment. Reuse idem and the same body for retries.",
       "kind": "forge-action",
       "input_schema": {
         "type": "object",
@@ -443,7 +443,7 @@
     },
     {
       "name": "gh_issue_comments",
-      "description": "Read issue discussion as JSON; use a new attempt to refresh.",
+      "description": "Read issue discussion. Use a new attempt to refresh.",
       "kind": "forge-action",
       "input_schema": {
         "type": "object",

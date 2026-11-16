@@ -251,7 +251,8 @@ mod tests {
         // The report selectors, Area status, mail filters and commit guidance add 650 bytes.
         // #3651 catch-up: named-path declarations and the template setter together
         // measure 43,235 bytes. Preserve both contracts with the measured aggregate cap.
-        const SURFACE_MAX_BYTES: usize = 43_235;
+        // Concise tool descriptions save 11,973 bytes without changing input schemas.
+        const SURFACE_MAX_BYTES: usize = 31_262;
         const DESCRIPTION_MAX_BYTES: usize = 2_048;
 
         let descriptors = build_default_registry().descriptors_listed_for(CardRole::Planner);

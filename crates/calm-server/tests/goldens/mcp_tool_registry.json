@@ -1,7 +1,7 @@
 [
   {
     "name": "neige_access_ask",
-    "description_sha256": "bee196b0431a22b7a2d23180d9a2fee2ff103209626ebd62166b584f6bf25b01",
+    "description_sha256": "bbaa406c6dbbfb35c2b78cec1aa5d75620806ab36fd68a02b7db2d4b14b37b3a",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -37,7 +37,7 @@
   },
   {
     "name": "neige_admin_gc",
-    "description_sha256": "4a2ad238060ed23e06ab148bcbc0979ee9557244284ad93c3816ece03f12bdc5",
+    "description_sha256": "d2005b5a74942c4a0b7f826ed062f555c4d3a64022e1bc5e79e4dde90d29a546",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -66,7 +66,7 @@
   },
   {
     "name": "neige_admin_vacuum",
-    "description_sha256": "26d0d3c385621c2af572c88fd8cc44f0531d1acd4c134d2a82deaf753b00e0b4",
+    "description_sha256": "5d1b63f781d26cd612dc450b4f8940d92c460bca3150580bd8e1cc9aee01d8c0",
     "input_schema": {
       "additionalProperties": false,
       "properties": {},
@@ -79,7 +79,7 @@
   },
   {
     "name": "neige_cat",
-    "description_sha256": "48deb24f696ec855f67989f5de2c4509621509c0de51ca4acf72689cf98c879c",
+    "description_sha256": "fe9c5c90199564896bd501cd24e5af205a262f502fda2884808303478af4836a",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -140,7 +140,7 @@
   },
   {
     "name": "neige_catalog_cat",
-    "description_sha256": "f62d84ca55de27d9dece86c7af37eca55efb61872ee583166f10fb1cd7b3ecf7",
+    "description_sha256": "ad20c286ee466c86bf5ac4d679e9b407af654e98a2f1042eeacac059ca6cd16d",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -175,7 +175,7 @@
   },
   {
     "name": "neige_catalog_ls",
-    "description_sha256": "2bc744776ee05dc54541a1aa4dea20c87e03a248a679d467a87c2cbe7e8143d5",
+    "description_sha256": "722f96693f943e9ea1d3e1e67b01550258c6c07895fe3d07a0e5ccaa2e09a124",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -215,7 +215,7 @@
   },
   {
     "name": "neige_link_ls",
-    "description_sha256": "118b1b73f65a8f2d162d350655f94de1ec6fc7358d58da93172f59b3b380a866",
+    "description_sha256": "9e6404f20d12d80391cd66f74e686cba14b3239604f9cd023788c139f2bd72d4",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -237,7 +237,7 @@
   },
   {
     "name": "neige_ls",
-    "description_sha256": "5de7f1cc4df938a5aa6ea1d69f38506c3b18c68bc859b5df3f3cb1e5be28a84d",
+    "description_sha256": "85f05fa62b3ba10a60b8e58d52c819e7b725b099da3aa1d2ac229b6809340374",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -266,7 +266,7 @@
   },
   {
     "name": "neige_mail_cat",
-    "description_sha256": "4a853b4625d04b2397029ca35f6840fb3e6b7d0ff4644823ac30c24974ebcdd7",
+    "description_sha256": "fa6f8dc7d587d757b10c1df9ff5b62134c67186ac3b62f1e2173b84ad26e9541",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -291,7 +291,7 @@
   },
   {
     "name": "neige_mail_ls",
-    "description_sha256": "3a7627a51029fa0b96a143c75a321f85025358dc7b802aefb65627941aff4065",
+    "description_sha256": "a36bb0b64061a030204fc9ca9e5ae078a3455cc3afb1b9b022a43eab6ca2839f",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -324,7 +324,7 @@
   },
   {
     "name": "neige_mail_send",
-    "description_sha256": "7c2facb0e657282d20f9ff736579e926a13a85865f3e09f82f9100333ec0598a",
+    "description_sha256": "9d66fb8208d2ec67d14fcb2bdd0c6fab34a4a420d9f500f870bc0b64709ec371",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -365,7 +365,7 @@
   },
   {
     "name": "neige_message_read",
-    "description_sha256": "e805ef9ca95f6267c049d734bdd72ce7a4bb566141a0ac401e13a12ded1d5ffb",
+    "description_sha256": "ff435b3f3257b14a7fa6e0c83e806f6a31c5d36682959727da60759c55229290",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -393,7 +393,7 @@
   },
   {
     "name": "neige_objective_ask",
-    "description_sha256": "f97d266beecb43a3112e69b744c7256d38460a2425ae3056e6aa025072ecef2f",
+    "description_sha256": "1df3010dd9c7636d87ef4b220a1d79e686c1d59367c0c114331323980496a4bb",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -421,7 +421,7 @@
   },
   {
     "name": "neige_objective_close",
-    "description_sha256": "b57e9a97fd344b745f308dd76c120468c256214a3801aeaf43f00558f7414ffc",
+    "description_sha256": "aef502739a9408d49191f0cf2b676f519cb94221afe9ceabca35099cf2a329ac",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -449,7 +449,7 @@
   },
   {
     "name": "neige_objective_evaluate",
-    "description_sha256": "54e1a685c8f02db9ecc62902c75ad5b3776c58124100de777f35cbe50256551c",
+    "description_sha256": "a3ccc3f8e72593072eea0e799222a37ebaf97441787f2ce237bd1792750fb9a7",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -482,7 +482,7 @@
   },
   {
     "name": "neige_objective_settle",
-    "description_sha256": "a4c3bfe40383579d2fa065b9ce3ddfc03bf5f2c17e42068772ce7b0b88e0f30a",
+    "description_sha256": "755647033d1cc4289c581df4fa27a61dc558f7e0f564926977e3c071ae1b5541",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -528,7 +528,7 @@
   },
   {
     "name": "neige_op_show",
-    "description_sha256": "762cf3a43416948a81550e9871b7a7995355ed09d4b54c1ec4fbaa588b0f387b",
+    "description_sha256": "b91a4d1669f20e523d87a4656edf51e207bff859e9e434e7d56ba1a4b51075b8",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -553,7 +553,7 @@
   },
   {
     "name": "neige_preview_add",
-    "description_sha256": "22a5565bbbd8e2ae30452984c7214b223dbb9f38b18a8b3dbd061ffd2dd92b7d",
+    "description_sha256": "33bf8758b3aec2250ca8964ba404bf02044a43e9ee4cc7f0ebc052e79b170dbf",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -596,7 +596,7 @@
   },
   {
     "name": "neige_preview_rm",
-    "description_sha256": "314fd85f6393e326665e7b9b7c827284ab11f7b6bd4e9e835ea33c79673b578a",
+    "description_sha256": "3d7deff812ca652e562f984e7661fff23b136a348f6b4391e3a2f1a4615a2de7",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -625,7 +625,7 @@
   },
   {
     "name": "neige_report_commit",
-    "description_sha256": "3edfd94a523ce1cfe05ecaf9634882dfbb27725da681a9b0d65c54e0d84811c8",
+    "description_sha256": "8c75e61ac8fd971d6a76e9ea7b42fb7d5306e5cee47ecbc05fda37e57bd170b6",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -719,7 +719,7 @@
   },
   {
     "name": "neige_report_describe",
-    "description_sha256": "afb70ba836edadfb6f003dd8b25de014c6bfc5731f008dcda274a3e953f2c3a4",
+    "description_sha256": "7e3260b32d1e15fa3795970e0c431cb0035a5c8d6f4828bc6741441c536212ff",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -743,7 +743,7 @@
   },
   {
     "name": "neige_report_find",
-    "description_sha256": "3d0e8cf1f952ed695fcb72cef6acb796e61bab34a7119954eab8a39f6f3796ca",
+    "description_sha256": "ca2e3bcc11a5939318c269c8e5a08fb7f25169b213c1fc31058ffb8b657e9da3",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -772,7 +772,7 @@
   },
   {
     "name": "neige_report_read",
-    "description_sha256": "dae2f626b353129969e3a75c0caaba527c09b203db79646c323efb89561eacf0",
+    "description_sha256": "e1c8902a1df3db3df42f213fbc16ec44be5b5074472ce6f830edc2d5690a6c13",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -836,7 +836,7 @@
   },
   {
     "name": "neige_report_tag",
-    "description_sha256": "dec041eb49eee91f5f031bb1615a9476fbad8b23b525c1da6a5330e68c67f542",
+    "description_sha256": "fd7f1590abce74ac5a1d492a6c87bc431828da44204466c9f43e7b81d725099a",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -874,7 +874,7 @@
   },
   {
     "name": "neige_report_write",
-    "description_sha256": "379d8e3e51348a2c21683244117cc940f7c96f12bc37c833b9090f8c87e88f37",
+    "description_sha256": "dcd536f431ebd7c4a0d3d6c1f84372ad988270333a457d6e6cc2e3582e34d914",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -912,7 +912,7 @@
   },
   {
     "name": "neige_source_capture",
-    "description_sha256": "e358e9b31cc02586947226700e4451de88f83de6f8f9f418787fb9db8125d957",
+    "description_sha256": "b45079506b7e500d128604e963db407119b32d8ef894511155ca86621dcb80a2",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -988,7 +988,7 @@
   },
   {
     "name": "neige_source_ls",
-    "description_sha256": "4b5ae10fc547137a846899aa5e0c7311b196b616d3a1c54c98e391de3c3a9f2b",
+    "description_sha256": "060e975590ac1a087fce637c982d43681b863be51093e7d79a21ff1fee42422c",
     "input_schema": {
       "additionalProperties": false,
       "properties": {},
@@ -1006,7 +1006,7 @@
   },
   {
     "name": "neige_task_accept",
-    "description_sha256": "ae661deeddb4c305e50b31ee1a5282b5063e16108c5f8654e8b323557b4b67a4",
+    "description_sha256": "c2cd6ef5856da279e73190b65c37ab4c9bd1c6f3c22997f0b15879f2f99250c2",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -1040,7 +1040,7 @@
   },
   {
     "name": "neige_task_cancel",
-    "description_sha256": "dd1896d21a0446dcfe7ec74b727b893fe76d635347c612e82633e72dfcb83965",
+    "description_sha256": "2a44e3972b0a83ef892ca656fe289365078d4f60b48b86b3a1bd42241d5b3fa8",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -1074,7 +1074,7 @@
   },
   {
     "name": "neige_task_done",
-    "description_sha256": "f9ed95cf85281774ed1621a8aaa4340592975174d197fe9f80a95a2d20f1081f",
+    "description_sha256": "02344b6195022bbc45221e3335dc09e954da7e2458961bd3a45b872d3f33b69b",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -1114,7 +1114,7 @@
   },
   {
     "name": "neige_task_fail",
-    "description_sha256": "8cac4e779b7fc78dc88fe4b6b7158f010d35ed69cfe5e17a6d731c1f3d1ed565",
+    "description_sha256": "538f193fdc7f644b6e96c0e3d00ec1b7f1e6b8bce810a699d42cf81788a07aa0",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -1148,7 +1148,7 @@
   },
   {
     "name": "neige_task_gate",
-    "description_sha256": "b89aea3765d0f54bc12d16300bebd0948923e2e82861c1e0f9a331d21f7d71a6",
+    "description_sha256": "5645ae2297bfabbebddc8e4f46120f67339c79fde96af1a8576bbe6ec121d89f",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -1179,7 +1179,7 @@
   },
   {
     "name": "neige_task_ls",
-    "description_sha256": "b6e22ce65899e85970ba5ca7d9839576144f30a37581651ad63f34c5c95c4322",
+    "description_sha256": "0af774168c4ea18f682eb26e9b44b33c16d76511de27c6926594a44a7c6f81f2",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -1210,7 +1210,7 @@
   },
   {
     "name": "neige_task_regate",
-    "description_sha256": "0f0cf47701c87968778103579bc336bc21382aadc0154abeec0f4b1fd53670bf",
+    "description_sha256": "6a9e3e783bf4364a085d6ebaa4798e83cf4bc285c3e388bded20d68d1995940e",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -1244,7 +1244,7 @@
   },
   {
     "name": "neige_task_reject",
-    "description_sha256": "d8dc62c052bb6b27a6ce31e231eba5f58534e6dcd94aa48f0b9b67f61eaf59f7",
+    "description_sha256": "b6dc0d48500efbbc3b78da85fc18a63ac1f2d81f05d1ade7fafd50cebfeffe57",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -1283,7 +1283,7 @@
   },
   {
     "name": "neige_terminal_control",
-    "description_sha256": "29982f036e56bc933424e0a1eeb82c3cdea5eb93722867d7bccbb3ab5ebb9b8e",
+    "description_sha256": "9f3fed7c15f2739daee186dafaffd8c63e0dd4be326f41105f8de002c2754e8d",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -1380,7 +1380,7 @@
   },
   {
     "name": "neige_terminal_input",
-    "description_sha256": "2c1cfb3882516726fd13149c289edc7f2d09f2e9a7789a01e342a39790922e66",
+    "description_sha256": "ada1ffffc30bf5a2b9c4103a1786889eb0c2cb28a4365e546159f839c0fccd3e",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -1560,7 +1560,7 @@
   },
   {
     "name": "neige_terminal_open",
-    "description_sha256": "10f7f2805b93e0f55ea22ec7d3488368149ede8e49bcdcf509fa9263358299a4",
+    "description_sha256": "8e24c06085e6b70a8d74070223051436b8954ff6115e900ded54633abc8be9df",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -1655,7 +1655,7 @@
   },
   {
     "name": "neige_terminal_read",
-    "description_sha256": "c8e8f0bf7191a7ace14f2bd9d3ee2e45a20c281337fa2565cff85029ad44d344",
+    "description_sha256": "f342ccdc26b00e69946c725788ca1e94a8103feb5448f07a77ba2ecb4b109106",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -1743,7 +1743,7 @@
   },
   {
     "name": "neige_terminal_show",
-    "description_sha256": "16f79da04acfc62c1b2d55989b82f6aaf074f9e43b6df7648d17e8df3978f70f",
+    "description_sha256": "e7a0b4f6ff18b0c7df849c3de67d9b0121198274a9a56b6f56aed210c97f4ebc",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -1773,7 +1773,7 @@
   },
   {
     "name": "neige_track_add",
-    "description_sha256": "77487825aeddb3766347f09e0b70fadbee442a99da4084d2ef4cfc8dd9acd7eb",
+    "description_sha256": "44f32d195f403e83a693eb7a142736aa8565b47d3c01cdd068890ad843889b20",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -1843,7 +1843,7 @@
   },
   {
     "name": "neige_track_close",
-    "description_sha256": "2773eb61aacfe7ceb88f23e254e6acb611b96d7796a98ed1427761cca70c4551",
+    "description_sha256": "44d36de0f0acee7d93ce5aa1c1f07e535965de930dc2bb058b68660bd08b8eb4",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -1876,7 +1876,7 @@
   },
   {
     "name": "neige_track_diff",
-    "description_sha256": "4383dadcfdda27cd5b742ad731eb0c8c74ecd33fb7c21d874b4f36fa01fdc56c",
+    "description_sha256": "d3ad7afb45a8f1b8c3e1b7d3e74cc97ae603937bf6294b4f66aa472dcd3fba55",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -1909,7 +1909,7 @@
   },
   {
     "name": "neige_track_log",
-    "description_sha256": "20277aa33e322a5e346af3eeac6755a2eaf965f43f7b4f5d9fedc006cf2318b7",
+    "description_sha256": "2c425eb752d3d5aa14b3a95b9a759bf99d317091a6493519269ab79d8436cfca",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -1940,7 +1940,7 @@
   },
   {
     "name": "neige_track_rename",
-    "description_sha256": "c3e4e48c3acd7b414db1c5da410c7df89d44be53da5bcbb8613410efff661601",
+    "description_sha256": "b72a21810944f344e621253ebc0a2888b14b915065f3419a1ef0663b198562d4",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -1973,7 +1973,7 @@
   },
   {
     "name": "neige_track_set",
-    "description_sha256": "d569cf0790421068272b3d7c493f52bbae779d2e226e78f3e4c0f7edaf179405",
+    "description_sha256": "40f21a1095175c6543b26924e8d41cbb9c0300a46ee000024f8f660ab5198d2d",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -2004,7 +2004,7 @@
   },
   {
     "name": "neige_track_show",
-    "description_sha256": "326ac527e79da068405caa9323ed7c94204f735ed40b3a48ba005ab77efc73a8",
+    "description_sha256": "7ab8b54ead06849f29a297e5634bbbed790bffaabf443e6b629684f62429d080",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -2035,7 +2035,7 @@
   },
   {
     "name": "neige_track_status",
-    "description_sha256": "0d5c2fd387cbe88cb81875ad28e64a9296e992d241b1a99bee5552d7d5cc652b",
+    "description_sha256": "646822bde212a4f57f49355201d5888121342a5186b6d7fbd8cd27c65defc262",
     "input_schema": {
       "additionalProperties": false,
       "properties": {},
@@ -2052,7 +2052,7 @@
   },
   {
     "name": "neige_user_ask",
-    "description_sha256": "70ec60ec02dcc3a7145b3f535116dcf28fa097ba01dfefc773d568f97c457041",
+    "description_sha256": "5ab4f32b663712237338676d2dd71617797b20a9b2ddad45472bc5b3bc353ae0",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -2105,7 +2105,7 @@
   },
   {
     "name": "neige_worker_report",
-    "description_sha256": "4dc8b0ac1a9ac16404bcf976e6638725adec0a4d3b5d480baf6cdc52222606ff",
+    "description_sha256": "2aba373af123c846022a56b0227e06af5a5b15c371181c8bb585eaa622fb34f7",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -2148,7 +2148,7 @@
   },
   {
     "name": "plugin_calendar_add",
-    "description_sha256": "4ff61b2f4e3615c1b73284415aa45de9032fda841b51bbd046eb97bbe9fac025",
+    "description_sha256": "4ab9678bc5272a0b6a6a67387527ef2c4ebb6c78dbc076f60c4364604cfd6848",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -2285,7 +2285,7 @@
   },
   {
     "name": "plugin_calendar_ls",
-    "description_sha256": "9fbd93a3b975408372cba0313cacd2f90b5367d72273285dbd5ccb1dfe634d0d",
+    "description_sha256": "ccd3a6cd507a7115f72564225670dc7914e82c7ee7dc20e2b1fb395a5ea56ec3",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -2320,7 +2320,7 @@
   },
   {
     "name": "plugin_calendar_rm",
-    "description_sha256": "45a7c0ab6aa98dddf93a4e2c7fa813ce592d89ef6a4be7a5f33e008ad14a595c",
+    "description_sha256": "1647020c0e916f4f82564e76440f7ded4b0c295c5aab45d0e7d3bee8210a20ad",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -2353,7 +2353,7 @@
   },
   {
     "name": "plugin_calendar_set",
-    "description_sha256": "4c8e8323677ee0226c5c2a0170d39d78fc816c31a4b0870efde744977b1185cf",
+    "description_sha256": "63138ab1ac29be0358d10038fe540decb3b9b2abe775ba2d15efa18b25ffaf03",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -2494,7 +2494,7 @@
   },
   {
     "name": "plugin_feishuwatch_batch_cat",
-    "description_sha256": "711c7a0ab0cbd89cfcd5d6ecf69a91547889a0950361e9f8c1dbe343d9bebf9f",
+    "description_sha256": "a6840797c27dd3dbffff6dadd96028cefef4613a04a120b21423e8fadaef4c27",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -2531,7 +2531,7 @@
   },
   {
     "name": "plugin_feishuwatch_reminder_rm",
-    "description_sha256": "d9f46f0179bae1d49469e5e9a15f09023440bcc1f74d483b63fe218978417edf",
+    "description_sha256": "30a55db0ba2dcc907a04e0e0be730a89ba2b0b1bf08d777aac1527661343dc5f",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -2571,7 +2571,7 @@
   },
   {
     "name": "plugin_feishuwatch_reminder_set",
-    "description_sha256": "e548b9b38e4ac2fd80b222eb5a5920b366c77bcedb52fb4a79da169eaca49ad3",
+    "description_sha256": "aff7b2255d99f39c5916a4b0727feecada3f639adcad0d0360fc4f429521a331",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -2621,7 +2621,7 @@
   },
   {
     "name": "plugin_feishuwatch_settle",
-    "description_sha256": "6b8647908a5272515e80ef33109d481e304b97800c8cf5dc4f2bc842d097e429",
+    "description_sha256": "499ce78becb47f2da0cb6b55a05f949696d3eb6f33c735657eb440d0c1c0e205",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -2691,7 +2691,7 @@
   },
   {
     "name": "plugin_feishuwatch_status",
-    "description_sha256": "9735aa9f303fc32c844d7576fee46643369add1ad797b46fa7ab04cc1ca2d119",
+    "description_sha256": "0f2f619711e0100024b93d5f856f074b72a1b71af6fccb03de71f7cee73fc312",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -2725,7 +2725,7 @@
   },
   {
     "name": "plugin_gitforge_gh_run_rerun",
-    "description_sha256": "de1d4c1bc7f217a8683ad8d2466c84d77f5236dcf2493cda4f48042eec117961",
+    "description_sha256": "97d822c5da2c67eb8a11979b655f3b12b2648abb1606c87fd4e5bcad1b130900",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -2779,7 +2779,7 @@
   },
   {
     "name": "plugin_gitforge_publish",
-    "description_sha256": "99ea201ee839d77c7f48bd349d6c1fa3449ef0881b5b4c91652131709e904dff",
+    "description_sha256": "e0f81a7f1ff3c657b541683a18344dbccd1a7fc68b9b11bf2114b656368c3df6",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -2816,7 +2816,7 @@
   },
   {
     "name": "plugin_opencodehistory_message_cat",
-    "description_sha256": "34677f9bf9a0156a83643a6e879989a2ca4f78f0a692a7d3d8d4aadc131a60df",
+    "description_sha256": "a7d8e9d657ad1f326aba80a4b457cace21599bba533418f3c0d3f2327ad29bd5",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -2857,7 +2857,7 @@
   },
   {
     "name": "plugin_opencodehistory_message_ls",
-    "description_sha256": "c6bdfcd002197ff1385d7928ac2d187e0ed63af1df4025a34aea42a90aea6870",
+    "description_sha256": "bc62af73e399d7c8c6609197e5a11c7470a0dd9a35cf863e821eda8ce09bc9d8",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -2902,7 +2902,7 @@
   },
   {
     "name": "plugin_opencodehistory_session_ls",
-    "description_sha256": "48cecc3f2d220974d9e6a07567080704839894bd97aa1de8b13d7f48cb86c54b",
+    "description_sha256": "247dce1137b14ca17c0c9b2b2d7fa081cd19242feb924c3f77b5c5061526da8b",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -2946,7 +2946,7 @@
   },
   {
     "name": "plugin_opencodehistory_source_ls",
-    "description_sha256": "8b729747267821ef1bd31c94b6ff4ada2bf4b953bf879c72796e3657d467c75f",
+    "description_sha256": "c38983aa5b00b78e610d3b4730eedc006e6de514f0d91509e242d07417ced7be",
     "input_schema": {
       "additionalProperties": false,
       "properties": {},

@@ -1,1 +1,1 @@
-Classify a fully read batch immutably. Identical retries do not rearm reminders. Verify original Ask bindings; settlement does not notify.
+Classify a fully read batch. Verify the original Ask bindings. Identical retries preserve reminder state.

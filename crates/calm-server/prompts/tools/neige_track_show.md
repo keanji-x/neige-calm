@@ -1,1 +1,1 @@
-Bound-Track read: read `{ path }` from a historical `{ commit }` in the current MCP-bound track.
+Read a file at a historical commit in this Track.

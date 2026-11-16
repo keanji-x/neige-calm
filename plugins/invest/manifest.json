@@ -34,13 +34,13 @@
   "exposes_tools": [
     {
       "name": "portfolio_status",
-      "description": "Portfolio Track Planner or Worker. Read the persisted portfolio without contacting the broker: snapshot (check its time), positions, target weights, covered instruments (pending/live/dropped, held or watched, version, current research key, its track_add, last_seen_at, stale), open theses, limits, decisions with their order legs, fills and errors.",
+      "description": "Read the saved portfolio snapshot, positions, research coverage and decisions with order legs, fills and errors. Check the snapshot time.",
       "input_schema": {"type": "object", "properties": {}, "required": [], "additionalProperties": false},
       "annotations": {"title": "portfolio_status", "readOnlyHint": true, "destructiveHint": false, "openWorldHint": false}
     },
     {
       "name": "decision_add",
-      "description": "Portfolio Track Planner only. Persist an immutable target-weight decision over live covered US instruments with captured sources and validity; never reads or writes the broker. A symbol left out, or at 0, is sold. Each weight <= max_weight_bps, the sum <= 10000 - cash_buffer_bps, and symbols weighted above 0 plus those still in a position <= max_held (rotate a full book in two decisions: sell, then buy once the sells settle). One unresolved decision at a time; repeating the same decision returns it. Then declare a read-only codex Worker task whose goal names the decision_id.",
+      "description": "Portfolio Planner: save target weights and captured evidence for live US instruments. Omitted or zero-weight symbols are sold. Stay within max_weight_bps, 10000 minus cash_buffer_bps, and max_held. For a full book, sell first and wait for settlement before adding symbols. Only one unresolved decision is allowed. Then declare a read-only Codex worker task with the decision_id.",
       "input_schema": {
         "type": "object",
         "properties": {
@@ -68,13 +68,13 @@
     },
     {
       "name": "execution_add",
-      "description": "Portfolio Track Worker only. Durably request execution of the exact persisted, unexpired, queued decision (state becomes requested) and wake the App's loop; this call never contacts the broker. The loop sends one regular-session DAY market order per symbol outside the drift band to the pinned official PAPER account, one at a time, sells first, buys from settled cash only. Repeating the request records nothing. Poll plugin_invest_portfolio_status until the decision is done, noop or expired, or your stated limit; its error says why it waits. Uncertain orders are never resubmitted.",
+      "description": "Portfolio Worker: queue the exact persisted, unexpired decision for the configured PAPER account. The execution loop places regular-session DAY orders, sells first and buys with settled cash. Poll plugin_invest_portfolio_status for done, noop, expired or errors. Reuse the same decision_id when checking an uncertain request.",
       "input_schema": {"type": "object", "properties": {"decision_id": {"type": "string"}}, "required": ["decision_id"], "additionalProperties": false},
       "annotations": {"title": "execution_add", "readOnlyHint": false, "destructiveHint": false, "openWorldHint": false}
     },
     {
       "name": "instrument_add",
-      "description": "Portfolio Track Planner only. Cover a US symbol: it is pending until the loop sees a broker quote, then live with research key invest-<VENUE>-<CODE>-<n> and its track_add in plugin_invest_portfolio_status, or dropped. Needs fewer than max_watched watched symbols (covered, not held). Adding a covered symbol changes nothing; re-adding a dropped one issues the next key.",
+      "description": "Add coverage for a US symbol within max_watched. Once a broker quote validates it, read its current research key and track_add in plugin_invest_portfolio_status. Re-adding a dropped symbol issues a new key.",
       "input_schema": {
         "type": "object",
         "properties": {
@@ -88,7 +88,7 @@
     },
     {
       "name": "instrument_set",
-      "description": "Portfolio Track Planner only. Renew a live symbol's research key: issue key n+1, which supersedes every older key's Track, and return the new track_add. Pass it verbatim to neige_track_add. Use it for a stale symbol, or after a research Track was added with other arguments.",
+      "description": "Renew a live symbol's research key, superseding older research Tracks. Pass the returned track_add verbatim to neige_track_add.",
       "input_schema": {
         "type": "object",
         "properties": {
@@ -103,7 +103,7 @@
     },
     {
       "name": "instrument_rm",
-      "description": "Portfolio Track Planner only. Drop a covered symbol and retire its open theses; refused while it is held (weighted above 0 by the latest decision, or in a position). Its research Track is superseded and closes itself on its next call.",
+      "description": "Drop an unheld symbol and retire its open theses. The prior research Track will close when it sees the superseded key.",
       "input_schema": {
         "type": "object",
         "properties": {
@@ -118,13 +118,13 @@
     },
     {
       "name": "instrument_status",
-      "description": "Research Track Planner only. Your symbol's research view: state, key, held or watched, target weight, position, its open theses (with versions) and the 20 latest retired. Also refreshes this Track's instrument.position and thesis.records views. Allowed only on a Track the portfolio Track added under the symbol's current key: an older key or a dropped symbol answers -32409 superseded (close this Track), anything else -32403.",
+      "description": "Read the current symbol's coverage, position and thesis state, and refresh its Report views. Close this Track if its research key is superseded.",
       "input_schema": {"type": "object", "properties": {}, "required": [], "additionalProperties": false},
       "annotations": {"title": "instrument_status", "readOnlyHint": true, "destructiveHint": false, "openWorldHint": false}
     },
     {
       "name": "thesis_add",
-      "description": "Portfolio Track Planner only. Raise a thesis on a live symbol for its research Track to assess; at most 3 open theses per symbol. Starts with assessment open, version 1. Repeating the same thesis returns it.",
+      "description": "Raise a thesis for a live symbol's research Track. At most three open theses per symbol. Repeating the same thesis returns it.",
       "input_schema": {
         "type": "object",
         "properties": {
@@ -143,7 +143,7 @@
     },
     {
       "name": "thesis_set",
-      "description": "Research Track Planner only, attested as plugin_invest_instrument_status is. Assess one open thesis of your own symbol under its version: the new assessment, a summary of the evidence and its captured sources. The portfolio's board shows the change on its next tick.",
+      "description": "Assess an open thesis for this research Track's symbol. Use its current version and cite captured evidence.",
       "input_schema": {
         "type": "object",
         "properties": {
@@ -160,7 +160,7 @@
     },
     {
       "name": "thesis_rm",
-      "description": "Portfolio Track Planner only. Retire one open thesis under its version; it leaves the board and stays in its research Track’s history.",
+      "description": "Retire an open thesis by version and retain it in research history.",
       "input_schema": {
         "type": "object",
         "properties": {
@@ -175,7 +175,7 @@
     },
     {
       "name": "series_show",
-      "description": "Chart resolver only: the kernel calls it in the background for a report's chart.series block; an agent call is refused (-32403). Historical daily, weekly or monthly bars for up to 8 US assets from the official SDK's forward-adjusted daily candlesticks, under the market.series contract: all seven keys required and checked, nothing defaulted. `as_of` is the CUTOFF day; a bar or period is returned only when the source already lists a LATER daily bar, the proof that it closed, in live and frozen mode alike (US is never relaxed). Weekly (ISO, Monday-Sunday) and monthly bars are aggregated from daily ones. Each reply item is `{asset, currency?, status, complete_through?, points?, reason?}`: `asset` echoes the request string; `status` is `ok`, `unknown_asset` (not a US asset) or `unavailable`; `complete_through` is the newest daily bar listed before the window was fetched; `points` are `[ts_ms, <one value per requested field, in request order>]`, `ts_ms` the UTC midnight of the bar or period start, strictly ascending, at least two. One asset's failure never fails another's.",
+      "description": "Chart resolver for up to eight US assets using forward-adjusted candlesticks. In all modes, a daily bar or aggregate period requires a later daily bar as proof of closure. See chart.series for the data contract.",
       "input_schema": {
         "type": "object",
         "properties": {

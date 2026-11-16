@@ -1,1 +1,1 @@
-Remove one resolved reminder under the latest status version. Repeating its idempotency key is safe.
+Remove a resolved reminder using the latest status version. Reuse the idempotency key on retry.

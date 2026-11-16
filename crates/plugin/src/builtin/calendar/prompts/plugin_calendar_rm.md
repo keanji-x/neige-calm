@@ -1,1 +1,1 @@
-Remove own Track commitment (expected_version from ls); its wakes stop. No undo; a retry gets "removed". Conflict: reread.
+Remove a Track commitment and stop its wakes. Use entry_id and expected_version from plugin_calendar_ls. Reread on conflict.

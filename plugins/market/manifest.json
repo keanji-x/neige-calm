@@ -10,7 +10,7 @@
   "exposes_tools": [
     {
       "name": "market.quote",
-      "description": "Current price of one asset, in the currency this plugin determined that price is in. This tool never converts: it answers one asset's price in one market's currency, and conversion happens only where a portfolio is totalled. Callers name the asset AND its venue; which source answers a venue, at which URL, is chosen by this plugin. Neither source states a currency, so it is determined from the venue and the code range: CRYPTO in USDT, US in USD, HK in HKD below code 80000, and in CNY the Shanghai 6xxxxx (A shares and STAR) and 5xxxxx (funds) codes and the Shenzhen 00xxxx (main board), 30xxxx (ChiNext) and 15xxxx/16xxxx (fund) codes. Codes outside those ranges — B shares, Hong Kong's renminbi and US-dollar counters, and the mainland bond and index ranges — are refused with the reason rather than priced under a guessed currency.",
+      "description": "Read one asset's current price. Specify its venue and use the returned native currency. US quotes are USD, CRYPTO quotes are USDT, and supported HK and mainland quotes use HKD and CNY.",
       "input_schema": {
         "type": "object",
         "properties": {
@@ -32,7 +32,7 @@
     },
     {
       "name": "market.holdings.set",
-      "description": "Record how much of an asset this Track holds. Replaces any existing quantity for that asset; 0 removes it. Records only — the price is fetched by the plugin's own refresh, which this call wakes. Each venue is priced in its own currency, and the total is stated in the settlement currency the install configures (USD or CNY), converted at rates read from the same quote source. A holding whose rate could not be read this pass keeps its own price but has no converted value, is left out of the total, and stops that tick contributing a history point.",
+      "description": "Set a holding's quantity in this Track. Zero removes it. Wakes the portfolio price refresh.",
       "input_schema": {
         "type": "object",
         "properties": {
@@ -60,7 +60,7 @@
     },
     {
       "name": "market.holdings.list",
-      "description": "What this Track currently holds, with the venue, the latest price in its own market's currency, the rate applied and the value in the settlement currency. When every holding priced and converted, the reply states the total; when some did not, it states a partial total and says it covers only the holdings that did. If the configured settlement currency is unsupported, values remain in their native currencies: counted holdings in one currency still have a total, while counted holdings spanning currencies do not. There is also no total when nothing could be valued or when the values do not sum to a finite number — the reply says which. The rate behind each conversion is named in the prose and in `conversions`, including the one step that is an assumption rather than a quote (USDT is taken as 1 USD); the per-row `rate` is a bare number and does not distinguish the two.",
+      "description": "Read holdings with native prices and converted values. Check whether the total is partial and inspect conversions for rate provenance. USDT is valued at 1 USD.",
       "input_schema": {
         "type": "object",
         "properties": {},
@@ -74,7 +74,7 @@
     },
     {
       "name": "market.series",
-      "description": "Historical daily, weekly or monthly bars for up to 8 assets — the resolution backend of a report's `chart.series` block, which the kernel calls in the background. Calling it directly gets the same contract with NO defaults: all seven keys are required (`series`, `fields`, `period`, `mode`, `start`, `as_of`, `deadline_ms`), a missing or malformed one is an error before any request goes out, and `mode` is never defaulted to `live` nor the inclusion rule relaxed. `as_of` is the CUTOFF day, not the date of the last bar: the reply holds every bar of `[start, as_of]` the source lists, so the last point may be earlier (weekend, holiday, halt). `mode=frozen`, every weekly or monthly request, and every CRYPTO or US request return a bar or period only when the source already lists a LATER daily bar — the proof that it closed; `mode=live` with `period=day` on HK, SH and SZ relaxes that to `date <= as_of`, because those sessions close hours before the next UTC day. Weekly (ISO, Monday–Sunday) and monthly bars are aggregated here from daily ones. Each reply item is `{asset, currency?, status, complete_through?, points?, reason?}`: `asset` echoes the request string; `status` is `ok`, `unknown_asset` or `unavailable`; `complete_through` is the newest DAILY bar the source listed before the window was fetched, whatever the period; `points` are `[ts_ms, <one value per requested field, in request order>]`, `ts_ms` the UTC midnight of the bar or period start, strictly ascending, at least two of them; `reason` explains a non-`ok` status. One asset's failure never fails another's. Sources: Tencent ifzq (US, HK, SH, SZ; adjusted) and Binance klines (CRYPTO, `<SYMBOL>USDT`); there is no fallback source yet.",
+      "description": "Read daily, weekly or monthly bars for chart.series. as_of is the inclusive cutoff. Frozen mode, aggregated periods, US and crypto require a later daily bar to prove closure. Live daily HK, SH and SZ may include the cutoff day. Inspect per-asset status and complete_through. Timestamps are UTC midnight at the period start, with points in requested field order.",
       "input_schema": {
         "type": "object",
         "properties": {

@@ -1,1 +1,1 @@
-Planner only. Evaluate an approved objective at a revision (40 lowercase hex); facts or read-only evaluators. Returns status, evaluation; new requests include seq, same-revision retries reuse evaluation. Read objective.kr, then neige_objective_settle.
+Evaluate an approved objective at a revision using facts or read-only evaluators. A same-revision retry reuses the evaluation. See objective.kr, then call neige_objective_settle.
