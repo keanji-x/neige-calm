@@ -32,6 +32,7 @@ pub(crate) struct ContractCompaction {
 pub(crate) struct AcpAgentProfile {
     pub(crate) context_snapshot: bool,
     pub(crate) resident: Option<&'static ModeLaunch>,
+    pub(crate) supervise_resident: bool,
     /// Vendor MCP call metadata carrying the invoking native session.
     pub(crate) mcp_call_session_key: Option<&'static str>,
     /// Model-visible name budget for the stdio shim, based on the provider's actual server key.

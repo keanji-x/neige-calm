@@ -564,7 +564,9 @@ async fn legacy_disposal_recover_classification_absent() {
 
 async fn seed_typed_history(repo: &SqlxRepo, track: &str, terminal: &str, root: &std::path::Path) {
     let mut intent = workspace_runtime::execution::test_support::intent(root.to_owned());
-    intent.metadata.track.0 = track.to_owned();
+    intent.metadata.scope = workspace_runtime::execution::ExecutionScope::Track(
+        workspace_runtime::execution::TrackId(track.to_owned()),
+    );
     intent.metadata.alias = workspace_runtime::execution::ProcessAlias(
         calm_truth::db::sqlite::workspace_execution::terminal_alias(terminal),
     );
@@ -576,7 +578,7 @@ async fn seed_typed_history(repo: &SqlxRepo, track: &str, terminal: &str, root: 
                 calm_truth::db::sqlite::workspace_execution::insert(
                     &mut tx,
                     intent.metadata.id.as_str(),
-                    &intent.metadata.track.0,
+                    &intent.metadata.scope.track().unwrap().0,
                     &intent.metadata.alias.0,
                     &serde_json::to_string(&intent.metadata).unwrap(),
                     &serde_json::to_string(&intent.secrets).unwrap(),

@@ -78,7 +78,7 @@ pub async fn store<S: StoreHarness>(store: &S) {
     };
     assert_eq!(metadata.id, *id);
     assert_eq!(metadata.alias, intent.metadata.alias);
-    assert_eq!(metadata.track, intent.metadata.track);
+    assert_eq!(metadata.scope, intent.metadata.scope);
     assert_eq!(metadata.owner, intent.metadata.owner);
     assert_eq!(metadata.ticket_id, intent.metadata.ticket_id);
     assert_eq!(metadata.specification, intent.metadata.specification);

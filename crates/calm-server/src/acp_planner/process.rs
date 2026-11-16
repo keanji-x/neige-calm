@@ -1,4 +1,6 @@
 use super::config::{AcpPlannerHost, Registration};
+use super::resident_execution::ResidentExecution;
+use crate::db::sqlite::AcpSharedRestartOwner;
 use crate::error::{CalmError, Result};
 use plugin::child_process::{GroupChild, set_process_group_leader, spawn_within};
 use provider::acp::{Connection, Incoming, approvals::refuse, protocol};
@@ -8,9 +10,14 @@ use tokio::process::Command;
 
 use super::start::StartFailure;
 
+enum ProcessOwner {
+    Native(GroupChild),
+    Supervised(ResidentExecution),
+}
+
 pub(super) struct Process {
-    child: GroupChild,
-    pub(super) restart_owner: Option<crate::db::sqlite::AcpSharedProcessIdentity>,
+    owner: ProcessOwner,
+    pub(super) restart_owner: Option<AcpSharedRestartOwner>,
     pub connection: Connection,
     pub capabilities: protocol::AgentCapabilities,
     pub commands: Commands,
@@ -35,6 +42,22 @@ impl Process {
         registration: Registration<'_>,
         cwd: &std::path::Path,
     ) -> std::result::Result<Self, StartFailure> {
+        if registration.profile.supervise_resident {
+            let (execution, io) = ResidentExecution::start(host, registration, cwd).await?;
+            let restart_owner = AcpSharedRestartOwner::Execution {
+                execution_id: execution.id().clone(),
+            };
+            let (reader, writer) = tokio::io::split(io);
+            return Self::initialize(
+                host,
+                registration,
+                Connection::new_shared(reader, writer),
+                ProcessOwner::Supervised(execution),
+                Some(restart_owner),
+                true,
+            )
+            .await;
+        }
         let worker = registration.config.provider.wire_name();
         Self::spawn_control(host, registration, worker, cwd, true).await
     }
@@ -83,7 +106,7 @@ impl Process {
         })?
         .map_err(|error| StartFailure::Failed(error.into()))?;
         let restart_owner = if boot_swept {
-            shared_restart_identity(&child)
+            shared_restart_identity(&child).map(AcpSharedRestartOwner::Process)
         } else {
             None
         };
@@ -101,12 +124,33 @@ impl Process {
                 .stdin()
                 .ok_or_else(|| CalmError::Internal("ACP stdin missing".into()))?,
         );
-        let compaction = resident.is_some()
+        Self::initialize(
+            host,
+            registration,
+            connection,
+            ProcessOwner::Native(child),
+            restart_owner,
+            resident.is_some(),
+        )
+        .await
+    }
+
+    async fn initialize(
+        host: &AcpPlannerHost,
+        registration: Registration<'_>,
+        connection: Connection,
+        mut owner: ProcessOwner,
+        restart_owner: Option<AcpSharedRestartOwner>,
+        resident: bool,
+    ) -> std::result::Result<Self, StartFailure> {
+        let profile = registration.profile;
+        let compaction = resident
             && [profile.compaction.planner, profile.compaction.assistant]
                 .contains(&Some(super::profile::CompactionWire::StandardPrompt));
+        let _ = host;
         match negotiate(&connection.client, registration, compaction).await {
             Ok(negotiated) => Ok(Self {
-                child,
+                owner,
                 restart_owner,
                 connection,
                 capabilities: negotiated.capabilities,
@@ -117,18 +161,37 @@ impl Process {
             }),
             Err(refusal) => {
                 connection.client.close();
-                let _ = child.start_kill();
-                let _ = reap(&mut child).await;
+                if let ProcessOwner::Native(child) = &mut owner {
+                    let _ = child.start_kill();
+                    let _ = reap(child).await;
+                }
                 Err(StartFailure::Failed(CalmError::Conflict(refusal)))
             }
         }
     }
-    pub async fn stop(mut self) -> Result<()> {
+
+    pub(super) fn is_supervised(&self) -> bool {
+        matches!(self.owner, ProcessOwner::Supervised(_))
+    }
+
+    pub(super) fn supervision_id(&self) -> Option<&workspace_runtime::execution::ExecutionId> {
+        match &self.owner {
+            ProcessOwner::Native(_) => None,
+            ProcessOwner::Supervised(execution) => Some(execution.id()),
+        }
+    }
+
+    pub async fn stop(&mut self) -> Result<()> {
         self.connection.client.close();
-        self.child.start_kill()?;
-        #[cfg(all(test, feature = "fixtures"))]
-        crate::test_seams::operation_fault("acp-control-reap", &self.stop_scope)?;
-        reap(&mut self.child).await
+        match &mut self.owner {
+            ProcessOwner::Native(child) => {
+                child.start_kill()?;
+                #[cfg(all(test, feature = "fixtures"))]
+                crate::test_seams::operation_fault("acp-control-reap", &self.stop_scope)?;
+                reap(child).await
+            }
+            ProcessOwner::Supervised(execution) => execution.stop().await,
+        }
     }
 }
 

@@ -73,7 +73,7 @@ pub(crate) async fn admit(
             id: id.clone(),
             alias: ProcessAlias(format!("{}:{}", config.alias_prefix, op.id)),
             owner: OperationRef(op.id.clone()),
-            track: TrackId(track.into()),
+            scope: workspace_runtime::execution::ExecutionScope::Track(TrackId(track.into())),
             source: PrivateSource {
                 root,
                 cwd: workspace::identity::WorkspaceCwd::root(),

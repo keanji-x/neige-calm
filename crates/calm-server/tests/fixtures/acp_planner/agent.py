@@ -250,6 +250,10 @@ def check_mcp(servers):
                     'method': 'tools/call', 'params': call}) + '\n')
                 child.stdin.flush()
                 responses.append(json.loads(child.stdout.readline()))
+            child.stdin.write(json.dumps({'jsonrpc': '2.0', 'id': 5,
+                'method': 'neige/cli', 'params': {'argv': ['track', 'status', '--json']}}) + '\n')
+            child.stdin.flush()
+            responses.append(json.loads(child.stdout.readline()))
             (root / 'mcp-origin-results.json').write_text(json.dumps(responses))
         if (root / 'scenario').read_text().strip() in ['assistant-mcp', 'assistant-canonical']:
             replies = []
@@ -472,6 +476,12 @@ for line in sys.stdin:
         state['inputs'].extend(texts)
         write_native(state)
         scenario = (root / 'scenario').read_text().strip()
+        if scenario == 'resident-detached-child':
+            child = subprocess.Popen(
+                ['/bin/sleep', '30'], start_new_session=True, stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+            (root / 'resident-detached-child.pid').write_text(str(child.pid))
         check_mcp(session_mcp_servers[current])
         if scenario == 'shared-menu-empty':
             update({'sessionUpdate':'available_commands_update', 'availableCommands':[]})

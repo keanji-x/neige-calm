@@ -230,7 +230,9 @@ pub(super) async fn projection(f: &Fixture) -> (Terminal, ExecutionId) {
                 intent.metadata.owner = OperationRef(op);
                 intent.metadata.consumer = CONSUMER.into();
                 intent.metadata.alias = ProcessAlias(sql::terminal_alias(&term.id));
-                intent.metadata.track = exec::TrackId(f.track.clone());
+                intent.metadata.scope = workspace_runtime::execution::ExecutionScope::Track(
+                    exec::TrackId(f.track.clone()),
+                );
                 f.store.insert(&mut tx, &intent).await.unwrap();
                 tx.commit().await.unwrap();
                 (term, intent.metadata.id)

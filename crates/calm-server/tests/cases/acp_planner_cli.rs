@@ -21,18 +21,19 @@ async fn resident_opencode_accepts_mcp_calls_only_from_the_credential_owner() {
     assert_eq!(resident["NEIGE_MCP_TOKEN"], false);
     assert_eq!(resident["NEIGE_MCP_SOCKET"], false);
 
-    let replies: [Value; 3] = serde_json::from_slice(
+    let replies: [Value; 4] = serde_json::from_slice(
         &std::fs::read(root.path().join("mcp-origin-results.json")).unwrap(),
     )
     .unwrap();
     assert!(replies[0].get("result").is_some(), "{replies:?}");
     assert_ne!(replies[0]["result"]["isError"], true, "{replies:?}");
-    for reply in &replies[1..] {
+    for reply in &replies[1..3] {
         assert_eq!(reply["result"]["isError"], true, "{reply}");
         assert_eq!(
             reply["result"]["structuredContent"]["code"], -32602,
             "{reply}"
         );
     }
+    assert_eq!(replies[3]["error"]["code"], -32600, "{replies:?}");
     stack.shutdown().await;
 }

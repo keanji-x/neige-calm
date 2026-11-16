@@ -17,6 +17,7 @@ use provider::acp::approvals::McpToolRequest;
 pub(super) const PROFILE: AcpAgentProfile = AcpAgentProfile {
     context_snapshot: false,
     resident: None,
+    supervise_resident: false,
     mcp_call_session_key: None,
     background_tool_completions: false,
     mcp_tool_name_budget: None,

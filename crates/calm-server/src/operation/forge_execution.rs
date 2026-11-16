@@ -155,7 +155,9 @@ async fn intent(
             id,
             alias: ProcessAlias(format!("forge:{}{}", op.id, kind.suffix())),
             owner: OperationRef(op.id.clone()),
-            track: TrackId(frozen.track_id.clone()),
+            scope: workspace_runtime::execution::ExecutionScope::Track(TrackId(
+                frozen.track_id.clone(),
+            )),
             source: PrivateSource {
                 root: tokio::fs::canonicalize(&frozen.cwd_lease)
                     .await

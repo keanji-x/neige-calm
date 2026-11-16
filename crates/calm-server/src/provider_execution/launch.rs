@@ -17,6 +17,47 @@ pub(crate) async fn intent(
     payload: Vec<u8>,
     ambient: calm_session::control::execution::AmbientEnvironment,
 ) -> Result<(ExecutionIntent, Vec<u8>)> {
+    Ok((
+        wrapped_intent(
+            LaunchOwner {
+                consumer: owner.consumer().into(),
+                alias: ProcessAlias(owner.alias(session, id.as_str())),
+                owner: OperationRef(format!("worker-session:{session}")),
+                scope: ExecutionScope::Track(TrackId(track.to_owned())),
+            },
+            cwd,
+            id,
+            dir,
+            binary,
+            args,
+            env,
+            prefix,
+            ambient,
+        )
+        .await?,
+        payload,
+    ))
+}
+
+pub(crate) struct LaunchOwner {
+    pub consumer: ExecutionConsumer,
+    pub alias: ProcessAlias,
+    pub owner: OperationRef,
+    pub scope: ExecutionScope,
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn wrapped_intent(
+    owner: LaunchOwner,
+    cwd: &Path,
+    id: &ExecutionId,
+    dir: &Path,
+    binary: &Path,
+    args: Vec<OsString>,
+    env: Vec<(String, OsString)>,
+    prefix: &str,
+    ambient: calm_session::control::execution::AmbientEnvironment,
+) -> Result<ExecutionIntent> {
     let text = |value: OsString| {
         value
             .into_string()
@@ -36,45 +77,42 @@ pub(crate) async fn intent(
         .into_iter()
         .map(|(key, value)| Ok((key, text(value)?)))
         .collect::<Result<Vec<_>>>()?;
-    Ok((
-        ExecutionIntent {
-            metadata: ExecutionMetadata {
-                consumer: owner.consumer().into(),
-                id: id.clone(),
-                alias: ProcessAlias(owner.alias(session, id.as_str())),
-                owner: OperationRef(format!("worker-session:{}", session)),
-                track: TrackId(track.to_owned()),
-                source: PrivateSource {
-                    root,
-                    cwd: workspace::identity::WorkspaceCwd::root(),
-                    registration: ObjectRegistrationId::fresh()?,
-                    nonce: TransferNonce::fresh()?,
-                    directory: ExternalDirectoryId::fresh()?,
-                    incarnation: ExternalDirectoryIncarnationId::fresh()?,
-                    authority: ExecutionAuthority {
-                        grant_id: ExecutionGrantId::fresh()?,
-                        authorization_binding: AuthorizationBindingId::fresh()?,
-                        authorization_version: 1,
-                    },
+    Ok(ExecutionIntent {
+        metadata: ExecutionMetadata {
+            consumer: owner.consumer,
+            id: id.clone(),
+            alias: owner.alias,
+            owner: owner.owner,
+            scope: owner.scope,
+            source: PrivateSource {
+                root,
+                cwd: workspace::identity::WorkspaceCwd::root(),
+                registration: ObjectRegistrationId::fresh()?,
+                nonce: TransferNonce::fresh()?,
+                directory: ExternalDirectoryId::fresh()?,
+                incarnation: ExternalDirectoryIncarnationId::fresh()?,
+                authority: ExecutionAuthority {
+                    grant_id: ExecutionGrantId::fresh()?,
+                    authorization_binding: AuthorizationBindingId::fresh()?,
+                    authorization_version: 1,
                 },
-                program: ExecutionSpecification {
-                    ambient_environment: ambient,
-                    program: "/bin/sh".into(),
-                    args: wrapper_args,
-                    environment,
-                    io_mode: calm_session::control::IoMode::Pipe,
-                    replay_bytes: 4 * 1024 * 1024,
-                },
-                specification: SpecificationId::fresh()?,
-                ticket_id: LaunchTicketId::fresh()?,
             },
-            secrets: ExecutionSecrets {
-                ticket: CapabilityToken::fresh()?,
-                tokens: ExecutionControlTokens::fresh()?,
+            program: ExecutionSpecification {
+                ambient_environment: ambient,
+                program: "/bin/sh".into(),
+                args: wrapper_args,
+                environment,
+                io_mode: calm_session::control::IoMode::Pipe,
+                replay_bytes: 4 * 1024 * 1024,
             },
+            specification: SpecificationId::fresh()?,
+            ticket_id: LaunchTicketId::fresh()?,
         },
-        payload,
-    ))
+        secrets: ExecutionSecrets {
+            ticket: CapabilityToken::fresh()?,
+            tokens: ExecutionControlTokens::fresh()?,
+        },
+    })
 }
 
 /// One launch's environment split at the release boundary: the MCP token and every secret proxy

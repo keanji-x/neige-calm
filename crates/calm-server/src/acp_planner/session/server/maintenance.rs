@@ -113,6 +113,7 @@ pub(in crate::acp_planner::session) async fn compact(
         .await;
         // A routed overflow invalidates even a fast matching RPC result.
         let confirmed = matches!(outcome, Ok(true)) && !*incoming.overflow().borrow();
+        drop(incoming);
         if !confirmed {
             // Close/revoke only this exact attachment; no ordinary compact stops the server.
             let _ = detach_worker_with_witness(
@@ -123,7 +124,6 @@ pub(in crate::acp_planner::session) async fn compact(
             )
             .await;
         }
-        drop(incoming);
         let mut state = task.state.lock().expect("ACP state");
         if state
             .active

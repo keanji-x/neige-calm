@@ -297,6 +297,21 @@ pub async fn location_occupancy(
             occupants.push(id.try_into().map_err(crate::error::CalmError::Internal)?);
         }
     }
+    // A resident generation can enter additional workspaces after it starts.
+    // Only its lifecycle owner removes these obligations after a verified drain.
+    let attached: Vec<(String, String)> =
+        sqlx::query_as("SELECT execution_id, cwd FROM acp_resident_workspace_bindings")
+            .fetch_all(&mut *conn)
+            .await?;
+    for (id, cwd) in attached {
+        let candidate = PathLocation::allow_missing(std::path::Path::new(&cwd))?;
+        for target in targets {
+            if paths_overlap(&candidate, target, false)? {
+                occupants.push(id.try_into().map_err(crate::error::CalmError::Internal)?);
+                break;
+            }
+        }
+    }
     occupants.sort();
     occupants.dedup();
     Ok(occupants)

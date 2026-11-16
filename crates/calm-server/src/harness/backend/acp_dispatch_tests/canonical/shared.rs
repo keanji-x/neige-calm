@@ -1,6 +1,50 @@
 //! Canonical cleanup requires evidence from the original shared attachment.
 use super::*;
 
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn canonical_opencode_shutdown_drains_detached_workspace_child() {
+    use workspace_runtime::execution::ExecutionId;
+
+    let fx =
+        Fixture::with_provider(AgentProvider::OpenCode, "resident-detached-child", false).await;
+    fx.dispatch().await.unwrap();
+    fx.wait_idle().await;
+    assert!(fx.complete().await.is_some());
+    let pid: i32 = std::fs::read_to_string(fx.dir.path().join("resident-detached-child.pid"))
+        .unwrap()
+        .parse()
+        .unwrap();
+    let start = crate::proc_identity::read_proc_start_time(pid)
+        .expect("detached child remains live after END");
+    let pool = fx.owner.repo.db();
+    let scopes =
+        calm_truth::db::sqlite::acp_resident::for_worker(pool.read_pool(), &fx.owner.worker)
+            .await
+            .unwrap();
+    let [id] = scopes.as_slice() else {
+        panic!("one supervised resident attachment")
+    };
+    let id = ExecutionId::try_from(id.clone()).unwrap();
+
+    fx.session.shutdown().await.unwrap();
+
+    assert_ne!(crate::proc_identity::read_proc_start_time(pid), Some(start));
+    assert!(
+        crate::provider_execution::settlement(pool, &id)
+            .await
+            .unwrap()
+            .unwrap()
+            .descendants_complete()
+    );
+    assert!(
+        calm_truth::db::sqlite::acp_resident::for_worker(pool.read_pool(), &fx.owner.worker)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
 #[tokio::test]
 async fn canonical_opencode_reuses_resident_process_and_native_session() {
     let fx = Fixture::with_provider(AgentProvider::OpenCode, "reply", false).await;

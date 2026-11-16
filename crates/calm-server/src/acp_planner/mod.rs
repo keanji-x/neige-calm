@@ -11,6 +11,7 @@ pub(crate) mod lifecycle;
 mod process;
 mod profile;
 pub(crate) mod recovery;
+pub(crate) mod resident_execution;
 pub mod session;
 mod start;
 #[cfg(feature = "fixtures")]

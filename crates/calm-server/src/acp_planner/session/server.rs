@@ -21,9 +21,8 @@ struct Binding {
 
 struct Generation {
     id: uuid::Uuid,
-    /// Set only after revoking this generation's grants, confirming the ACP
-    /// service process exited, and executing the existing process-group cleanup.
-    /// This is not the execution owner's descendants-complete quiescence proof.
+    /// Set after the profile's process owner confirms cleanup. Supervised
+    /// generations require the executor's descendants-complete settlement.
     stopped: AtomicBool,
 }
 
@@ -42,6 +41,7 @@ pub(in crate::acp_planner) struct Server {
     process: process::Process,
     bindings: HashMap<String, Binding>,
     credential_owners: HashSet<String>,
+    touched_workers: HashSet<String>,
     generation: Arc<Generation>,
 }
 impl std::fmt::Debug for Server {
@@ -65,7 +65,7 @@ pub(super) struct Turn {
     pub client: provider::acp::Client,
     pub capabilities: protocol::AgentCapabilities,
     commands: process::Commands,
-    pub restart_owner: Option<crate::db::sqlite::AcpSharedProcessIdentity>,
+    pub restart_owner: Option<crate::db::sqlite::AcpSharedRestartOwner>,
     cleanup: CleanupWitness,
     snapshot: Option<super::super::context_snapshot::Selection>,
 }
@@ -230,6 +230,7 @@ pub(super) async fn drive(
             },
         );
     }
+    drop(incoming);
     let cleaned = if outcome.is_err() {
         // A lost terminal response may leave native work running. Evidence
         // belongs to this exact attachment, never to a sibling's cleanup.
@@ -237,7 +238,6 @@ pub(super) async fn drive(
     } else {
         false
     };
-    drop(incoming);
     #[cfg(feature = "fixtures")]
     super::super::test_seams::wait_at_settlement(&shared.params.worker_session_id).await;
     settle(&shared, &receipt, retained, outcome, &cleanup, cleaned).await
@@ -393,10 +393,12 @@ async fn cleanup_unknown(
 }
 
 pub(crate) async fn detach_worker(host: &AcpPlannerHost, worker: &str) -> Result<()> {
+    let (pool, previous) =
+        super::super::resident_execution::workspace_generations(host, worker).await?;
     for provider in host.shared_servers.keys() {
         detach_worker_with_witness(host, worker, provider, None).await?;
     }
-    Ok(())
+    super::super::resident_execution::stop_detached_workspace(host, &pool, previous).await
 }
 
 async fn detach_worker_with_witness(
@@ -429,7 +431,10 @@ async fn detach_worker_with_witness(
             ));
         }
     }
-    if !server.bindings.contains_key(worker) && !server.credential_owners.contains(worker) {
+    if !server.bindings.contains_key(worker)
+        && !server.credential_owners.contains(worker)
+        && !server.touched_workers.contains(worker)
+    {
         return Ok(());
     }
     if server.process.connection.client.terminal_error().is_some() {
@@ -443,6 +448,18 @@ async fn detach_worker_with_witness(
     if server.credential_owners.contains(worker) {
         revoke_worker(host.completion.repo()?.as_ref(), worker).await?;
         server.credential_owners.remove(worker);
+    }
+    if server.process.is_supervised() {
+        // Native close acknowledges an interrupt, which can precede actual
+        // exit. Drain other routed turns without holding the setup lock.
+        let client = &server.process.connection.client;
+        client.retire_shared_when_idle();
+        if !client.can_recycle_shared() {
+            return Err(CalmError::Conflict(
+                "ACP generation is draining other active sessions".into(),
+            ));
+        }
+        return retire(host, &mut owned).await;
     }
     let Some(binding) = server.bindings.get(worker) else {
         return Ok(());
@@ -547,10 +564,10 @@ async fn retire(host: &AcpPlannerHost, owned: &mut Option<Server>) -> Result<()>
             revoke_worker(host.completion.repo()?.as_ref(), worker).await?;
         }
     }
-    if let Some(server) = owned.take() {
-        let generation = server.generation.clone();
+    if let Some(server) = owned.as_mut() {
         server.process.stop().await?;
-        generation.stopped.store(true, Ordering::Release);
+        server.generation.stopped.store(true, Ordering::Release);
+        owned.take();
     }
     Ok(())
 }

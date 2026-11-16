@@ -267,16 +267,7 @@ async fn recover_shared_claim(
                         &receipt.client_id,
                     )
                     .await?;
-                    if !sweep_confirmed
-                        || !owner.is_some_and(|owner| {
-                            crate::proc_identity::observe_owned_pid(
-                                owner.pid,
-                                owner.start_time,
-                                &owner.boot_id,
-                            )
-                            .leader_exited()
-                        })
-                    {
+                    if !sweep_confirmed || !restart_owner_stopped(tx, &provider, owner).await? {
                         return Ok(None);
                     }
                     client = Some(receipt.client_id.as_str());
@@ -292,6 +283,42 @@ async fn recover_shared_claim(
         recover_completed_stop(repo, card, worker, &track, receipt, association).await?;
     }
     Ok(())
+}
+
+async fn restart_owner_stopped(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    provider: &AgentProvider,
+    owner: Option<crate::db::sqlite::AcpSharedRestartOwner>,
+) -> Result<bool> {
+    use crate::db::sqlite::AcpSharedRestartOwner;
+    let supervised = super::super::profile::AcpAgentProfile::of(provider)
+        .is_some_and(|profile| profile.supervise_resident);
+    match owner {
+        Some(AcpSharedRestartOwner::Process(owner)) if !supervised => Ok(
+            crate::proc_identity::observe_owned_pid(owner.pid, owner.start_time, &owner.boot_id)
+                .leader_exited(),
+        ),
+        Some(AcpSharedRestartOwner::Execution { execution_id }) if supervised => {
+            let settlement: Option<String> = sqlx::query_scalar(
+                "SELECT settlement_json FROM workspace_executions WHERE execution_id=?1 AND alias=?2 AND json_extract(intent_json,'$.consumer')=?3 AND settlement_json IS NOT NULL",
+            )
+            .bind(execution_id.as_str())
+            .bind(format!("acp-resident:{}", provider.wire_name()))
+            .bind(super::super::resident_execution::CONSUMER)
+            .fetch_optional(&mut **tx)
+            .await
+            .map_err(crate::error::CalmError::from)?;
+            settlement
+                .map(|json| {
+                    serde_json::from_str::<workspace_runtime::execution::Settlement>(&json)
+                        .map(|settlement| settlement.descendants_complete())
+                })
+                .transpose()
+                .map(|settled| settled.unwrap_or(false))
+                .map_err(Into::into)
+        }
+        _ => Ok(false),
+    }
 }
 
 async fn recover_completed_stop(

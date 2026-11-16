@@ -6,6 +6,29 @@ their approval mode. Replace the per-turn OpenCode launch for Planner and Assist
 Retain existing native session IDs, working directories, and input receipts.
 Review tier L2 covers tool authority, provider execution, and recovery.
 
+## Workspace and MCP ownership
+
+A resident OpenCode generation is owned by the existing execution supervisor,
+independently of any card or Track. Attachments create durable workspace
+obligations before invoking native setup. Destructive cleanup revokes the
+affected attachment's credential, stops new work on its generation, and lets
+routed siblings drain. The execution owner's descendant-drain evidence clears
+workspace obligations, including on restart. ACP close can acknowledge an
+interrupt before cleanup settles, and OpenCode can spawn outside its process
+group. [ACP close](https://github.com/anomalyco/opencode/blob/v2.3.0/packages/cli/src/acp/turn.ts#L451-L461)
+and [interrupt contract](https://github.com/anomalyco/opencode/blob/v2.3.0/packages/core/src/session/execution.ts#L27-L41).
+
+MCP authority lasts for the mounted session and may be exercised by that
+session between turns, including when OpenCode wakes it for a background
+report. Each call rechecks the native ID, its card-bound connection and current
+tool permissions. Neige revokes the grant during detach and replacement.
+OpenCode-backed connections serve MCP tools only.
+
+As a Beta exception, sessions in the same OpenCode directory may see each
+other's tool names, descriptions and input schemas. Actual invocations still
+require the credential's native session and the card's current tool grant.
+[OpenCode directory registrations](https://github.com/anomalyco/opencode/blob/v2.3.0/services/site/src/docs/content/cli/acp.mdx#mcp-servers).
+
 ## Verified upstream behavior
 
 A local OpenCode 2.1.4 probe opened two ACP sessions on one connection and

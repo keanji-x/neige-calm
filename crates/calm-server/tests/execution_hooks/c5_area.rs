@@ -15,7 +15,8 @@ async fn entered(p: &PausePoint) {
 }
 async fn admit(f: &Fixture, owner: &str, root: std::path::PathBuf) -> ExecutionId {
     let mut intent = crate::support::execution::occupancy_intent(root);
-    intent.metadata.track = exec::TrackId(owner.into());
+    intent.metadata.scope =
+        workspace_runtime::execution::ExecutionScope::Track(exec::TrackId(owner.into()));
     let id = intent.metadata.id.clone();
     let write_db = (f.repo.db()).clone();
     write_db

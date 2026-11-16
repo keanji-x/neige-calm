@@ -233,12 +233,21 @@ pub struct AcpSharedProcessIdentity {
     pub boot_id: String,
 }
 
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+#[serde(untagged)]
+pub enum AcpSharedRestartOwner {
+    Execution {
+        execution_id: workspace::execution::ExecutionId,
+    },
+    Process(AcpSharedProcessIdentity),
+}
+
 pub async fn acp_shared_receipt_process_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     worker: &str,
     client: &str,
-) -> Result<Option<AcpSharedProcessIdentity>> {
-    let identity: Option<sqlx::types::Json<AcpSharedProcessIdentity>> =
+) -> Result<Option<AcpSharedRestartOwner>> {
+    let identity: Option<sqlx::types::Json<AcpSharedRestartOwner>> =
         sqlx::query_scalar("SELECT shared_restart_owner_json FROM acp_submissions WHERE worker_session_id=?1 AND client_id=?2")
             .bind(worker).bind(client).fetch_one(&mut **tx).await?;
     Ok(identity.map(|identity| identity.0))
@@ -248,7 +257,7 @@ pub async fn acp_submission_prepare(
     pool: &crate::db::sqlite::SqliteDb,
     receipt: &AcpSubmission,
     at_ms: i64,
-    owner: Option<&AcpSharedProcessIdentity>,
+    owner: Option<&AcpSharedRestartOwner>,
 ) -> std::result::Result<(), AcpPrepareError> {
     let write_db = (pool).clone();
     write_db
@@ -274,7 +283,7 @@ async fn prepare_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     receipt: &AcpSubmission,
     at_ms: i64,
-    owner: Option<&AcpSharedProcessIdentity>,
+    owner: Option<&AcpSharedRestartOwner>,
 ) -> Result<()> {
     let input = super::AcpSubmissionInput::decode(&receipt.input_json)?;
     match &input {

@@ -83,10 +83,16 @@ pub(crate) async fn serve(
     connection_identity: &ConnectionIdentity,
     params: Value,
 ) -> Result<Value, RpcError> {
-    if !matches!(connection_identity, ConnectionIdentity::CardBound(_)) {
+    let ConnectionIdentity::CardBound(bound) = connection_identity else {
         return Err(RpcError::custom(
             RpcError::INVALID_REQUEST,
             "neige/cli: requires a card-bound connection (per-card NEIGE_MCP_TOKEN)",
+        ));
+    };
+    if crate::acp_planner::wiring::mcp_call_session_key(&bound.provider).is_some() {
+        return Err(RpcError::custom(
+            RpcError::INVALID_REQUEST,
+            "neige/cli: this provider requires session-bound MCP tool calls",
         ));
     }
     let argv: Vec<String> = params

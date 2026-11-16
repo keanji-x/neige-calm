@@ -476,7 +476,7 @@ impl ProviderExecution {
         admission: PreparedIntent,
         purpose: Purpose,
     ) -> Result<(Claim, DriverGuard)> {
-        let track = admission.0.metadata.track.0.clone();
+        let track = admission.0.metadata.scope.track().unwrap().0.clone();
         self.admit_with_track_for_test(pool, engine, session, admission, &track, purpose)
             .await
     }

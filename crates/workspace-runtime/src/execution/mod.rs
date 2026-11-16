@@ -21,6 +21,25 @@ pub const QUIESCE_DEADLINE: std::time::Duration = STOP_GRACE.saturating_add(DRAI
 pub struct OperationRef(pub String);
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TrackId(pub String);
+
+/// A Track owns an ordinary execution. A host service owns its own generation
+/// even when several Tracks use that generation.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ExecutionScope {
+    Track(TrackId),
+    Host { backend: String },
+}
+
+impl ExecutionScope {
+    pub fn track(&self) -> Option<&TrackId> {
+        match self {
+            Self::Track(track) => Some(track),
+            Self::Host { .. } => None,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProcessAlias(pub String);
 /// Consumer-owned registry key, persisted with the immutable execution intent.
@@ -48,7 +67,9 @@ pub struct ExecutionMetadata {
     pub id: ExecutionId,
     pub alias: ProcessAlias,
     pub owner: OperationRef,
-    pub track: TrackId,
+    /// Keep the existing persisted field name and representation for Tracks.
+    #[serde(rename = "track")]
+    pub scope: ExecutionScope,
     pub source: PrivateSource,
     pub program: ExecutionSpecification,
     pub specification: SpecificationId,

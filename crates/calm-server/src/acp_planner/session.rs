@@ -269,9 +269,18 @@ impl AcpPlannerSession {
         let stopped = self
             .stop_execution(crate::provider_execution::StopReason::Shutdown)
             .await;
-        let detached = detach_worker(&params.host, &params.worker_session_id).await;
-        // Cleanup errors never detach the writer: recovery waits for all its writes.
-        join_driver(&self.shared).await?;
+        let supervised = super::profile::AcpAgentProfile::of(&params.provider)
+            .is_some_and(|profile| profile.supervise_resident);
+        let detached = if supervised {
+            // The retiring generation must not wait on this worker's own route.
+            join_driver(&self.shared).await?;
+            detach_worker(&params.host, &params.worker_session_id).await
+        } else {
+            let detached = detach_worker(&params.host, &params.worker_session_id).await;
+            // Cleanup errors never detach the writer.
+            join_driver(&self.shared).await?;
+            detached
+        };
         revoked?;
         stopped?;
         detached?;

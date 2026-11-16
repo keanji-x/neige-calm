@@ -452,7 +452,15 @@ mod tests {
                 std::sync::Arc::new(crate::execution_store::tests::NoopProjection),
             );
         let intent = test_support::intent("/".into());
-        let scope = Scope::Track(intent.metadata.track.0.clone());
+        let scope = Scope::Track(
+            intent
+                .metadata
+                .scope
+                .track()
+                .expect("terminal execution Track scope")
+                .0
+                .clone(),
+        );
         let write_db = (repo.db()).clone();
         write_db
             .writer()

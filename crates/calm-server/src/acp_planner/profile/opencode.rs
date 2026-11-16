@@ -28,6 +28,7 @@ const RESIDENT_LAUNCH: ModeLaunch = ModeLaunch {
 pub(super) const PROFILE: AcpAgentProfile = AcpAgentProfile {
     context_snapshot: false,
     resident: Some(&RESIDENT_LAUNCH),
+    supervise_resident: true,
     mcp_call_session_key: Some("ai.opencode/sessionID"),
     background_tool_completions: false,
     mcp_tool_name_budget: None,

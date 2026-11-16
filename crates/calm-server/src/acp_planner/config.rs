@@ -365,7 +365,7 @@ impl AcpPlannerHost {
     pub async fn check_ready(&self, provider: &AgentProvider) -> Result<()> {
         let _probe = self.readiness.lock().await;
         let registration = self.registration(provider)?;
-        let process =
+        let mut process =
             super::process::Process::spawn(self, registration, "readiness", &std::env::temp_dir())
                 .await?;
         process.stop().await
@@ -429,7 +429,9 @@ pub(super) async fn boot_with_sweep<F: std::future::Future<Output = Result<()>>>
         }
     };
     for provider in shared {
-        super::session::recover_shared_after_boot(repo, provider, sweep_confirmed).await?;
+        if !AcpAgentProfile::of(&provider).is_some_and(|profile| profile.supervise_resident) {
+            super::session::recover_shared_after_boot(repo, provider, sweep_confirmed).await?;
+        }
     }
     let unproven = if sweep_confirmed {
         Default::default()
@@ -439,6 +441,16 @@ pub(super) async fn boot_with_sweep<F: std::future::Future<Output = Result<()>>>
     host.pre_c4
         .set(crate::provider_execution::PreC4Sweep { unproven })
         .map_err(|_| CalmError::Conflict("ACP boot sweep proof already initialized".into()))?;
+    Ok(())
+}
+
+/// Run after the execution owner verified that previous resident scopes drained.
+pub(crate) async fn recover_supervised_after_boot(repo: &dyn crate::db::Repo) -> Result<()> {
+    for provider in AgentProtocol::Acp.providers().filter(|provider| {
+        AcpAgentProfile::of(provider).is_some_and(|profile| profile.supervise_resident)
+    }) {
+        super::session::recover_shared_after_boot(repo, provider, true).await?;
+    }
     Ok(())
 }
 
@@ -464,9 +476,12 @@ pub async fn sweep_track(
     let proof = host.pre_c4.get().cloned();
     let ids = crate::db::write_in_tx_typed(repo, move |tx| {
         Box::pin(async move {
-            let ids = revoke_owned_tx(tx, Some(&track)).await?;
+            let mut ids = revoke_owned_tx(tx, Some(&track)).await?;
             // A refusal rolls back revocation before any Stop can be requested.
             crate::provider_execution::PreC4Sweep::require_absent(proof.as_ref(), &ids)?;
+            ids.extend(calm_truth::db::sqlite::acp_resident::workers_for_track(tx, &track).await?);
+            ids.sort_unstable();
+            ids.dedup();
             Ok(ids)
         })
     })
