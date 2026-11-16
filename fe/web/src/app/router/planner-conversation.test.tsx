@@ -179,7 +179,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-it('renders local screenshot references from planner history using the agent worktree', async () => {
+it('keeps planner output screenshot references inert even with an agent worktree', async () => {
   const agentRoot = '/tmp/planner-worktree';
   setup((request) => {
     if (request.path === '/api/tracks/w1') return ok({
@@ -194,24 +194,24 @@ it('renders local screenshot references from planner history using the agent wor
     return undefined;
   });
   await openConversation();
-  await waitFor(() => expect(screen.getByRole('img', { name: 'Screenshot' }).getAttribute('src'))
-    .toBe('/api/tracks/w1/workspace/readfile-raw?path=screenshots%2Fpage.png'));
-  expect(screen.getByRole('img', { name: 'Detail' }).getAttribute('src'))
-    .toBe('/api/tracks/w1/workspace/readfile-raw?path=screenshots%2Fdetail.png');
+  await screen.findByText('Image unavailable: Screenshot');
+  expect(screen.getByText('Image unavailable: Detail')).toBeTruthy();
+  expect(screen.queryByRole('img',{name:'Screenshot'})).toBeNull();
+  expect(screen.queryByRole('img',{name:'Detail'})).toBeNull();
 });
 
-it('binds the same relative screenshot path to the newly opened conversation track', async () => {
+it('keeps relative output screenshot paths inert across conversation track switches', async () => {
   const { router } = setup((request) => request.path.includes('/harness/items') ? ok(historicalConversationPage(conversationCardId(request.path), [{
     ...harnessRows(1)[0], params: JSON.stringify({ item: { text: '![Screenshot](screenshots/page.png)' } }),
   }], null)) : undefined);
   await openConversation();
-  expect((await screen.findByRole('img', { name: 'Screenshot' })).getAttribute('src'))
-    .toBe('/api/tracks/w1/workspace/readfile-raw?path=screenshots%2Fpage.png');
+  await screen.findByText('Image unavailable: Screenshot');
+  expect(screen.queryByRole('img',{name:'Screenshot'})).toBeNull();
   await act(async () => { await router.navigate({ to: '/track/w2' }); });
   fireEvent.click(await screen.findByRole('button', { name: 'Conversation Second chat' }));
   const secondDrawer = await screen.findByRole('complementary', { name: 'Second chat' });
-  expect((await within(secondDrawer).findByRole('img', { name: 'Screenshot' })).getAttribute('src'))
-    .toBe('/api/tracks/w2/workspace/readfile-raw?path=screenshots%2Fpage.png');
+  await within(secondDrawer).findByText('Image unavailable: Screenshot');
+  expect(within(secondDrawer).queryByRole('img',{name:'Screenshot'})).toBeNull();
 });
 
 /* `fireEvent.change` cannot drive Astryx's `contenteditable` composer (no value

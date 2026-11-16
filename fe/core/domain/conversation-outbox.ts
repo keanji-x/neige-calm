@@ -435,7 +435,15 @@ export type OutboxFacts = Omit<OutboxView, 'transcript'> & Readonly<{
  * Current creation input is placed by its source role; ordinary echoes retain the existing tail. */
 export function withOutboxLiveReplies(facts: OutboxFacts, liveReplies: readonly ConversationTurn[]): OutboxView {
   const { entries, echoes, initialInputs, ...state } = facts;
-  return { ...state, transcript: mergeTranscript(placeInitialInputs(mergeTranscript(entries, liveReplies), initialInputs), echoes) };
+  const anchored=entries.map(entry=>{
+    if((entry.author !== 'agent' && entry.author !== 'activity') || entry.nativeOutput === undefined || entry.nativeOutput.completed)return entry;
+    const anchor=entry.nativeOutput;
+    const copy=liveReplies.find(reply=>reply.nativeOutput?.threadId===anchor.threadId && reply.nativeOutput.turnId===anchor.turnId && reply.nativeOutput.itemId===anchor.itemId);
+    if(copy===undefined)return entry;
+    return entry.author === 'activity' ? {...entry,output:copy.output,content:copy.text} : {...entry,output:copy.output,text:copy.text};
+  });
+  const tail=liveReplies.filter(reply=>reply.nativeOutput === undefined);
+  return { ...state, transcript: mergeTranscript(placeInitialInputs(mergeTranscript(anchored, tail), initialInputs), echoes) };
 }
 
 /** The complete projection for consumers that need facts and live display together. */

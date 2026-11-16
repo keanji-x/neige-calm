@@ -48,6 +48,7 @@ import {
 import { QuietSyncFold } from './quiet-sync.tsx';
 import type { ReplyImageFiles, ReplyLinkRenderer } from './reply.tsx';
 import { MessageEntry } from './message-entry.tsx';
+import { createOutputMediaOwner } from './output-media.tsx';
 import styles from './thread.module.css';
 import composerLayoutStyles from './composer-layout.module.css';
 import { currentResponseMessage, latestUserMessage } from '../../../../../core/domain/conversation-actions.ts';
@@ -126,6 +127,8 @@ export type ChatThreadProps = Readonly<{
 }>;
 
 export const ChatThread = memo(function ChatThread({ conversation, turns, pendingMessages, activeInput = null, keepInput, retryInput, hasPendingMessages, pending = false, sending = false, submissionRequest = 0, cards, stalled, stalledReason, recovery = null, statusUnconfirmed = false, statusLoading = false, stopFeedback = null, currentResponseOutcome = null, canContinue, messageActions = 'all', copyText, regenerateMessage, editMessage, editing = null, replacement = null, runningAnchor = null, imageFiles = null, renderLink, readingView, historyPrefetch, hasPendingInputs = false }: ChatThreadProps) {
+  const mediaOwner=useMemo(()=>createOutputMediaOwner(conversation.id),[conversation.id]);
+  useEffect(()=>()=>mediaOwner.dispose(),[mediaOwner]);
   const compactViewport = useCompactViewport();
   // Observe the browser timezone on render; keep formatters stable for memoized rows.
   const timeZone = new Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -274,6 +277,7 @@ export const ChatThread = memo(function ChatThread({ conversation, turns, pendin
       key={key}
       entry={key}
       activities={activities}
+      mediaOwner={mediaOwner}
       ui={groupUi.get(key) ?? untouchedGroupUi}
       updateGroup={updateGroupUi}
       live={runLive}
@@ -299,7 +303,7 @@ export const ChatThread = memo(function ChatThread({ conversation, turns, pendin
     // Outcomes retain their grouping boundary; only the current metadata row paints status.
     if (turn.author === 'turn') return turn.imported === true ? <HistoricalOutcomeNotice key={turn.id} outcome={turn} /> : null;
     return (
-      <MessageEntry key={turn.id} mobile={compactViewport} atMs={turn.atMs} timestampFormatter={turn.author === 'agent' ? compactClock : null} id={turn.id} entryKey={key} author={turn.author} human={turn.human} imported={turn.imported === true} text={turn.text}
+      <MessageEntry output={turn.output} mediaOwner={mediaOwner} key={turn.id} mobile={compactViewport} atMs={turn.atMs} timestampFormatter={turn.author === 'agent' ? compactClock : null} id={turn.id} entryKey={key} author={turn.author} human={turn.human} imported={turn.imported === true} text={turn.text}
         attachments={turn.attachments} opens={opensExchange(turns, index)}
         gapLabel={opensAfterGap(turns, index) && index > 0 ? clockTime(gapClock, turn.atMs) : null}
         queued={isQueuedConversationTurn(turn)} edited={edited.has(turn.id)} replacement={turn.id === replacement}

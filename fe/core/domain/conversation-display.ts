@@ -117,7 +117,7 @@ export function buildConversationTranscript(items: readonly ConversationDisplayI
       if(entry.author === 'activity')return {...entry,...position,verb:`Imported history · ${entry.verb}`};
       if(entry.author === 'turn')return {...entry,...position,imported:true};
       // Native folded segments can carry queue-looking hints, never application acceptance.
-      return { text:entry.text,atMs:entry.atMs,attachments:entry.attachments, author:entry.author === 'you' || entry.author === 'human' ? 'unknown' as const : entry.author,
+      return { text:entry.text,atMs:entry.atMs,attachments:entry.attachments,output:entry.output, author:entry.author === 'you' || entry.author === 'human' ? 'unknown' as const : entry.author,
         imported:true,...position };
     });
     if (source.kind !== 'native') throw new Error('Mixed historical/native display contract');

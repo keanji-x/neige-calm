@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { HarnessLiveReplies, HarnessPhaseTag } from '../api/generated/wire.js';
 import {
-  awaitsSettling, harnessLiveOperation, liveReplyTurns, reconcileLiveReplies, replyMayStream,
+  awaitsSettling, harnessLiveOperation, conversationLiveOperation, liveReplyTurns, reconcileLiveReplies, replyMayStream,
   type LiveReplyCopy, type LiveReplyObservation, type LiveReplyTranscriptRow,
 } from './conversation-live.js';
 
@@ -138,4 +138,27 @@ it('canonical live copies retire only against the actual thread, turn and item t
     thread_id:'C',turn_id:'T',items:[{item_id:'X',text:'C'}],
   }},atMs:2});
   expect(switched[0].nativeThreadId).toBe('C');expect(switched[0].text).toBe('C');
+});
+
+it('accepts larger decimal u64 revisions including shortening and empty content, never older polls',()=>{
+  const native=(revision:string,text:string):LiveReplyObservation=>({kind:'native-poll',atMs:1,reply:{contract:'conversation_v1',turn:{thread_id:'thread',turn_id:'turn',items:[{item_id:'item',text,output:{revision,segment:{channel:'thought',ordinal:'18446744073709551615'},content:{version:1,blocks:[{type:'text',text,fields:{}}]}}}]}}});
+  const copies=run(native('9007199254740992','long'),native('9007199254740993',''),native('9007199254740992','old'));
+  expect(liveReplyTurns(copies)[0]).toMatchObject({text:'',output:{kind:'available',content:{version:1,blocks:[{type:'text',text:'',fields:{}}]}}});
+});
+
+it('retains malformed native output presence for item-local unavailable projection',()=>{
+  const schema=conversationLiveOperation('card').responseSchema;
+  for(const output of [null,{revision:'1',segment:{channel:'message',ordinal:'0'},content:{version:2,blocks:[]}}]){
+    const reply=schema.parse({contract:'conversation_v1',turn:{thread_id:'thread',turn_id:'turn',items:[{item_id:'item',text:'unsafe legacy fallback',output}]}});
+    expect(liveReplyTurns(run({kind:'native-poll',reply,atMs:1}))[0]).toMatchObject({text:'Output unavailable',output:{kind:'unavailable'}});
+  }
+});
+
+it('shows a malformed present native envelope as unavailable while retaining the accepted revision fence',()=>{
+  const observe=(output:unknown):LiveReplyObservation=>({kind:'native-poll',atMs:1,reply:{contract:'conversation_v1',turn:{thread_id:'thread',turn_id:'turn',items:[{item_id:'item',text:'must not fallback',output}]}}});
+  const output=(revision:string)=>({revision,segment:{channel:'message',ordinal:'0'},content:{version:1,blocks:[{type:'text',text:'accepted typed',fields:{}}]}});
+  const held=run(observe(output('12')),observe(null));
+  expect(liveReplyTurns(held)[0]).toMatchObject({text:'Output unavailable'});
+  expect(liveReplyTurns(reconcileLiveReplies(held,observe(output('11'))))[0]).toMatchObject({text:'Output unavailable'});
+  expect(liveReplyTurns(reconcileLiveReplies(held,observe(output('13'))))[0]).toMatchObject({text:'accepted typed'});
 });

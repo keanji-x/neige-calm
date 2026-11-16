@@ -5,8 +5,9 @@
 // is stored, so the copy can retire a moment before that row arrives.
 
 import { z } from 'zod';
+import { decodeOutput, outputRecord, outputText, decimalU64 } from './conversation-output.js';
 
-import type { ConversationLiveReplies, HarnessLiveReplies, HarnessPhaseTag } from '../api/generated/wire.js';
+import type { ConversationLiveReplies, ConversationLiveTurn, ConversationLiveItem, HarnessLiveReplies, HarnessPhaseTag } from '../api/generated/wire.js';
 import type { ApiOperation } from '../api/types.js';
 import type { ConversationTurn } from './conversation.js';
 
@@ -31,23 +32,38 @@ export function harnessLiveOperation(cardId: string): ApiOperation<HarnessLiveRe
   };
 }
 
-const conversationLiveSchema:z.ZodType<ConversationLiveReplies>=z.object({
+// Keep generated identity fields; output remains unknown until item-local decoding, so a bad item cannot clear history.
+type NativeLiveItem = Omit<ConversationLiveItem,'output'> & Readonly<{output?:unknown}>;
+export type NativeLiveReplies = Omit<ConversationLiveReplies,'turn'> & Readonly<{
+  turn:(Omit<ConversationLiveTurn,'items'> & Readonly<{items:readonly NativeLiveItem[]}>)|null;
+}>;
+const conversationLiveSchema:z.ZodType<NativeLiveReplies>=z.object({
   contract:z.literal('conversation_v1'),turn:z.object({thread_id:z.string().min(1),turn_id:z.string().min(1),
-    items:z.array(z.object({item_id:z.string(),text:z.string()}))}).strict().nullable(),
+    items:z.array(z.object({item_id:z.string(),text:z.string(),output:z.unknown().optional()}))}).strict().nullable(),
 }).strict();
-export function conversationLiveOperation(cardId:string):ApiOperation<ConversationLiveReplies> {
+export function conversationLiveOperation(cardId:string):ApiOperation<NativeLiveReplies> {
   return {method:'GET',path:`/api/cards/${encodeURIComponent(cardId)}/harness/live?contract=conversation_v1`,responseSchema:conversationLiveSchema};
 }
 
 /** A transcript row, as far as retiring a copy reads it. */
 export type LiveReplyTranscriptRow = Readonly<{ method: string; item_uuid: string | null; thread_id?:string; turn_id?:string|null }>;
 
+/** Visit-local retirement facts use canonical native identity; no row timestamp or guessed turn. */
+export function nativeReplyKey(threadId:string,itemId:string):string { return JSON.stringify([threadId,itemId]); }
+export function nativeReplyRetirements(items:readonly LiveReplyTranscriptRow[],removed:readonly Readonly<{thread_id:string;item_id:string}>[]):readonly string[] {
+  return [...items.flatMap(item=>item.method==='item/completed' && item.thread_id !== undefined && item.item_uuid !== null
+    ? [nativeReplyKey(item.thread_id,item.item_uuid)]:[]),...removed.map(item=>nativeReplyKey(item.thread_id,item.item_id))];
+}
+
 /** The client's copy of one streamed reply, item `itemId` of turn `turnId`. */
 export type LiveReplyCopy = Readonly<{
+  output?: unknown;
+  /** Highest admitted typed revision survives an unavailable malformed snapshot. */
+  revision?:string;
   turnId: string;
   nativeThreadId:string|null;
   itemId: string;
-  /** The longest text any poll has reported; always a prefix of the stored text. */
+  /** Legacy text grows by length; present typed output has exclusive display authority. */
   text: string;
   /** When the client first saw it; nothing has stored a time for it yet. */
   atMs: number;
@@ -67,7 +83,7 @@ export type LiveReplyCopy = Readonly<{
  */
 export type LiveReplyObservation =
   | Readonly<{ kind: 'poll'; reply: HarnessLiveReplies; atMs: number; activeTurnId: string | null }>
-  | Readonly<{ kind:'native-poll';reply:ConversationLiveReplies;atMs:number }>
+  | Readonly<{ kind:'native-poll';reply:NativeLiveReplies;atMs:number }>
   | Readonly<{ kind: 'active-turn'; turnId: string }>
   | Readonly<{ kind: 'phase'; phase: HarnessPhaseTag; latestReadStart: number }>
   | Readonly<{ kind: 'transcript'; items: readonly LiveReplyTranscriptRow[]; readStart: number }>;
@@ -88,7 +104,18 @@ export function reconcileLiveReplies(
       const turn=observation.reply.turn;
       if(turn === null)return copies;
       const current=copies.filter(copy=>copy.nativeThreadId === turn.thread_id && copy.turnId === turn.turn_id);
-      return withPoll(current.length === copies.length ? copies:current,{turn_id:turn.turn_id,items:turn.items},observation.atMs,null,turn.thread_id);
+      const next=[...current];
+      for(const item of turn.items){
+        const index=next.findIndex(copy=>copy.itemId === item.item_id),held=next[index];
+        if(Object.hasOwn(item,'output')){
+          const revision=outputRecord(item.output)?.revision,old=held?.revision;
+          if(decimalU64(old) && decimalU64(revision) && BigInt(revision)<=BigInt(old))continue;
+          next[index<0 ? next.length:index]={turnId:turn.turn_id,nativeThreadId:turn.thread_id,itemId:item.item_id,text:item.text,output:item.output,revision:decimalU64(revision) ? revision:held?.revision,atMs:held?.atMs ?? observation.atMs,settledAt:held?.settledAt ?? null};
+        }else if(held === undefined || (!Object.hasOwn(held,'output') && item.text.length>held.text.length)){
+          next[index<0 ? next.length:index]={turnId:turn.turn_id,nativeThreadId:turn.thread_id,itemId:item.item_id,text:item.text,atMs:held?.atMs ?? observation.atMs,settledAt:held?.settledAt ?? null};
+        }
+      }
+      return next;
     }
     case 'active-turn': return copiesForTurn(copies, observation.turnId);
     case 'phase': {
@@ -151,6 +178,15 @@ function storedItemIds(items: readonly LiveReplyTranscriptRow[]): ReadonlySet<st
 /** The copies the transcript does not yet stand for, as the agent turns they will become. */
 export function liveReplyTurns(copies: readonly LiveReplyCopy[]): readonly ConversationTurn[] {
   return copies.flatMap((copy) => {
+    if(Object.hasOwn(copy,'output')){
+      const envelope=outputRecord(copy.output),segment=outputRecord(envelope?.segment);
+      const identity=`live:${JSON.stringify([copy.nativeThreadId,copy.turnId,copy.itemId,decimalU64(envelope?.revision) ? envelope.revision : 'invalid'])}`;
+      const valid=envelope!==null && decimalU64(envelope.revision) && segment!==null && decimalU64(segment.ordinal)
+        && (segment.channel==='message' || segment.channel==='thought');
+      const output=valid ? decodeOutput(envelope.content,identity):{kind:'unavailable' as const,identity};
+      return [{id:identity,author:'agent' as const,text:outputText(output),output,atMs:copy.atMs,
+        nativeOutput:{threadId:copy.nativeThreadId!,turnId:copy.turnId,itemId:copy.itemId,completed:false}}];
+    }
     /* Trimmed as the stored reply is, so the text does not move when the row replaces it. */
     const text = copy.text.trim();
     return text === '' ? [] : [{ id: copy.nativeThreadId === null ? `live-${copy.turnId}-${copy.itemId}` : `live-native:${encodeURIComponent(JSON.stringify([copy.nativeThreadId,copy.turnId,copy.itemId]))}`, author: 'agent' as const, text, atMs: copy.atMs }];

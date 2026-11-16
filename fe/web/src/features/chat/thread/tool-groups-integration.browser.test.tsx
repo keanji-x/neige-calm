@@ -83,3 +83,30 @@ describe('tool groups alongside quiet syncs and turn outcomes', () => {
       .toBeNull();
   });
 });
+
+it.each(['reasoning','mcpToolCall'])('renders ordered typed text, resource links and a raster inside the existing %s disclosure',async type=>{
+  const {buildTranscript}=await import('../../../../../core/domain/conversation.ts');
+  const {OUTPUT_RASTERS}=await import('./output-raster-fixtures.ts');
+  const {waitFor}=await import('@testing-library/react');
+  const raster=OUTPUT_RASTERS[0];
+  const blocks=[{type:'text',text:'Typed disclosure head',fields:{}},{type:'image',mimeType:raster.mime,data:raster.data,fields:{}},
+    {type:'resource_link',name:'Explicit external resource',uri:'https://example.com/resource',fields:{}},{type:'text',text:'Typed disclosure tail',fields:{}}];
+  const row=(id:number,method:string,content:unknown)=>({id,item_uuid:'typed',item_type:type,method,worker_session_id:'s',card_id:'integration',track_id:'w1',thread_id:'thread',turn_id:'turn',created_at_ms:id,turn_error_text:null,
+    params:JSON.stringify({item:{tool:'fixture-tool',...(content===undefined ? {}:{outputContent:content}),...(type==='reasoning' ? {outputSegment:{channel:'thought',ordinal:0}}:{})}})});
+  const started=row(1,'item/started',{version:1,blocks});
+  const props={hasPendingMessages:false,canContinue:false,cards:{},stalled:false,conversation,pending:true};
+  const view=render(<ChatThread {...props} turns={buildTranscript([started])} />);
+  fireEvent.click(screen.getByRole('button',{name:type==='reasoning' ? /Thinking/:/Calling/}));
+  await screen.findByText('Typed disclosure head');
+  const image=await screen.findByRole('img',{name:'Output image'});
+  await waitFor(()=>expect((image as HTMLImageElement).naturalWidth).toBe(20));
+  expect(screen.getByRole('link',{name:'Explicit external resource'}).getAttribute('href')).toBe('https://example.com/resource');
+  expect(image.compareDocumentPosition(screen.getByText('Typed disclosure tail')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  if(type==='mcpToolCall'){
+    const url=image.getAttribute('src');
+    view.rerender(<ChatThread {...props} turns={buildTranscript([started,row(2,'item/completed',undefined)])} />);
+    expect(screen.getByRole('img').getAttribute('src')).toBe(url);
+    view.rerender(<ChatThread {...props} turns={buildTranscript([started,row(3,'item/completed',{version:1,blocks:[]})])} />);
+    await waitFor(()=>expect(screen.queryByRole('img')).toBeNull());
+  }
+});

@@ -6,8 +6,8 @@ import type { HarnessLiveReplies, HarnessPhaseTag } from '../../../../core/api/g
 import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import type { ConversationTurn } from '../../../../core/domain/conversation.ts';
 import {
-  LIVE_REPLY_POLL_MS, awaitsSettling, liveReplyTurns, reconcileLiveReplies, replyMayStream,
-  type LiveReplyCopy, type LiveReplyObservation, type LiveReplyTranscriptRow,
+  LIVE_REPLY_POLL_MS, awaitsSettling, liveReplyTurns, reconcileLiveReplies, replyMayStream, nativeReplyKey, nativeReplyRetirements,
+  type LiveReplyCopy, type LiveReplyObservation, type LiveReplyTranscriptRow, type NativeLiveReplies,
 } from '../../../../core/domain/conversation-live.ts';
 import { cancelThenInvalidate } from '../events/query-refresh.ts';
 import { harnessLiveQueryOptions } from '../providers/queries.ts';
@@ -16,7 +16,7 @@ import { useState } from '../../ui/state/public.ts';
 
 const NO_COPIES: readonly LiveReplyCopy[] = Object.freeze([]);
 
-type HeldCopies = Readonly<{ cardId: string; read: number; copies: readonly LiveReplyCopy[]; lastReply: HarnessLiveReplies | import('../../../../core/api/generated/wire.ts').ConversationLiveReplies | null }>;
+type HeldCopies = Readonly<{ cardId: string; read: number; copies: readonly LiveReplyCopy[]; lastReply: HarnessLiveReplies | NativeLiveReplies | null }>;
 
 /**
  * The open conversation's streamed replies (#1923 S2), as agent turns for the transcript's tail.
@@ -24,7 +24,8 @@ type HeldCopies = Readonly<{ cardId: string; read: number; copies: readonly Live
  * layer's recovery gating applies as it does to every read. The copies are held per card, so a
  * switch never shows one card's text in another.
  */
-export function useLiveReplies({ transport, unauthorized, cardId, enabled, phase, runningTurnId, nextRead, transcriptKey, transcriptReads, items, canonical }: {
+export function useLiveReplies({ transport, unauthorized, cardId, enabled, phase, runningTurnId, nextRead, transcriptKey, transcriptReads, items, canonical, removedNative = [] }: {
+  removedNative?:readonly Readonly<{thread_id:string;item_id:string}>[];
   canonical:boolean;
   transport: ApiTransportPort;
   unauthorized: UnauthorizedChannel;
@@ -57,6 +58,13 @@ export function useLiveReplies({ transport, unauthorized, cardId, enabled, phase
   });
   const [held, setHeld] = useState<HeldCopies>(() => ({ cardId, read: scope.read, copies: NO_COPIES, lastReply: null }));
   const copies = held.cardId === cardId && held.read === scope.read ? held.copies : NO_COPIES;
+  const [retirement,setRetirement]=useState(()=>({cardId,read:scope.read,keys:new Set<string>()}));
+  const retired=useMemo(()=>retirement.cardId===cardId && retirement.read===scope.read ? retirement.keys:new Set<string>(),[retirement,cardId,scope.read]);
+  const positive=nativeReplyRetirements(items,removedNative);
+  if(retired!==retirement.keys || positive.some(key=>!retired.has(key))){
+    setRetirement({cardId,read:scope.read,keys:new Set([...retired,...positive])});
+  }
+
   /* Leaving a card forgets its copies, so returning to it never brings back text from before. */
   useEffect(() => {
     setHeld((current) => current.cardId === cardId && current.read === scope.read
@@ -99,7 +107,7 @@ export function useLiveReplies({ transport, unauthorized, cardId, enabled, phase
   // survives transcript retirement so a completed item is not re-added forever.
   if (reply !== undefined && scope.streaming && (held.cardId !== cardId || held.read !== scope.read || held.lastReply !== reply)) {
     setHeld({ cardId, read: scope.read, lastReply: reply,
-      copies: reconcileLiveReplies(copies, 'contract' in reply ? {kind:'native-poll',reply,atMs:Date.now()}
+      copies: reconcileLiveReplies(copies, 'contract' in reply ? {kind:'native-poll',reply:{...reply,turn:reply.turn === null || (scope.turnId !== null && reply.turn.turn_id !== scope.turnId) ? null:{...reply.turn,items:reply.turn.items.filter(item=>!retired.has(nativeReplyKey(reply.turn!.thread_id,item.item_id))) }},atMs:Date.now()}
         : { kind: 'poll', reply, atMs: Date.now(), activeTurnId: scope.turnId }) });
   }
 
@@ -109,9 +117,9 @@ export function useLiveReplies({ transport, unauthorized, cardId, enabled, phase
     () => {
       const current = canonical || scope.turnId === null ? copies
         : reconcileLiveReplies(copies, { kind: 'active-turn', turnId: scope.turnId });
-      return reconcileLiveReplies(current, { kind: 'transcript', items, readStart: transcriptStart });
+      return reconcileLiveReplies(current.filter(copy=>copy.nativeThreadId===null || !retired.has(nativeReplyKey(copy.nativeThreadId,copy.itemId))), { kind: 'transcript', items, readStart: transcriptStart });
     },
-    [copies, items, transcriptStart, scope.turnId,canonical],
+    [copies, items, transcriptStart, scope.turnId,canonical,retired],
   );
 
   /* Only a read started after this point stands for the phase, however late an earlier one lands.

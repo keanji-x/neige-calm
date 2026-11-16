@@ -5,9 +5,12 @@ import type { ConversationActivity } from '../../../../../core/domain/conversati
 import { ToolCallGroup, withDetailOpen, type ToolCallGroupUi } from './activity-groups.tsx';
 import type { ThreadReadingView } from './reading-view.tsx';
 import styles from './activity-groups.module.css';
+import { Reply } from './reply.tsx';
+import type { OutputMediaOwner } from './output-media.tsx';
 
 /** Single quiet-sync activities keep their existing inline rendering, without a fresh array prop. */
-export const ActivityRun = memo(function ActivityRun({ activities, entry, ui, updateGroup, live, showMotion }: {
+export const ActivityRun = memo(function ActivityRun({ activities, entry, ui, updateGroup, live, showMotion, mediaOwner }: {
+  mediaOwner?:OutputMediaOwner;
   activities: readonly ConversationActivity[] | ConversationActivity;
   entry: string;
   ui: ToolCallGroupUi;
@@ -15,7 +18,7 @@ export const ActivityRun = memo(function ActivityRun({ activities, entry, ui, up
   live: boolean;
   showMotion: boolean;
 }) {
-  const calls = useMemo(() => 'author' in activities ? [toolCallOf(activities, live)] : activities.map(activity => toolCallOf(activity, live)), [activities, live]);
+  const calls = useMemo(() => 'author' in activities ? [toolCallOf(activities, live, mediaOwner)] : activities.map(activity => toolCallOf(activity, live, mediaOwner)), [activities, live, mediaOwner]);
   const onExpandedChange = useCallback((expanded: boolean) => {
     updateGroup(entry, previous => previous.expanded === expanded ? previous : { ...previous, expanded });
   }, [entry, updateGroup]);
@@ -38,7 +41,7 @@ function formatActivityDuration(durationMs: number): string {
 }
 
 /** Feature-owned vendor conversion; the detail marker is also the existing replay/focus contract. */
-export function toolCallOf(activity: ConversationActivity, live = true): ChatToolCallItem {
+export function toolCallOf(activity: ConversationActivity, live = true, mediaOwner?:OutputMediaOwner): ChatToolCallItem {
   const duration = activity.durationMs !== null && activity.durationMs >= ACTIVITY_DURATION_FLOOR_MS
     ? formatActivityDuration(activity.durationMs) : undefined;
   const body = [activity.detail, activity.content].filter(Boolean).join('\n\n');
@@ -49,6 +52,6 @@ export function toolCallOf(activity: ConversationActivity, live = true): ChatToo
     status: activity.state === 'done' ? 'complete' : activity.state === 'failed' ? 'error' : 'running',
     duration,
     errorMessage: activity.detail ?? undefined,
-    resultDetail: body === '' ? undefined : <div className={styles.detail} data-nc-detail={activity.id}><Code>{body}</Code></div>,
+    resultDetail: activity.output !== undefined ? <Reply text={activity.content ?? ''} output={activity.output} imageFiles={null} mediaOwner={mediaOwner} /> : body === '' ? undefined : <div className={styles.detail} data-nc-detail={activity.id}><Code>{body}</Code></div>,
   };
 }

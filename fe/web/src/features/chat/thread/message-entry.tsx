@@ -7,11 +7,14 @@ import { useState } from '../../../ui/state/public.ts';
 import { OutgoingMessage } from './outgoing-message.tsx';
 import { Reply, type ReplyImageFiles, type ReplyLinkRenderer } from './reply.tsx';
 import styles from './thread.module.css';
+import type { OutputMediaOwner } from './output-media.tsx';
 
 /** Only the declared visual inputs of one ordinary message. Transcript grouping,
  * navigation and delivery policy remain in their owners; fields capture values
  * rather than assuming a caller preserves a message object's identity. */
 type MessageEntryProps = Readonly<{
+  output?: ConversationTurn['output'];
+  mediaOwner?:OutputMediaOwner;
   id: string;
   mobile: boolean;
   atMs: number;
@@ -32,7 +35,7 @@ type MessageEntryProps = Readonly<{
   renderLink?: ReplyLinkRenderer;
 }>;
 
-export const MessageEntry = memo(function MessageEntry({ id, entryKey, author, human, imported, text, attachments,
+export const MessageEntry = memo(function MessageEntry({ output, mediaOwner, id, entryKey, author, human, imported, text, attachments,
   opens, gapLabel, queued, edited, replacement, imageFiles, renderLink, mobile, atMs, timestampFormatter,
 }: MessageEntryProps) {
   const t = useTranslator();
@@ -93,7 +96,7 @@ export const MessageEntry = memo(function MessageEntry({ id, entryKey, author, h
       ) : (
         <div className={`${styles.reply} ${mobile ? mobileStyles.reply : ''}`} data-nc-turn="agent">
           <>{imported && <p className={styles.queuedNote}>Imported history</p>}</>
-          <Reply text={text} imageFiles={imageFiles} renderLink={renderLink} />
+          <Reply output={output} mediaOwner={mediaOwner} text={text} imageFiles={imageFiles} renderLink={renderLink} />
           {timestampFormatter !== null && <time className={mobileStyles.timestamp} dateTime={new Date(atMs).toISOString()}>{timestampFormatter.format(atMs)}</time>}
         </div>
       )}

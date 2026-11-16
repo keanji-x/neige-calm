@@ -187,6 +187,7 @@ export function useConversationStore(
     transport, unauthorized, cardId, enabled: scope !== null && run.data !== undefined && !executionHeld, phase,
     runningTurnId: run.data?.native_turn_id ?? run.data?.running_turn?.turn_id ?? null, nextRead: registry.nextRead,
     transcriptKey: transcriptQuery.queryKey, transcriptReads, items,
+    removedNative:displayItems.flatMap(({source})=>source.kind==='removed' && source.identity.kind==='native' ? [source.identity]:[]),
   });
   const working = !executionHeld && !stalled && (phase === 'issuing_turn' || phase === 'compacting' || phase === 'turn_running');
   const stop = useConversationStop({

@@ -2,47 +2,21 @@ import { EditorView } from '@codemirror/view';
 import { language } from '@codemirror/language';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
+import { commands, page } from 'vitest/browser';
 
 import '../../../styles/entry.css';
-import type { Conversation, ConversationTurn } from '../../../../../core/domain/conversation.ts';
+import type { Conversation } from '../../../../../core/domain/conversation.ts';
 import { Drawer } from '../../../ui/drawer/public.tsx';
+import { StrictMode } from 'react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { GitHubPreviewProvider } from '../../../systems/github-links/public.tsx';
+import { decodeOutput } from '../../../../../core/domain/conversation-output.ts';
+import { githubPreviewOperation } from '../../../../../core/domain/github-preview.ts';
+import { OUTPUT_ANIMATIONS, OUTPUT_RASTERS } from './output-raster-fixtures.ts';
 import { Reply } from './reply.tsx';
 import { ChatThread } from './public.tsx';
 
-afterEach(cleanup);
-
-it('loads a local screenshot in streamed and stored replies and fits a narrow conversation', async () => {
-  const screenshot = URL.createObjectURL(new Blob([
-    '<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="800">'
-    + '<rect width="1200" height="800" fill="#eef2f6"/>'
-    + '<rect width="1200" height="70" fill="#25344b"/>'
-    + '<text x="60" y="160" font-size="40">Screenshot preview</text></svg>',
-  ], { type: 'image/svg+xml' }));
-  try {
-    const conversation: Conversation = { provider: 'codex' as const, id: 'c1', trackId: 'w1', title: 'Planner', kind: 'codex', state: 'running', updatedAt: 0 };
-    const imageFiles = { root: '/work/track', files: { rawUrl: () => screenshot } };
-    const reply = (id: string, text: string): ConversationTurn => ({ id, author: 'agent', text, atMs: 1 });
-    const props = { conversation, imageFiles, canContinue: false, cards: {}, stalled: false };
-    const { container, rerender } = render(<div style={{ inlineSize: 320 }}>
-      <ChatThread hasPendingMessages={false} {...props} turns={[reply('live', 'Here is the screenshot.')]} />
-    </div>);
-    const text = 'Here is the screenshot.\n\n![Screenshot](/work/track/screenshots/page.svg)';
-    rerender(<div style={{ inlineSize: 320 }}>
-      <ChatThread hasPendingMessages={false} {...props} turns={[reply('live', text)]} />
-    </div>);
-    await waitFor(() => expect(container.querySelector<HTMLImageElement>('img')?.naturalWidth).toBe(1200));
-    const image = screen.getByRole('img', { name: 'Screenshot' });
-    expect(image.getBoundingClientRect().width).toBeGreaterThan(0);
-    expect(image.getBoundingClientRect().width).toBeLessThanOrEqual(320);
-    expect(container.firstElementChild?.scrollWidth).toBeLessThanOrEqual(320);
-    rerender(<div style={{ inlineSize: 320 }}>
-      <ChatThread hasPendingMessages={false} {...props} turns={[reply('stored', text)]} />
-    </div>);
-    await waitFor(() => expect(container.querySelector<HTMLImageElement>('img')?.naturalWidth).toBe(1200));
-  } finally {
-    URL.revokeObjectURL(screenshot);
-  }
-});
+afterEach(async()=>{cleanup();await commands.emulateReducedMotion(false);});
 
 it('shares the code contract with fenced code through the real chat renderer', async () => {
   render(<Reply text={'```rust\nfn main() {}\n```'} imageFiles={null} />);
@@ -146,52 +120,6 @@ it('aligns Markdown tables with surrounding reply prose on both inline edges whi
   expect(Math.abs(lastCellBox.right - paragraphBox.right)).toBeLessThanOrEqual(1);
 });
 
-it('opens a reply image in the Lightbox on click, dismisses only the Lightbox on Escape inside a Drawer, and leaves linked images as links', async () => {
-  const screenshot = URL.createObjectURL(new Blob([
-    '<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="800">'
-    + '<rect width="1200" height="800" fill="#eef2f6"/>'
-    + '<text x="60" y="160" font-size="40">Architecture diagram</text></svg>',
-  ], { type: 'image/svg+xml' }));
-  const onCloseDrawer = vi.fn();
-  try {
-    const imageFiles = { root: '/work/track', files: { rawUrl: () => screenshot } };
-    render(
-      <Drawer open title="Planner" onClose={onCloseDrawer}>
-        <Reply
-          text={'![Architecture diagram](/work/track/diagram.svg)\n\n![](/work/track/unnamed.svg)\n\n[![Linked badge](/work/track/diagram.svg)](https://example.com/docs)'}
-          imageFiles={imageFiles}
-        />
-      </Drawer>,
-    );
-
-    const linked = screen.getByRole('link', { name: 'Linked badge' });
-    expect(linked.getAttribute('href')).toBe('https://example.com/docs');
-    expect(linked.querySelector('button')).toBeNull();
-    expect(document.querySelector('dialog')).toBeNull();
-
-    const unnamedTrigger = screen.getByRole('button', { name: 'Open Thumbnail' });
-    expect(unnamedTrigger.getAttribute('aria-haspopup')).toBe('dialog');
-
-    const trigger = screen.getByRole('button', { name: 'Architecture diagram' });
-    expect(trigger.getAttribute('aria-label')).toBeNull();
-    expect(trigger.getAttribute('role')).toBeNull();
-    expect(trigger.getAttribute('tabindex')).toBeNull();
-    trigger.focus();
-    fireEvent.click(trigger);
-
-    const dialog = await screen.findByRole('dialog', { name: 'Architecture diagram' });
-    expect(within(dialog).getByRole('img', { name: 'Architecture diagram' }).getAttribute('src')).toBe(screenshot);
-    expect(within(dialog).getByRole('button', { name: 'Zoom' }).getAttribute('aria-pressed')).toBe('false');
-
-    fireEvent.keyDown(document, { key: 'Escape', bubbles: true, cancelable: true });
-    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Architecture diagram' })).toBeNull());
-    expect(onCloseDrawer).not.toHaveBeenCalled();
-    expect(document.activeElement).toBe(trigger);
-  } finally {
-    URL.revokeObjectURL(screenshot);
-  }
-});
-
 it('opens user message attachments in the Lightbox gallery, preserves unclipped button focus geometry, and navigates across images', async () => {
   const firstUrl = URL.createObjectURL(new Blob([
     '<svg xmlns="http://www.w3.org/2000/svg" width="800" height="600"><rect width="800" height="600" fill="#dbeafe"/></svg>',
@@ -250,4 +178,132 @@ it('opens user message attachments in the Lightbox gallery, preserves unclipped 
     URL.revokeObjectURL(firstUrl);
     URL.revokeObjectURL(secondUrl);
   }
+});
+
+
+it.each(OUTPUT_RASTERS)('decodes a bounded static $mime blob and opens Lightbox in a narrow reply',async raster=>{
+  await commands.emulateReducedMotion(raster.mime==='image/webp');
+  const output=decodeOutput({version:1,blocks:[{type:'text',text:'before',fields:{}},{type:'image',data:raster.data,mimeType:raster.mime,fields:{name:raster.mime}},{type:'text',text:'after',fields:{}}]},raster.mime);
+  const close=vi.fn();
+  const view=render(<Drawer open title="Planner" onClose={close}><div style={{inlineSize:280}}><Reply text="" output={output} imageFiles={null} /></div></Drawer>);
+  const image=await screen.findByRole('img',{name:raster.mime});
+  await waitFor(()=>expect((image as HTMLImageElement).naturalWidth).toBe(20));
+  expect(image.getBoundingClientRect().width).toBeGreaterThan(0);
+  expect(image.getBoundingClientRect().width).toBeLessThanOrEqual(280);
+  const trigger=screen.getByRole('button',{name:raster.mime});trigger.focus();fireEvent.click(trigger);
+  const dialog=await screen.findByRole('dialog',{name:raster.mime});
+  expect(within(dialog).getByRole('img').getAttribute('src')).toMatch(/^blob:/);
+  fireEvent.keyDown(document,{key:'Escape',bubbles:true,cancelable:true});
+  await waitFor(()=>expect(screen.queryByRole('dialog',{name:raster.mime})).toBeNull());
+  expect(document.activeElement).toBe(trigger);expect(close).not.toHaveBeenCalled();
+  view.unmount();
+});
+
+it('revokes every output URL across replacement, empty blocks, card switch and StrictMode unmount',async()=>{
+  const create=vi.spyOn(URL,'createObjectURL'),revoke=vi.spyOn(URL,'revokeObjectURL');
+  const raster=OUTPUT_RASTERS[0];
+  const output=(id:string)=>decodeOutput({version:1,blocks:[{type:'image',mimeType:raster.mime,data:raster.data,fields:{}}]},id);
+  const conversation:Conversation={provider:'codex',id:'one',trackId:'track',title:null,kind:'codex',state:'running',updatedAt:0};
+  const paint=(id:string,card=conversation,empty=false)=><StrictMode><ChatThread hasPendingMessages={false} canContinue={false} stalled={false} cards={{}} conversation={card} turns={[{id:'row',author:'agent',text:'',atMs:0,output:empty ? decodeOutput({version:1,blocks:[]},id):output(id)}]} /></StrictMode>;
+  try{
+    const view=render(paint('r1'));await screen.findByRole('img',{name:'Output image'});
+    fireEvent.click(screen.getByRole('button',{name:'Output image'}));await screen.findByRole('dialog');
+    view.rerender(paint('r2'));await waitFor(()=>expect(screen.queryByRole('dialog')).toBeNull());
+    await screen.findByRole('img',{name:'Output image'});
+    view.rerender(paint('r3',conversation,true));await waitFor(()=>expect(screen.queryByRole('img')).toBeNull());
+    view.rerender(paint('r4'));await screen.findByRole('img',{name:'Output image'});
+    view.rerender(paint('r5',{...conversation,id:'two'}));await screen.findByRole('img',{name:'Output image'});
+    view.unmount();
+    expect(create.mock.results.length).toBeGreaterThan(3);
+    expect(new Set(revoke.mock.calls.map(([url])=>url))).toEqual(new Set(create.mock.results.map(result=>String(result.value))));
+  }finally{create.mockRestore();revoke.mockRestore();}
+});
+
+it('shares one conversation pixel lease and lets a deferred image switch and release',async()=>{
+  const raster=OUTPUT_RASTERS[0],output=decodeOutput({version:1,blocks:[0,1].map(()=>({type:'image',mimeType:raster.mime,data:raster.data,fields:{}}))},'lease');
+  const conversation:Conversation={provider:'codex',id:'lease',trackId:'track',title:null,kind:'codex',state:'idle',updatedAt:0};
+  render(<ChatThread hasPendingMessages={false} canContinue={false} stalled={false} cards={{}} conversation={conversation} turns={[{id:'row',author:'agent',text:'',atMs:0,output}]} />);
+  await screen.findByRole('img');expect(screen.getAllByRole('img')).toHaveLength(1);
+  const first=screen.getByRole('img').getAttribute('src');fireEvent.click(screen.getByRole('button',{name:'Load image · deferred'}));
+  await waitFor(()=>expect(screen.getByRole('img').getAttribute('src')).not.toBe(first));
+  expect(screen.getAllByRole('img')).toHaveLength(1);
+  fireEvent.click(screen.getByRole('button',{name:'Release image'}));
+  await waitFor(()=>expect(screen.getAllByRole('img')).toHaveLength(1));
+});
+
+it('makes zero implicit image or GitHub preview requests for legacy and malformed typed output',async()=>{
+  await page.viewport(1280,800);
+  expect(matchMedia('(hover: hover) and (pointer: fine)').matches).toBe(true);
+  const probe='/acp-output-network-probe.png';
+  performance.clearResourceTimings();
+  const rawUrl=vi.fn(()=>probe),read=vi.fn(async(target:Parameters<typeof githubPreviewOperation>[0])=>{await fetch(githubPreviewOperation(target).path);throw new Error('unexpected preview');});
+  const client=new QueryClient({defaultOptions:{queries:{retry:false}}});
+  const markdown=`![local](${probe}) ![remote](https://attack.invalid/output.png) ![data](data:image/png;base64,AAAA) ![blob](blob:https://attack.invalid/id) [Issue](https://github.com/keanji-x/neige-calm/issues/3699)`;
+  const paint=(output?:ReturnType<typeof decodeOutput>)=><QueryClientProvider client={client}><GitHubPreviewProvider port={{read}}><Reply text={markdown} output={output} imageFiles={{root:'/',files:{rawUrl}}} /></GitHubPreviewProvider></QueryClientProvider>;
+  const view=render(paint());
+  const issue=screen.getByRole('link',{name:'Issue'});issue.focus();await page.getByRole('link',{name:'Issue'}).hover();
+  await new Promise(resolve=>setTimeout(resolve,800));
+  expect(performance.getEntriesByType('resource').filter(entry=>entry.name.includes('acp-output-network-probe') || entry.name.includes('attack.invalid') || entry.name.includes('/api/github/preview'))).toEqual([]);
+  expect(read).not.toHaveBeenCalled();expect(rawUrl).not.toHaveBeenCalled();expect(screen.queryByRole('img')).toBeNull();
+  for(const value of [null,{version:2,blocks:[]},{version:1,blocks:[{type:'image'}]}]){view.rerender(paint(decodeOutput(value,'bad')));expect(screen.getByText('Output unavailable')).toBeTruthy();}
+  expect(performance.getEntriesByType('resource').filter(entry=>entry.name.includes('acp-output-network-probe') || entry.name.includes('attack.invalid') || entry.name.includes('/api/github/preview'))).toEqual([]);
+  view.unmount();client.clear();
+});
+
+it('does not revive an old asynchronous decode after replacement or erase',async()=>{
+  let release:()=>void=()=>undefined;
+  const pending=new Promise<void>(resolve=>{release=resolve;});
+  const decode=vi.spyOn(HTMLImageElement.prototype,'decode').mockImplementationOnce(()=>pending);
+  const raster=OUTPUT_RASTERS[0];
+  const output=(id:string,blocks:unknown[])=>decodeOutput({version:1,blocks},id);
+  const image={type:'image',mimeType:raster.mime,data:raster.data,fields:{}};
+  try{
+    const view=render(<Reply text="" imageFiles={null} output={output('old',[image])} />);
+    await waitFor(()=>expect(decode).toHaveBeenCalledTimes(1));
+    decode.mockRestore();
+    view.rerender(<Reply text="" imageFiles={null} output={output('new',[image])} />);
+    await screen.findByRole('img');const current=screen.getByRole('img').getAttribute('src');
+    release();await new Promise(resolve=>setTimeout(resolve,20));
+    expect(screen.getByRole('img').getAttribute('src')).toBe(current);
+    view.rerender(<Reply text="" imageFiles={null} output={output('erase',[])} />);
+    await waitFor(()=>expect(screen.queryByRole('img')).toBeNull());
+  }finally{release();decode.mockRestore();}
+});
+
+it('rejects unsafe raster headers, animation, MIME mismatch and truncated bytes before browser decode',async()=>{
+  const decode=vi.spyOn(HTMLImageElement.prototype,'decode');
+  const png=Uint8Array.from(atob(OUTPUT_RASTERS[0].data),c=>c.charCodeAt(0));
+  const huge=png.slice();new DataView(huge.buffer).setUint32(16,4097);
+  const area=png.slice();new DataView(area.buffer).setUint32(16,4001);new DataView(area.buffer).setUint32(20,4000);
+  const encode=(bytes:Uint8Array)=>btoa(String.fromCharCode(...bytes));
+  const animated=new Uint8Array(png.length+20);animated.set(png.subarray(0,33));
+  new DataView(animated.buffer).setUint32(33,8);animated.set([97,99,84,76],37);animated.set(png.subarray(33),53);
+  const cases=[...OUTPUT_ANIMATIONS,{data:encode(area),mimeType:'image/png'},{data:encode(huge),mimeType:'image/png'},{data:encode(animated),mimeType:'image/png'},
+    {data:OUTPUT_RASTERS[0].data,mimeType:'image/jpeg'},{data:encode(png.subarray(0,30)),mimeType:'image/png'},
+    {data:'AB==',mimeType:'image/png'},{data:'PHN2Zy8+',mimeType:'image/svg+xml'}];
+  try{
+    const view=render(<Reply text="" imageFiles={null} output={decodeOutput({version:1,blocks:[]},'empty')} />);
+    for(const [index,value] of cases.entries()){
+      view.rerender(<Reply text="" imageFiles={null} output={decodeOutput({version:1,blocks:[{type:'image',...value,fields:{}}]},String(index))} />);
+      await screen.findByText(/Unsupported image/);expect(screen.queryByRole('img')).toBeNull();
+    }
+    expect(decode).not.toHaveBeenCalled();
+  }finally{decode.mockRestore();}
+});
+
+it('keeps its own in-flight decode when the loading image is clicked again',async()=>{
+  const candidate:unknown=Object.getOwnPropertyDescriptor(HTMLImageElement.prototype,'decode')?.value;
+  if(typeof candidate!=='function')throw new Error('Browser image decode is required');
+  const nativeDecode=candidate as (this:HTMLImageElement)=>Promise<void>;
+  let release:()=>void=()=>undefined;
+  const gate=new Promise<void>(resolve=>{release=resolve;});
+  const decode=vi.spyOn(HTMLImageElement.prototype,'decode').mockImplementation(function(this:HTMLImageElement){return gate.then(()=>nativeDecode.call(this));});
+  const raster=OUTPUT_RASTERS[0];
+  try{
+    render(<Reply text="" imageFiles={null} output={decodeOutput({version:1,blocks:[{type:'image',mimeType:raster.mime,data:raster.data,fields:{}}]},'self-selection')} />);
+    await waitFor(()=>expect(decode).toHaveBeenCalledTimes(1));
+    fireEvent.click(screen.getByRole('button',{name:'Load image · deferred'}));
+    release();
+    await screen.findByRole('img',{name:'Output image'});
+  }finally{release();decode.mockRestore();}
 });

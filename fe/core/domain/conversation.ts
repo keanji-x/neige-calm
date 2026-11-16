@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { persistedOutput, outputText, type OutputProjection } from './conversation-output.js';
 import { activityContent } from './conversation-activity-content.js';
 import { runRecoverySchema, type RunRecovery } from './conversation-restart.js';
 import { agentProviderSchema } from '../api/schemas.js';
@@ -110,6 +111,8 @@ export function byRecency(left: Conversation, right: Conversation): number {
 export type TurnAuthor = 'you' | 'agent' | 'human' | 'unknown';
 
 export type ConversationTurn = Readonly<{
+  output?: OutputProjection;
+  nativeOutput?: Readonly<{threadId:string;turnId:string|null;itemId:string;completed:boolean}>;
   id: string;
   author: TurnAuthor;
   /** Present only for actual canonical Human identity; native user echoes have none. */
@@ -1004,7 +1007,7 @@ export function inputSegmentText(segment: HarnessInputSegment): string {
 export function harnessItemToTurns(item: HarnessItem): readonly ConversationMessage[] {
   const ask = userAskToTurn(item);
   if (ask !== null) return [ask];
-  if (item.method !== 'item/completed' ||
+  if ((item.method !== 'item/completed' && !(item.method === 'item/started' && isAgentMessage(item.item_type))) ||
       (!isAgentMessage(item.item_type) && !isUserMessage(item.item_type))) return [];
 
   if (isUserMessage(item.item_type) && item.input_segments !== undefined) {
@@ -1049,7 +1052,11 @@ export function harnessItemToTurns(item: HarnessItem): readonly ConversationMess
   if (typeof parsed !== 'object' || parsed === null) return [];
   const envelope = parsed as { completedAtMs?: unknown; item?: unknown };
   if (typeof envelope.item !== 'object' || envelope.item === null) return [];
-  const payload = envelope.item as { text?: unknown; content?: unknown };
+  const payload = envelope.item as Record<string,unknown>;
+  const output = isAgentMessage(item.item_type) ? persistedOutput(payload, `row:${item.id}`,true) : undefined;
+  if(item.method === 'item/started' && output === undefined)return [];
+  if(output !== undefined)return [{id:`output:${JSON.stringify([item.thread_id,item.turn_id,item.item_uuid ?? item.id])}`,author:'agent',text:outputText(output),output,
+    nativeOutput:{threadId:item.thread_id,turnId:item.turn_id,itemId:item.item_uuid ?? String(item.id),completed:item.method === 'item/completed'},atMs:item.created_at_ms}];
   let text = isAgentMessage(item.item_type)
     ? (typeof payload.text === 'string' ? payload.text : '')
     : (Array.isArray(payload.content) ? payload.content.map((part: unknown) => (
@@ -1083,6 +1090,8 @@ export function isPlannerTurnContext(entry: TranscriptEntry): entry is Conversat
 export type ActivityState = 'running' | 'done' | 'failed';
 
 export type ConversationActivity = Readonly<{
+  output?: OutputProjection;
+  nativeOutput?: Readonly<{threadId:string;turnId:string|null;itemId:string;completed:boolean}>;
   id: string;
   /** Discriminates against `ConversationTurn` inside one sorted transcript. */
   author: 'activity';
@@ -1310,6 +1319,7 @@ export function harnessItemToActivity(item: HarnessItem): ConversationActivity |
       ? payload.durationMs : null,
     detail: failed ? failureDetail(payload) : null,
     ...activityContent(item.item_type, payload),
+    ...(Object.hasOwn(payload,'outputContent') ? (() => { const output=persistedOutput(payload,`row:${item.id}`,item.item_type === 'reasoning'); return {output,content:output === undefined ? undefined : outputText(output),nativeOutput:{threadId:item.thread_id,turnId:item.turn_id,itemId:item.item_uuid ?? String(item.id),completed:done}}; })() : {}),
     tool: item.item_type === 'mcpToolCall' && typeof payload.tool === 'string' ? payload.tool : null,
     atMs: typeof envelope.completedAtMs === 'number' && Number.isFinite(envelope.completedAtMs)
       ? envelope.completedAtMs : item.created_at_ms,
@@ -1424,7 +1434,9 @@ export function buildTranscript(items: readonly HarnessItem[]): readonly Transcr
         /* An ask bubble takes the key of the activity line its own `item/started` row minted, so
            the bubble replaces the line in place. */
         const key = turn.author === 'agent' && turn.origin === 'ask'
-          ? `activity-${item.item_uuid ?? item.id}` : `turn-${turn.id}`;
+          ? `activity-source:${JSON.stringify([item.thread_id,item.turn_id,item.item_uuid ?? item.id])}` : turn.author === 'agent' && turn.nativeOutput !== undefined ? `output:${JSON.stringify([item.thread_id,item.turn_id,item.item_uuid ?? item.id])}` : `turn-${turn.id}`;
+        const previous=byKey.get(key);
+        if(turn.author === 'agent' && turn.nativeOutput?.completed === false && previous?.author === 'agent' && previous.nativeOutput?.completed === true)continue;
         if (!byKey.has(key)) { order.push(key); turnOf.set(key, item.turn_id); }
         byKey.set(key, turn);
       }
@@ -1433,9 +1445,11 @@ export function buildTranscript(items: readonly HarnessItem[]): readonly Transcr
     const activity = harnessItemToActivity(item);
     if (activity === null) continue;
     // Pair on the wire's own item id when it has one; a row without one is its own line.
-    const key = `activity-${item.item_uuid ?? item.id}`;
+    const key=`activity-source:${JSON.stringify([item.thread_id,item.turn_id,item.item_uuid ?? item.id])}`;
     if (!byKey.has(key)) { order.push(key); turnOf.set(key, item.turn_id); }
-    byKey.set(key, { ...activity, id: key });
+    const previous=byKey.get(key);
+    if(previous?.author === 'activity' && previous.nativeOutput?.completed === true && item.method === 'item/started')continue;
+    byKey.set(key, { ...activity, ...(activity.output === undefined && previous?.author === 'activity' && previous.output !== undefined ? {output:previous.output,content:previous.content,nativeOutput:previous.nativeOutput === undefined ? undefined : {...previous.nativeOutput,completed:item.method === 'item/completed'}}:{}), id: activity.output !== undefined || (previous?.author === 'activity' && previous.output !== undefined) ? key : `activity-${item.item_uuid ?? item.id}` });
   }
 
   const entries = placeTurnOutcomes(order, turnOf, (key) => byKey.get(key)?.author === 'turn').flatMap((key) => {
@@ -1480,7 +1494,7 @@ function placeTurnOutcomes(
  */
 export function retireFollowedThoughts(entries: readonly TranscriptEntry[]): readonly TranscriptEntry[] {
   return entries.filter((entry, index) => {
-    if (entry.author !== 'activity' || entry.verb !== 'Thought' || entry.content !== undefined) return true;
+    if (entry.author !== 'activity' || entry.verb !== 'Thought' || entry.content !== undefined || entry.output !== undefined) return true;
     return !entries.slice(index + 1).some((later) => later.author !== 'turn');
   });
 }

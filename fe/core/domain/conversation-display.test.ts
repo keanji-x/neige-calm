@@ -254,3 +254,15 @@ it('adapts only a required typed current terminal fact, without inventing a disp
   expect(schema.safeParse({...run,terminal_outcome:{...fact,card_id:'other-card'}}).success).toBe(false);
   expect(schema.safeParse({...run,native_turn_id:'other-turn'}).success).toBe(false);
 });
+
+it('keeps native typed media-only and invalid envelopes visible without legacy substitution', () => {
+  const make = (outputContent: unknown): ConversationDisplayItem => ({cursor:cursor(1),source:{kind:'native',item:{
+    id:1,worker_session_id:'s',card_id:'card',track_id:'track',thread_id:'thread',turn_id:'turn',item_uuid:'segment',
+    item_type:'agentMessage',method:'item/completed',created_at_ms:1,turn_error_text:null,
+    params:JSON.stringify({item:{text:'legacy must not win',outputContent,outputSegment:{channel:'message',ordinal:0}}}),
+  }}});
+  const valid=buildConversationTranscript([make({version:1,blocks:[{type:'image',data:'AAAA',mimeType:'image/png',fields:{}}]})],null);
+  expect(valid[0]).toMatchObject({author:'agent',text:''});
+  const invalid=buildConversationTranscript([make(null)],null);
+  expect(invalid[0]).toMatchObject({author:'agent',text:'Output unavailable'});
+});

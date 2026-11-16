@@ -447,3 +447,37 @@ it('shows the current canonical END outside pagination and removes it for the ne
   await screen.findByText('Running',{exact:true});
   expect(screen.queryByText('Interrupted',{exact:true})).toBeNull();
 });
+
+it('consumes native typed live at its Started position and fences older revisions, completion and erase',async()=>{
+  await page.viewport(1280,800);
+  const native=(method:string,text:string):ConversationDisplayItem=>({cursor:cursor(2),source:{kind:'native',item:{id:method==='item/started' ? 10:20,
+    worker_session_id:'original-retained',card_id:'daily-planner',track_id:'daily',thread_id:'typed-thread',turn_id:'typed-turn',item_uuid:'typed-item',item_type:'agentMessage',method,created_at_ms:2,turn_error_text:null,
+    params:JSON.stringify({item:{text:'compatibility must not replace typed',outputContent:{version:1,blocks:[{type:'text',text,fields:{}}]},outputSegment:{channel:'message',ordinal:0}}}),
+  }}});
+  let rows=[human('before','jian','Jian',1,'Before anchor'),human('after','jian','Jian',3,'After anchor')];
+  let revision='9007199254740993',body='Typed live body';
+  const ok=(value:unknown):ApiTransportResponse=>({status:200,statusText:'OK',body:value});
+  const f=renderDailyFixture({identity,initial:'/track/daily?panel=conversations',reply:request=>{
+    if(request.path.includes('/harness/items?contract=conversation_v1'))return ok({contract:'conversation_v1',source:'presentation',items:rows,next_cursor:null});
+    if(request.path.includes('/harness/live?contract=conversation_v1'))return ok({contract:'conversation_v1',turn:{thread_id:'typed-thread',turn_id:'typed-turn',items:[{item_id:'typed-item',text:'compatibility must not replace typed',output:{revision,segment:{channel:'message',ordinal:'0'},content:{version:1,blocks:[{type:'text',text:body,fields:{}}]}}}]}});
+    if(request.path.includes('/planner/run?contract=conversation_v1'))return ok({card_id:'daily-planner',worker_session_id:'original-retained',phase:'turn_running',model:null,reasoning_effort:null,permission_mode:'never',blocked_reason:null,pending:[],pending_overflow:0,recovery:null,manual_compact_supported:false,attachments_supported:false,compact_outcome:null,context_usage_invalidated:false,running_turn:{turn_id:'typed-turn',elapsed_ms:1},token_usage:null,input_contract:'canonical',history_replacement_supported:false,terminal_outcome:null,terminal_timeout:null,runtime_state:'running',pending_inputs:[],active_input:null,native_turn_id:'typed-turn'});
+    return undefined;
+  }});
+  const refresh=async()=>{await f.client.invalidateQueries();};
+  try{
+    await page.getByRole('button',{name:/Conversation Daily Planner conversation/}).click();
+    await screen.findByText('After anchor');
+    await waitFor(()=>expect(f.requests.some(request=>request.path.includes('/harness/live?'))).toBe(true));
+    expect(screen.queryByText('Typed live body')).toBeNull();
+    rows=[rows[0],native('item/started',''),rows[1]];await refresh();
+    const live=await screen.findByText('Typed live body');
+    expect(live.compareDocumentPosition(screen.getByText('After anchor')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    revision='9007199254740994';body='Short';await f.client.invalidateQueries({queryKey:queryKeys.harnessLive('daily-planner')});await screen.findByText('Short');
+    revision='9007199254740993';body='stale body';await f.client.invalidateQueries({queryKey:queryKeys.harnessLive('daily-planner')});expect(screen.queryByText('stale body')).toBeNull();
+    rows=[rows[0],native('item/completed','Durable typed body'),rows[2]];await refresh();await screen.findByText('Durable typed body');
+    revision='9007199254740995';body='late live';await f.client.invalidateQueries({queryKey:queryKeys.harnessLive('daily-planner')});expect(screen.queryByText('late live')).toBeNull();
+    rows=[rows[0],{cursor:cursor(2),source:{kind:'removed',identity:{kind:'native',thread_id:'typed-thread',item_id:'typed-item'}}},rows[2]];await refresh();
+    await waitFor(()=>expect(screen.queryByText('Durable typed body')).toBeNull());
+    await f.client.invalidateQueries({queryKey:queryKeys.harnessLive('daily-planner')});expect(screen.queryByText('late live')).toBeNull();expect(screen.getByText('After anchor')).toBeTruthy();
+  }finally{cleanup();f.client.clear();}
+});

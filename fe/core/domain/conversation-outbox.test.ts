@@ -348,3 +348,16 @@ it('keeps accepted first-input evidence outside ordinary queue placement and sen
   expect(synchronizeQueuedSends(operations, { displayed: [{ entry_id: 'first-entry', text: 'edited first input', rev: 1, queued_at_ms: 2 }], reported: [] })[0]).toBe(initial);
   expect(rememberQueuePlacements(new Map(), operations, []).has('first-entry')).toBe(false);
 });
+
+it('overlays typed live only on its exact unfinished Started anchor, preserving position and thought identity',()=>{
+  const nativeOutput={threadId:'thread',turnId:'turn',itemId:'item',completed:false};
+  const output:NonNullable<ConversationTurn['output']>={kind:'available',identity:'live:r2',content:{version:1,blocks:[{type:'text',text:'live thought',fields:{}}]}};
+  const anchor:TranscriptEntry={id:'anchor',author:'activity',verb:'Thinking',target:null,state:'running',tool:null,detail:null,durationMs:null,atMs:1,nativeOutput};
+  const live:ConversationTurn={id:'live',author:'agent',text:'live thought',atMs:2,output,nativeOutput};
+  const result=view([],[],{serverEntries:[anchor,row('after','after')],liveReplies:[live]});
+  expect(result.transcript).toHaveLength(2);
+  expect(result.transcript[0]).toMatchObject({id:'anchor',author:'activity',content:'live thought',output});
+  expect(view([],[],{liveReplies:[live]}).transcript).toEqual([]);
+  expect(view([],[],{serverEntries:[{...anchor,nativeOutput:{...nativeOutput,completed:true}}],liveReplies:[live]}).transcript[0]).not.toHaveProperty('output');
+  expect(view([],[],{serverEntries:[{...anchor,nativeOutput:{...nativeOutput,threadId:'other'}}],liveReplies:[live]}).transcript[0]).not.toHaveProperty('output');
+});
