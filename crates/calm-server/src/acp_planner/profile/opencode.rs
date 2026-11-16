@@ -1,6 +1,6 @@
 //! OpenCode 2.x ACP contract, tested from 2.1.3. The operator signs in with
 //! `@opencode/cli` outside Neige; ACP authentication is deliberately not invoked.
-use super::{AcpAgentProfile, AgentEntry, AgentIdentity, AgentVersions, ModeLaunch};
+use super::{AcpAgentProfile, AgentEntry, AgentIdentity, AgentVersions, ModeLaunch, NOTHING};
 
 // Native v2.1.3 config schema: packages/schema/src/config.ts and permission.ts.
 // Last match wins (core/src/permission.ts:74-87); global rules precede agent rules
@@ -10,10 +10,6 @@ use super::{AcpAgentProfile, AgentEntry, AgentIdentity, AgentVersions, ModeLaunc
 // can bypass asks. Native `question` is denied because Neige has no form bridge.
 // https://github.com/anomalyco/opencode/blob/v2.1.3/packages/core/src/permission.ts
 // https://github.com/anomalyco/opencode/blob/v2.1.3/packages/core/src/config/plugin/agent.ts
-const NEVER_PERMISSION: (&str, &str) = (
-    "OPENCODE_CONFIG_CONTENT",
-    r#"{"permissions":[{"action":"question","resource":"*","effect":"deny"}]}"#,
-);
 const ASK_PERMISSION: (&str, &str) = (
     "OPENCODE_CONFIG_CONTENT",
     r#"{"permissions":[
@@ -24,32 +20,16 @@ const ASK_PERMISSION: (&str, &str) = (
         {"action":"question","resource":"*","effect":"deny"}
     ]}"#,
 );
-// Native action inventory: core/src/tool/plugin/*.ts and file-access.ts.
-// `edit` owns write and patch; no obsolete bash, doom_loop or plan_* rules.
-// Only this profile needs editing when a new native action needs an override.
-const FULL_PERMISSION: (&str, &str) = (
-    "OPENCODE_CONFIG_CONTENT",
-    r#"{"permissions":[
-        {"action":"shell","resource":"*","effect":"allow"},
-        {"action":"edit","resource":"*","effect":"allow"},
-        {"action":"webfetch","resource":"*","effect":"allow"},
-        {"action":"external_directory","resource":"*","effect":"allow"},
-        {"action":"read","resource":"*","effect":"allow"},
-        {"action":"grep","resource":"*","effect":"allow"},
-        {"action":"glob","resource":"*","effect":"allow"},
-        {"action":"websearch","resource":"*","effect":"allow"},
-        {"action":"subagent","resource":"*","effect":"allow"},
-        {"action":"skill","resource":"*","effect":"allow"},
-        {"action":"todowrite","resource":"*","effect":"allow"},
-        {"action":"opencode_list_mcp_resources","resource":"*","effect":"allow"},
-        {"action":"opencode_read_mcp_resource","resource":"*","effect":"allow"},
-        {"action":"question","resource":"*","effect":"deny"}
-    ]}"#,
-);
+const RESIDENT_LAUNCH: ModeLaunch = ModeLaunch {
+    env: &[ASK_PERMISSION],
+    agent_options: &[],
+};
 
 pub(super) const PROFILE: AcpAgentProfile = AcpAgentProfile {
     context_snapshot: false,
-    shared_server: false,
+    resident: Some(&RESIDENT_LAUNCH),
+    supervise_resident: true,
+    mcp_call_session_key: Some("ai.opencode/sessionID"),
     background_tool_completions: false,
     mcp_tool_name_budget: None,
     usage: provider::acp::usage::UsageSource::SessionUsage,
@@ -69,20 +49,11 @@ pub(super) const PROFILE: AcpAgentProfile = AcpAgentProfile {
         refusal: "OpenCode requires >=2.1.3,<3.0.0; install @opencode/cli (tested floor 2.1.3)",
     }),
     owned_env: &["OPENCODE_CONFIG_CONTENT"],
-    never: ModeLaunch {
-        env: &[NEVER_PERMISSION],
-        agent_options: &[],
-    },
+    never: NOTHING,
     authentication: &[],
-    ask: ModeLaunch {
-        env: &[ASK_PERMISSION],
-        agent_options: &[],
-    },
-    full_requests: provider::acp::approvals::FullPermissionRequests::Native,
-    full: ModeLaunch {
-        env: &[FULL_PERMISSION],
-        agent_options: &[],
-    },
+    ask: NOTHING,
+    full_requests: provider::acp::approvals::FullPermissionRequests::AllowOnce,
+    full: NOTHING,
     mcp_tool_request: None,
     decline_ends_turn: false,
 };
@@ -111,43 +82,23 @@ mod tests {
     }
 
     #[test]
-    fn opencode_modes_compose_native_permission_config() {
-        for mode in [
-            PlannerPermissionMode::Never,
-            PlannerPermissionMode::Ask,
-            PlannerPermissionMode::Full,
-        ] {
-            let [(key, value)] = PROFILE.launch(mode).env else {
-                panic!("one native config");
-            };
-            assert_eq!(*key, "OPENCODE_CONFIG_CONTENT");
-            let config: serde_json::Value = serde_json::from_str(value).unwrap();
-            let rules = config["permissions"].as_array().unwrap();
-            assert!(rules.iter().all(|rule| rule["resource"] == "*"));
-            assert!(rules.iter().any(|rule| rule
-                == &serde_json::json!({"action":"question","resource":"*","effect":"deny"})));
-            assert!(
-                !rules
-                    .iter()
-                    .any(|rule| rule["action"] == "bash" || rule["action"] == "doom_loop")
-            );
-            for action in ["shell", "edit", "webfetch", "external_directory"] {
-                let effect = rules
-                    .iter()
-                    .find(|rule| rule["action"] == action)
-                    .map(|rule| rule["effect"].as_str().unwrap());
-                assert_eq!(
-                    effect,
-                    match mode {
-                        PlannerPermissionMode::Never => None,
-                        PlannerPermissionMode::Ask => Some("ask"),
-                        PlannerPermissionMode::Full => Some("allow"),
-                    },
-                    "{mode:?} {action}"
-                );
-            }
+    fn opencode_resident_requests_approval_for_managed_actions() {
+        let [(key, config)] = PROFILE.resident.expect("resident launch").env else {
+            panic!("one native config");
+        };
+        assert_eq!(*key, "OPENCODE_CONFIG_CONTENT");
+        let config: serde_json::Value = serde_json::from_str(config).unwrap();
+        let rules = config["permissions"].as_array().unwrap();
+        for action in ["shell", "edit", "webfetch", "external_directory"] {
+            assert!(rules.contains(&serde_json::json!({
+                "action": action, "resource": "*", "effect": "ask",
+            })));
         }
+        assert!(rules.contains(&serde_json::json!({
+            "action": "question", "resource": "*", "effect": "deny",
+        })));
     }
+
     #[test]
     fn opencode_profile_fences_supported_release_line_independently_of_operator_minimum() {
         let minimum = semver::Version::new(1, 0, 0);

@@ -293,7 +293,7 @@ async fn canonical_acp_executes_through_body_free_receipt_and_exact_end() {
 }
 #[tokio::test]
 async fn canonical_acp_completed_receipt_cannot_end_before_cleanup_and_join() {
-    let fx = Fixture::new("reply").await;
+    let fx = grok_compact::fixture().await;
     let pause = crate::acp_planner::test_seams::pause_settlement(&fx.owner.worker);
     let report = fx.dispatch().await.unwrap();
     assert!(matches!(
@@ -320,7 +320,7 @@ async fn canonical_acp_cancel_each_issue_handoff_retains_cleanup_and_never_resen
         IssueStage::AfterReceipt,
         IssueStage::DriverInstalled,
     ] {
-        let fx = Arc::new(Fixture::new("reply").await);
+        let fx = Arc::new(grok_compact::fixture().await);
         let pause = pause_issue(&fx.owner.worker, stage);
         let mut dispatch = tokio::spawn({
             let fx = fx.clone();
@@ -427,7 +427,7 @@ async fn canonical_acp_replay_is_receipt_owned_for_completed_sending_and_unknown
 
 #[tokio::test]
 async fn canonical_acp_fake_completed_receipt_does_not_replace_join_and_cleanup() {
-    let fx = Fixture::new("reply").await;
+    let fx = grok_compact::fixture().await;
     let pause = crate::acp_planner::test_seams::pause_after_fence(&fx.owner.worker);
     let report = fx.dispatch().await.unwrap();
     assert!(matches!(
@@ -511,7 +511,7 @@ async fn canonical_acp_source_refusal_before_receipt_has_no_native_effect() {
 async fn canonical_acp_receipt_revalidates_claim_and_final_source_after_commit() {
     use crate::acp_planner::test_seams::{IssueStage, pause_issue};
     for after_receipt in [false, true] {
-        let fx = Arc::new(Fixture::new("reply").await);
+        let fx = Arc::new(grok_compact::fixture().await);
         let pause = pause_issue(
             &fx.owner.worker,
             if after_receipt {
@@ -605,7 +605,7 @@ async fn canonical_acp_receipt_revalidates_claim_and_final_source_after_commit()
 async fn canonical_acp_reopened_receipt_never_resends_lost_report_or_certifies_missing_driver() {
     use crate::acp_planner::test_seams::{IssueStage, pause_issue};
     for lost_report in [false, true] {
-        let fx = Arc::new(Fixture::with_storage("reply", true).await);
+        let fx = Arc::new(Fixture::with_provider(AgentProvider::Grok, "reply", true).await);
         if lost_report {
             let pause = pause_issue(&fx.owner.worker, IssueStage::AfterReceipt);
             let dispatch = tokio::spawn({
@@ -655,7 +655,7 @@ async fn canonical_acp_reopened_receipt_never_resends_lost_report_or_certifies_m
             thread: fx.owner.thread.clone(),
             db_url: fx.owner.db_url.clone(),
         };
-        let (backend, session, _held) = session_for(&owner, &fx.dir);
+        let (backend, session, _held) = session_for_provider(&owner, &fx.dir, fx.provider.clone());
         let before = fx.prompts();
         let report = backend
             .dispatch_input(

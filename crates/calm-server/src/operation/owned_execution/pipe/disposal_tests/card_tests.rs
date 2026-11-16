@@ -333,7 +333,7 @@ async fn w_owned_disposal_records_failed_task_once() {
                                 crate::db::sqlite::task_report_success_from_worker_tx(
                                     &mut tx,
                                     "worker",
-                                    &h.metadata.track.0,
+                                    &h.metadata.scope.track().unwrap().0,
                                     crate::db::sqlite::TaskReporter::Kernel,
                                     crate::model::now_ms()
                                 )
@@ -371,7 +371,7 @@ async fn w_owned_disposal_records_failed_task_once() {
                         crate::db::sqlite::task_report_success_from_worker_tx(
                             &mut tx,
                             "natural",
-                            &h.metadata.track.0,
+                            &h.metadata.scope.track().unwrap().0,
                             crate::db::sqlite::TaskReporter::Kernel,
                             crate::model::now_ms()
                         )
@@ -452,7 +452,8 @@ async fn w_owned_disposal_blocks_release_and_readmission() {
         () = wait_stopped(&h) => {}
     }
     assert!(matches!(
-        h.runtime.try_launch_fence(&h.metadata.track.0),
+        h.runtime
+            .try_launch_fence(&h.metadata.scope.track().unwrap().0),
         Err(crate::error::CalmError::WorkspaceBusy(_))
     ));
     let current = h.repo.get_operation(&h.op.id).await.unwrap().unwrap();
@@ -478,7 +479,7 @@ async fn w_owned_disposal_blocks_release_and_readmission() {
                 op,
                 &h.ctx,
                 h._executor._root.path().canonicalize().unwrap(),
-                &h.metadata.track.0,
+                &h.metadata.scope.track().unwrap().0,
                 h.metadata.program.clone(),
                 None
             )

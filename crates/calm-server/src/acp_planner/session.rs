@@ -14,7 +14,7 @@ mod setup;
 use cancellation::IssueGuard;
 use input::InputContract;
 pub(super) use server::Server;
-pub(crate) use server::detach_worker;
+pub(crate) use server::{detach_worker, detach_workers};
 mod execution_end;
 use super::{config::AcpPlannerHost, execution::Process, process::setup_request};
 use crate::db::sqlite::{
@@ -269,9 +269,21 @@ impl AcpPlannerSession {
         let stopped = self
             .stop_execution(crate::provider_execution::StopReason::Shutdown)
             .await;
-        let detached = detach_worker(&params.host, &params.worker_session_id).await;
-        // Cleanup errors never detach the writer: recovery waits for all its writes.
-        join_driver(&self.shared).await?;
+        let supervised = super::profile::AcpAgentProfile::of(&params.provider)
+            .is_some_and(|profile| profile.supervise_resident);
+        let detached = if supervised {
+            // The retiring generation must not wait on this worker's own route.
+            // A failed join still requires releasing the workspace attachment.
+            let joined = join_driver(&self.shared).await;
+            let detached = detach_worker(&params.host, &params.worker_session_id).await;
+            joined?;
+            detached
+        } else {
+            let detached = detach_worker(&params.host, &params.worker_session_id).await;
+            // Cleanup errors never detach the writer.
+            join_driver(&self.shared).await?;
+            detached
+        };
         revoked?;
         stopped?;
         detached?;
@@ -326,7 +338,7 @@ async fn bind_native(params: &SessionParams, thread: &str, native: &str) -> Resu
                 return Err(CalmError::Conflict("ACP native owner changed".into()));
             }
             if super::profile::AcpAgentProfile::of(&provider)
-                .is_some_and(|profile| profile.shared_server)
+                .is_some_and(|profile| profile.resident.is_some())
             {
                 server::ensure_native_owner(&mut **tx, &provider, &worker, &native).await?;
             }

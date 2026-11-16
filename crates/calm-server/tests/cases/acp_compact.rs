@@ -101,7 +101,6 @@ pub(super) async fn success(grok: bool) {
         claude_planner_session_fixture::card_rows(stack.repo(), &card, "item/completed").await;
     let runtime = stack.runtime(&card).await;
     let receipts = receipt_state(&stack, &runtime.id).await;
-    let cleanup = calm_server::acp_planner::test_seams::pause_after_fence(&runtime.id);
     std::fs::write(
         root.path().join("scenario"),
         if grok {
@@ -111,73 +110,80 @@ pub(super) async fn success(grok: bool) {
         },
     )
     .unwrap();
-    // The maintenance request must cross C4.3's release boundary before ACP
-    // initialize, then retain that same claim until cleanup settles.
-    use calm_server::test_seams::{PausePoint, install_pause_for_test};
-    use calm_truth::db::sqlite::provider_execution as claims;
-    let release = PausePoint::default();
-    install_pause_for_test("c4-release-authorized", &runtime.id, release.clone());
-    let initializes = requests(&root, "initialize").len();
-    let (reply, admitted) = tokio::join!(compact(&stack, &card), async {
-        tokio::time::timeout(Duration::from_secs(20), release.entered.notified())
-            .await
-            .unwrap();
-        let pool = stack.repo().sqlite_db().unwrap();
-        let claim = claims::load(pool.read_pool(), &runtime.id)
-            .await
-            .unwrap()
-            .unwrap();
-        let observed = requests(&root, "initialize").len();
-        release.release.notify_one();
-        assert_eq!(
-            observed, initializes,
-            "no maintenance ACP byte before release"
-        );
+    if grok {
+        let cleanup = calm_server::acp_planner::test_seams::pause_after_fence(&runtime.id);
+        // The maintenance request must cross C4.3's release boundary before ACP
+        // initialize, then retain that same claim until cleanup settles.
+        use calm_server::test_seams::{PausePoint, install_pause_for_test};
+        use calm_truth::db::sqlite::provider_execution as claims;
+        let release = PausePoint::default();
+        install_pause_for_test("c4-release-authorized", &runtime.id, release.clone());
+        let initializes = requests(&root, "initialize").len();
+        let (reply, admitted) = tokio::join!(compact(&stack, &card), async {
+            tokio::time::timeout(Duration::from_secs(20), release.entered.notified())
+                .await
+                .unwrap();
+            let pool = stack.repo().sqlite_db().unwrap();
+            let claim = claims::load(pool.read_pool(), &runtime.id)
+                .await
+                .unwrap()
+                .unwrap();
+            let observed = requests(&root, "initialize").len();
+            release.release.notify_one();
+            assert_eq!(
+                observed, initializes,
+                "no maintenance ACP byte before release"
+            );
+            assert!(matches!(
+                claim.record().release,
+                claims::Release::Releasing { .. }
+            ));
+            claim
+        });
         assert!(matches!(
-            claim.record().release,
-            claims::Release::Releasing { .. }
+            admitted.record().purpose,
+            claims::Purpose::Compaction { .. }
         ));
-        claim
-    });
-    assert!(matches!(
-        admitted.record().purpose,
-        claims::Purpose::Compaction { .. }
-    ));
-    let (status, body) = reply;
-    assert_eq!(status, StatusCode::OK, "{body}");
-    tokio::time::timeout(Duration::from_secs(20), cleanup.entered.notified())
-        .await
-        .unwrap();
-    assert_eq!(
-        snapshot(&stack, &card).await["compact_outcome"]["status"],
-        "started"
-    );
-    let pool = stack.repo().sqlite_db().unwrap();
-    let held = claims::load(pool.read_pool(), &runtime.id)
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(held.record().execution_id, admitted.record().execution_id);
-    cleanup.release.notify_one();
-    wait_phase(&stack, &runtime.id, "turn_completed").await;
-    assert!(
-        claims::load(pool.read_pool(), &runtime.id)
+        let (status, body) = reply;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        tokio::time::timeout(Duration::from_secs(20), cleanup.entered.notified())
+            .await
+            .unwrap();
+        assert_eq!(
+            snapshot(&stack, &card).await["compact_outcome"]["status"],
+            "started"
+        );
+        let pool = stack.repo().sqlite_db().unwrap();
+        let held = claims::load(pool.read_pool(), &runtime.id)
             .await
             .unwrap()
-            .is_none()
-    );
-    let (desired, settled): (String, Option<i64>) = sqlx::query_as(
-        "SELECT desired,settled_at_ms FROM workspace_executions WHERE execution_id=?1",
-    )
-    .bind(&admitted.record().execution_id)
-    .fetch_one(pool.read_pool())
-    .await
-    .unwrap();
-    assert_eq!(desired, "retire");
-    assert!(
-        settled.is_some(),
-        "maintenance must settle the Engine process"
-    );
+            .unwrap();
+        assert_eq!(held.record().execution_id, admitted.record().execution_id);
+        cleanup.release.notify_one();
+        wait_phase(&stack, &runtime.id, "turn_completed").await;
+        assert!(
+            claims::load(pool.read_pool(), &runtime.id)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        let (desired, settled): (String, Option<i64>) = sqlx::query_as(
+            "SELECT desired,settled_at_ms FROM workspace_executions WHERE execution_id=?1",
+        )
+        .bind(&admitted.record().execution_id)
+        .fetch_one(pool.read_pool())
+        .await
+        .unwrap();
+        assert_eq!(desired, "retire");
+        assert!(
+            settled.is_some(),
+            "maintenance must settle the Engine process"
+        );
+    } else {
+        let (status, body) = compact(&stack, &card).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        wait_phase(&stack, &runtime.id, "turn_completed").await;
+    }
     let after = snapshot(&stack, &card).await;
     assert_eq!(after["compact_outcome"]["status"], "completed", "{after}");
     assert_eq!(after["last_turn_id"], before["last_turn_id"]);
@@ -230,8 +236,24 @@ pub(super) async fn success(grok: bool) {
             .fetch_one(pool.read_pool())
             .await
             .unwrap();
-    assert!(token.is_none());
+    if grok {
+        assert!(token.is_none());
+    } else {
+        assert_eq!(ordinary[0]["_pid"], maintenance[0]["_pid"]);
+        assert_eq!(
+            ordinary[0]["params"]["sessionId"],
+            maintenance[0]["params"]["sessionId"]
+        );
+    }
     turn(&stack, &card, "after compaction", 2).await;
+    if !grok {
+        let continued = requests(&root, "session/prompt");
+        assert_eq!(continued[2]["_pid"], maintenance[0]["_pid"]);
+        assert_eq!(
+            continued[2]["params"]["sessionId"],
+            maintenance[0]["params"]["sessionId"]
+        );
+    }
     stack.shutdown().await;
 }
 
@@ -291,8 +313,8 @@ async fn acp_compact_requires_declared_command() {
     let root = Root::new("unused");
     let stack = boot(&root).await;
     let (_, card) = create(&stack).await;
-    turn(&stack, &card, "first", 1).await;
     std::fs::write(root.path().join("scenario"), "compact-undeclared").unwrap();
+    turn(&stack, &card, "first", 1).await;
     assert!(!compact(&stack, &card).await.0.is_success());
     assert!(compact_prompts(&root).is_empty());
     stack.shutdown().await;
@@ -333,40 +355,23 @@ async fn acp_compact_canonical_opencode_and_grok_assistant_capability_contract()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn acp_compact_cleanup_failure_cannot_settle_completed() {
+async fn resident_opencode_compact_keeps_the_attached_mcp_grant() {
     let root = Root::new("unused");
     let stack = boot(&root).await;
     let (_, card) = create(&stack).await;
     turn(&stack, &card, "first", 1).await;
     let runtime = stack.runtime(&card).await;
-    let cleanup = calm_server::acp_planner::test_seams::pause_after_fence(&runtime.id);
+    let grant = stack.row_hash(&runtime.id).await;
+    assert!(grant.is_some());
     std::fs::write(root.path().join("scenario"), "compact-success").unwrap();
     assert_eq!(compact(&stack, &card).await.0, StatusCode::OK);
-    tokio::time::timeout(Duration::from_secs(20), cleanup.entered.notified())
-        .await
-        .unwrap();
-    let pool = stack.repo().sqlite_db().unwrap();
-    (pool)
-        .writer()
-        .execute(sqlx::query(concat!(
-            "CREATE TRIGGER refuse_compact_revoke BEFORE UPDATE OF mcp_token_hash ",
-            "ON worker_sessions WHEN NEW.mcp_token_hash IS NULL ",
-            "BEGIN SELECT RAISE(FAIL,'fixture revoke failure'); END",
-        )))
-        .await
-        .unwrap();
-    cleanup.release.notify_one();
-    wait_phase(&stack, &runtime.id, "wedged").await;
+    wait_phase(&stack, &runtime.id, "turn_completed").await;
     assert_eq!(
         snapshot(&stack, &card).await["compact_outcome"]["status"],
-        "unconfirmed"
+        "completed"
     );
+    assert_eq!(stack.row_hash(&runtime.id).await, grant);
     assert_eq!(compact_prompts(&root).len(), 1);
-    (pool)
-        .writer()
-        .execute(sqlx::query("DROP TRIGGER refuse_compact_revoke"))
-        .await
-        .unwrap();
     stack.shutdown().await;
 }
 
@@ -375,14 +380,14 @@ async fn acp_compact_lost_driver_recovers_only_after_settlement_without_input_en
     use calm_server::provider_execution as execution;
     use calm_truth::db::sqlite::provider_execution as claims;
     let root = Root::new("unused");
-    let stack = boot(&root).await;
-    let (_, card) = create(&stack).await;
+    let stack = super::acp_grok_compact::boot_grok(&root).await;
+    let (_, card) = super::acp_grok_compact::create_grok(&stack).await;
     turn(&stack, &card, "first", 1).await;
     let humans = human_state(&stack, &card).await;
     let runtime = stack.runtime(&card).await;
     let session = stack.harness(&runtime.id).acp_session_for_test().unwrap();
     let cleanup = calm_server::acp_planner::test_seams::pause_after_fence(&runtime.id);
-    std::fs::write(root.path().join("scenario"), "compact-success").unwrap();
+    std::fs::write(root.path().join("scenario"), "grok-compact-success").unwrap();
     assert_eq!(compact(&stack, &card).await.0, StatusCode::OK);
     tokio::time::timeout(Duration::from_secs(20), cleanup.entered.notified())
         .await
@@ -457,9 +462,9 @@ async fn acp_compact_lost_driver_recovers_only_after_settlement_without_input_en
     );
     assert_eq!(stack.outcomes(&card).await.len(), 1);
     assert_eq!(human_state(&stack, &card).await, humans);
-    assert_eq!(compact_prompts(&root).len(), 1);
+    assert_eq!(requests(&root, "_x.ai/compact_conversation").len(), 1);
     assert!(!compact(&stack, &card).await.0.is_success());
-    assert_eq!(compact_prompts(&root).len(), 1);
+    assert_eq!(requests(&root, "_x.ai/compact_conversation").len(), 1);
     stack.shutdown().await;
 }
 

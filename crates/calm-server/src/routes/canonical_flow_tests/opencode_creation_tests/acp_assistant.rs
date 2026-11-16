@@ -630,8 +630,8 @@ async fn c4_acp_planner_switch_next_turns_use_engine_and_inherit_permission() {
     .await;
     let assistant = assistant["id"].as_str().unwrap();
     wait_idle(&fixture, assistant, 1).await;
-    // The promoted card inherits the outgoing Planner's mode, then its profile
-    // composes the next process environment through the execution owner.
+    // The promoted card inherits the outgoing Planner's mode. The resident
+    // process receives its decision through the promoted turn's ACP route.
     (fixture.repo.db())
         .writer()
         .execute(
@@ -676,10 +676,14 @@ async fn c4_acp_planner_switch_next_turns_use_engine_and_inherit_permission() {
     )
     .await
     .unwrap();
+    let mut generations = Vec::new();
     for (card, replacement) in [
         (planner.as_str(), &receipt.demoted),
         (assistant, &receipt.promoted),
     ] {
+        if card == assistant {
+            std::fs::write(fixture.root.path().join("scenario"), "permission").unwrap();
+        }
         post(
             &app,
             &cookie,
@@ -689,17 +693,18 @@ async fn c4_acp_planner_switch_next_turns_use_engine_and_inherit_permission() {
         )
         .await;
         wait_idle(&fixture, card, 1).await;
-        let metadata: Vec<String> = sqlx::query_scalar(
-            "SELECT intent_json FROM workspace_executions WHERE json_extract(intent_json,'$.owner')=?",
+        let (generation, intent): (String, String) = sqlx::query_as(
+            "SELECT e.execution_id, e.intent_json FROM workspace_executions e
+             JOIN acp_resident_workspace_bindings b ON b.execution_id=e.execution_id
+             WHERE b.worker_session_id=?",
         )
-        .bind(format!("worker-session:{}", replacement.new_worker.id))
-        .fetch_all(fixture.repo.pool())
+        .bind(replacement.new_worker.id.as_str())
+        .fetch_one(fixture.repo.pool())
         .await
         .unwrap();
-        assert_eq!(metadata.len(), 1, "one Engine process for the new carrier");
+        generations.push(generation);
         let metadata: workspace_runtime::execution::ExecutionMetadata =
-            serde_json::from_str(&metadata[0]).unwrap();
-        assert_eq!(metadata.consumer, "acp-planner".into());
+            serde_json::from_str(&intent).unwrap();
         assert!(
             !metadata
                 .program
@@ -707,19 +712,16 @@ async fn c4_acp_planner_switch_next_turns_use_engine_and_inherit_permission() {
                 .iter()
                 .any(|(key, _)| key == "NEIGE_MCP_TOKEN")
         );
-        let config = metadata
-            .program
-            .environment
-            .iter()
-            .find(|(key, _)| key == "OPENCODE_CONFIG_CONTENT")
-            .unwrap();
-        if card == assistant {
-            assert_eq!(
-                serde_json::from_str::<Value>(&config.1).unwrap()["permissions"][0]["effect"],
-                "allow"
-            );
-        }
     }
+    assert_eq!(generations[0], generations[1]);
+    let reply: Value = serde_json::from_slice(
+        &std::fs::read(fixture.root.path().join("permission-reply.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        reply["result"]["outcome"],
+        json!({"outcome":"selected","optionId":"yes"})
+    );
     assert_eq!(prompts(&fixture, &AgentProvider::OpenCode), 4);
     fixture.shutdown_process(&state).await;
 }

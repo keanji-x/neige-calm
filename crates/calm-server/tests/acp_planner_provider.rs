@@ -210,7 +210,7 @@ async fn acp_runs_two_turns_and_loads_the_same_native_session_after_restart() {
             .all(|text| !text.contains("historic reply")),
         "loaded history must not be attributed to a fresh turn: {rows:?}"
     );
-    assert_eq!(requests(&root, "session/resume").len(), 2);
+    assert_eq!(requests(&root, "session/resume").len(), 1);
     assert!(
         requests(&root, "session/resume")
             .iter()
@@ -247,11 +247,6 @@ async fn acp_permission_requests_use_never_without_creating_asks() {
     assert!(
         held.try_recv().is_err(),
         "a never turn reports nothing to the held-request channel"
-    );
-    assert_eq!(
-        acp_planner_approvals::launch_permissions(&root),
-        vec![json!({"permissions":[{"action":"question","resource":"*","effect":"deny"}]})],
-        "a never turn denies native questions while retaining the operator's other permissions"
     );
     wait_file(&root, "permission-reply.json").await;
     let reply: Value = serde_json::from_str(
@@ -359,11 +354,8 @@ async fn acp_uses_declared_configuration_keys_and_authenticates_mcp() {
     {
         let presence: Value = serde_json::from_str(line).unwrap();
         assert_eq!(presence["NEIGE_MCP_DAEMON_TOKEN"], false);
-        let operational = requests(&root, "session/prompt")
-            .iter()
-            .any(|request| request["_pid"] == presence["_pid"]);
-        assert_eq!(presence["NEIGE_MCP_TOKEN"], operational);
-        assert_eq!(presence["NEIGE_MCP_SOCKET"], operational);
+        assert_eq!(presence["NEIGE_MCP_TOKEN"], false);
+        assert_eq!(presence["NEIGE_MCP_SOCKET"], false);
         assert_eq!(presence["ACP_AMBIENT_SENTINEL"], false);
     }
     stack.shutdown().await;
@@ -552,44 +544,33 @@ async fn acp_reset_after_dispatch_checkpoint_transfers_only_later_input() {
 async fn acp_failed_cleanup_revokes_the_live_mcp_credential() {
     let root = Root::new("unused");
     let stack = boot(&root).await;
-    let (_, card) = create(&stack).await;
-    std::fs::write(root.path().join("scenario"), "hold").unwrap();
-    let (status, body) = stack.post_input(&card, "hold").await;
-    assert_eq!(status, StatusCode::OK, "{body}");
+    let (track, card) = create(&stack).await;
+    assert_eq!(turn(&stack, &card, "first", 1).await["status"], "completed");
     let runtime = stack.runtime(&card).await;
-    stack.wait_phase(&runtime.id, "turn_running").await;
+    assert!(stack.row_hash(&runtime.id).await.is_some());
     let pool = stack.repo().sqlite_db().unwrap();
-    let before: Option<String> =
-        sqlx::query_scalar("SELECT mcp_token_hash FROM worker_sessions WHERE id=?1")
-            .bind(&runtime.id)
-            .fetch_one(pool.read_pool())
-            .await
-            .unwrap();
-    assert!(
-        before.is_some(),
-        "exercise a minted credential, not an unconfigured path"
-    );
+    let wiring = stack.state.planner_wiring();
+    let sweep = || calm_server::acp_planner::config::sweep_track(stack.repo(), &wiring.acp, &track);
+
     stack.block_provider_stop().await;
-    let (status, body) = stack
-        .send(
-            "POST",
-            &format!("/api/cards/{card}/planner/interrupt"),
-            Some(json!({})),
-        )
-        .await;
-    assert!(status.is_success(), "{status}: {body}");
-    let outcomes = stack.wait_outcomes(&card, 1).await;
+    for _ in 0..2 {
+        assert!(sweep().await.is_err());
+        assert!(stack.row_hash(&runtime.id).await.is_none());
+        assert_eq!(
+            calm_truth::db::sqlite::acp_resident::for_worker(pool.read_pool(), &runtime.id)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+    }
     stack.clear_provider_fault().await;
-    assert_eq!(outcomes[0]["status"], "failed");
-    let after: Option<String> =
-        sqlx::query_scalar("SELECT mcp_token_hash FROM worker_sessions WHERE id=?1")
-            .bind(&runtime.id)
-            .fetch_one(pool.read_pool())
-            .await
-            .unwrap();
+    sweep().await.unwrap();
     assert!(
-        after.is_none(),
-        "failed process cleanup must not retain MCP authority"
+        calm_truth::db::sqlite::acp_resident::for_worker(pool.read_pool(), &runtime.id)
+            .await
+            .unwrap()
+            .is_empty()
     );
     stack.shutdown().await;
 }
@@ -870,13 +851,10 @@ async fn acp_reset_does_not_mirror_the_predecessors_revoked_hash() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn c4_consecutive_acp_turns_launch_with_distinct_execution_aliases() {
     let root = Root::new("unused");
-    let stack = boot(&root).await;
-    let (_, card) = create(&stack).await;
+    let stack = acp_grok_compact::boot_grok(&root).await;
+    let (_, card) = acp_grok_compact::create_grok(&stack).await;
     for n in 1..=2 {
-        assert_eq!(
-            turn(&stack, &card, "engine turn", n).await["status"],
-            "completed"
-        );
+        acp_compact::turn(&stack, &card, "engine turn", n).await;
     }
     let rows: Vec<(String, String)> = sqlx::query_as(
         "SELECT execution_id,intent_json FROM workspace_executions WHERE json_extract(intent_json,'$.consumer')='acp-planner'",

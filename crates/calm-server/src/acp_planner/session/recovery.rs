@@ -246,6 +246,8 @@ async fn recover_shared_claim(
                     return Ok(None);
                 }
                 let found = canonical_receipt_tx(tx, &card, &worker, &provider).await?;
+                let supervised = super::super::profile::AcpAgentProfile::of(&provider)
+                    .is_some_and(|profile| profile.supervise_resident);
                 let mut client = None;
                 if let Some((receipt, association)) = &found {
                     if matches!(receipt.state, AcpSubmissionState::Completed) {
@@ -268,15 +270,23 @@ async fn recover_shared_claim(
                     )
                     .await?;
                     if !sweep_confirmed
-                        || !owner.is_some_and(|owner| {
-                            crate::proc_identity::observe_owned_pid(
-                                owner.pid,
-                                owner.start_time,
-                                &owner.boot_id,
-                            )
-                            .leader_exited()
-                        })
+                        || !restart_owner_stopped(tx, &provider, supervised, owner).await?
                     {
+                        return Ok(None);
+                    }
+                    // Stopping the resident proves there can be no later END, but
+                    // cannot tell whether its prompt reached the provider. Preserve
+                    // the active input so explicit Keep or Abandon owns the decision.
+                    if supervised {
+                        if matches!(receipt.state, AcpSubmissionState::Sending) {
+                            crate::db::sqlite::acp_submission_finish_tx(
+                                tx,
+                                &worker,
+                                &receipt.client_id,
+                                None,
+                            )
+                            .await?;
+                        }
                         return Ok(None);
                     }
                     client = Some(receipt.client_id.as_str());
@@ -292,6 +302,25 @@ async fn recover_shared_claim(
         recover_completed_stop(repo, card, worker, &track, receipt, association).await?;
     }
     Ok(())
+}
+
+async fn restart_owner_stopped(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    provider: &AgentProvider,
+    supervised: bool,
+    owner: Option<crate::db::sqlite::AcpSharedRestartOwner>,
+) -> Result<bool> {
+    use crate::db::sqlite::AcpSharedRestartOwner;
+    match owner {
+        Some(AcpSharedRestartOwner::Process(owner)) if !supervised => Ok(
+            crate::proc_identity::observe_owned_pid(owner.pid, owner.start_time, &owner.boot_id)
+                .leader_exited(),
+        ),
+        Some(AcpSharedRestartOwner::Execution { execution_id }) if supervised => {
+            super::super::resident_execution::has_drained_tx(tx, provider, &execution_id).await
+        }
+        _ => Ok(false),
+    }
 }
 
 async fn recover_completed_stop(

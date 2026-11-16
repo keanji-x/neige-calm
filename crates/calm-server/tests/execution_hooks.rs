@@ -169,7 +169,9 @@ impl Fixture {
     }
     async fn admit(&self, terminal: &Terminal, live: bool) -> ExecutionId {
         let mut intent = exec::test_support::intent(self.root.clone());
-        intent.metadata.track = exec::TrackId(self.track.clone());
+        intent.metadata.scope = workspace_runtime::execution::ExecutionOwnership::Track(
+            exec::TrackId(self.track.clone()),
+        );
         intent.metadata.alias = ProcessAlias(sql::terminal_alias(&terminal.id));
         intent.metadata.program.program = "/bin/sh".into();
         intent.metadata.program.args = vec!["-c".into(), "printf ready; exec sleep 120".into()];
@@ -527,7 +529,8 @@ async fn repoint_rejects_unsettled_typed_without_stop() {
     let f = Fixture::new().await;
     // Avoid a Terminal row, whose Legacy workspace freeze would mask this fence.
     let mut intent = exec::test_support::intent(f.root.clone());
-    intent.metadata.track = exec::TrackId(f.track.clone());
+    intent.metadata.scope =
+        workspace_runtime::execution::ExecutionOwnership::Track(exec::TrackId(f.track.clone()));
     let id = intent.metadata.id.clone();
     let write_db = (f.repo.db()).clone();
     write_db
@@ -752,7 +755,8 @@ async fn worktree_clean_skips_until_settled() {
     std::fs::write(worktree.join("target/build"), "build").unwrap();
     // This test only needs an admitted execution. It does not create a Terminal/session.
     let mut intent = exec::test_support::intent(f.root.clone());
-    intent.metadata.track = exec::TrackId(f.track.clone());
+    intent.metadata.scope =
+        workspace_runtime::execution::ExecutionOwnership::Track(exec::TrackId(f.track.clone()));
     let id = intent.metadata.id.clone();
     let write_db = (f.repo.db()).clone();
     write_db

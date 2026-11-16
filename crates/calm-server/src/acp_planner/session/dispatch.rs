@@ -152,21 +152,12 @@ pub(super) async fn send(
         Carrier::Resident(turn) => (turn.client.clone(), None),
     };
     #[cfg(feature = "fixtures")]
-    let held = if execution_id.is_some() {
-        super::super::test_seams::tap_held(&params.worker_session_id, held)
-    } else {
-        held
-    };
+    let held = super::super::test_seams::tap_held(&params.worker_session_id, held);
     let approvals = Arc::new(Approvals::for_turn(permission, &held, &turn, &client, asks));
     let (cancel, cancelled) = watch::channel(CancelRequest::Running);
     #[cfg(feature = "fixtures")]
-    if execution_id.is_some() {
-        crate::test_seams::pause_point(
-            "carrier-quiescence-acp-issuance",
-            &params.worker_session_id,
-        )
+    crate::test_seams::pause_point("carrier-quiescence-acp-issuance", &params.worker_session_id)
         .await;
-    }
     shared.state.lock().expect("ACP state").active = Some(Active {
         thread: thread.into(),
         turn: turn.clone(),

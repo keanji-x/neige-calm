@@ -124,7 +124,13 @@ impl ProviderExecution {
         self.owner
             .alias_prefix()
             .validate(self.owner.as_ref(), session, &intent)?;
-        held_fence.check(&intent.metadata.track)?;
+        held_fence.check(
+            intent
+                .metadata
+                .scope
+                .track()
+                .ok_or_else(|| conflict("provider execution requires a Track scope"))?,
+        )?;
         let id = intent.metadata.id.clone();
         let guard = self.drivers.claim(id.clone());
         let sql::Cas::Applied(claim) = sql::admit(

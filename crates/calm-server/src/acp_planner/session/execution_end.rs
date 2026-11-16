@@ -4,11 +4,13 @@ use crate::db::sqlite::{AcpCanonicalInput, AcpSubmissionInput, AcpSubmissionStat
 use crate::harness::backend::ExecutionEndTarget;
 use crate::harness::retained_join::RetainedJoin;
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub(super) enum Settlement {
     Completed,
     /// Unknown delivery, with confirmed stop/revoke; only a normal join observes it.
     CleanUnknown,
+    /// The normal driver joined while routed siblings still owned the generation.
+    AwaitingResidentDrain(Arc<std::sync::atomic::AtomicBool>),
     Unconfirmed,
 }
 pub(super) enum Association {
@@ -46,9 +48,22 @@ impl Completion {
     }
     async fn finish(&mut self) -> Result<Settlement> {
         match self {
-            Self::Driver(driver) => driver.finish().await.copied().map_err(|()| {
-                CalmError::Conflict("ACP receipt writer did not finish normally".into())
-            }),
+            Self::Driver(driver) => driver
+                .finish()
+                .await
+                .map(|settlement| match settlement {
+                    Settlement::AwaitingResidentDrain(stopped) => {
+                        if stopped.load(std::sync::atomic::Ordering::Acquire) {
+                            Settlement::CleanUnknown
+                        } else {
+                            Settlement::Unconfirmed
+                        }
+                    }
+                    settlement => settlement.clone(),
+                })
+                .map_err(|()| {
+                    CalmError::Conflict("ACP receipt writer did not finish normally".into())
+                }),
             Self::RecoveredCompleted => Ok(Settlement::Completed),
             Self::RecoveredUnknown => Ok(Settlement::CleanUnknown),
         }
@@ -303,7 +318,9 @@ async fn settle_kept_under_issue(
         }
         match driver.finish().await? {
             Settlement::CleanUnknown => {}
-            Settlement::Completed | Settlement::Unconfirmed => return Ok(None),
+            Settlement::Completed
+            | Settlement::Unconfirmed
+            | Settlement::AwaitingResidentDrain(_) => return Ok(None),
         }
         let DriverInput::Canonical(input) = &driver.input else {
             return Ok(None);
@@ -458,7 +475,9 @@ impl AcpPlannerSession {
             return Ok(None);
         }
         match driver.finish().await? {
-            Settlement::Unconfirmed | Settlement::CleanUnknown => return Ok(None),
+            Settlement::Unconfirmed
+            | Settlement::CleanUnknown
+            | Settlement::AwaitingResidentDrain(_) => return Ok(None),
             Settlement::Completed => {}
         }
         let DriverInput::Canonical(input) = &driver.input else {

@@ -131,7 +131,7 @@ async fn acp_compact_failed_join_recovery_allows_issuance_and_shutdown() {
 }
 
 async fn retained_loss(case: LossCase) {
-    retained_loss_for(case, false).await;
+    retained_loss_for(case, true).await;
 }
 pub(super) async fn grok_failed_join() {
     for issue_next in [false, true] {
@@ -543,7 +543,7 @@ async fn acp_compact_absent_driver_restart_still_projects_unconfirmed() {
 
 #[tokio::test]
 async fn acp_compact_failed_setup_cleanup_claim_can_recover() {
-    let fx = Fixture::new("reply").await;
+    let fx = super::grok_compact::fixture().await;
     fx.dispatch().await.unwrap();
     fx.wait_end().await;
     let (harness, _registry) = registered_recovery_harness(&fx).await;

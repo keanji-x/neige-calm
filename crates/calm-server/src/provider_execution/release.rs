@@ -55,29 +55,7 @@ pub async fn send(
                     tx.commit().await?; // authorization must precede the first byte
                     #[cfg(feature = "fixtures")]
                     crate::test_seams::pause_point("c4-release-authorized", session).await;
-                    let mut offset = 0;
-                    while offset < payload.len() {
-                        let reply = engine
-                            .interact(
-                                &id,
-                                ProcessAction::WriteStdin {
-                                    bytes: payload[offset..].to_vec(),
-                                },
-                            )
-                            .await
-                            .map_err(conflict)?;
-                        let ExecutionReply::StdinProgress { accepted_bytes } = reply else {
-                            return Err(conflict("unexpected release response"));
-                        };
-                        let accepted = accepted_bytes;
-                        if accepted > payload.len() - offset {
-                            return Err(conflict("invalid release write length"));
-                        }
-                        offset += accepted;
-                        if offset < payload.len() {
-                            tokio::task::yield_now().await;
-                        }
-                    }
+                    write_payload(engine, &id, payload).await?;
                     let mut tx = write_session.begin_immediate().await?;
                     let sql::Cas::Applied(_) =
                         sql::advance_release(&mut tx, session, &releasing, at).await?
@@ -115,4 +93,35 @@ pub(crate) async fn wait_spawned(engine: &ExecutionEngine, id: &ExecutionId) -> 
         }
         Ok(())
     }).await.map_err(conflict)?
+}
+
+pub(crate) async fn write_payload(
+    engine: &ExecutionEngine,
+    id: &ExecutionId,
+    payload: &[u8],
+) -> Result<()> {
+    let mut offset = 0;
+    while offset < payload.len() {
+        let reply = engine
+            .interact(
+                id,
+                ProcessAction::WriteStdin {
+                    bytes: payload[offset..].to_vec(),
+                },
+            )
+            .await
+            .map_err(conflict)?;
+        let ExecutionReply::StdinProgress { accepted_bytes } = reply else {
+            return Err(conflict("unexpected release response"));
+        };
+        let accepted = accepted_bytes;
+        if accepted > payload.len() - offset {
+            return Err(conflict("invalid release write length"));
+        }
+        offset += accepted;
+        if offset < payload.len() {
+            tokio::task::yield_now().await;
+        }
+    }
+    Ok(())
 }

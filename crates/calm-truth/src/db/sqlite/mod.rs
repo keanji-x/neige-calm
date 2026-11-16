@@ -58,6 +58,7 @@ pub use session_conversation::{
     PLANNER_START_CARD_KEY, PLANNER_START_OPERATION_KIND, TERMINAL_OPERATION_PHASES,
 };
 mod acp_cleanup;
+pub mod acp_resident;
 mod acp_submission;
 pub use acp_cleanup::{AcpCleanupObservation, AcpCleanupVersion, AcpKeptCleanup};
 mod acp_submission_input;

@@ -224,11 +224,40 @@ pub(super) async fn intent(
     id: &workspace_runtime::execution::ExecutionId,
     dir: &Path,
 ) -> Result<(workspace_runtime::execution::ExecutionIntent, Vec<u8>)> {
+    let (args, release) = process_launch(
+        registration,
+        registration.profile.launch(permission),
+        crate::mcp_server::wiring::card_mcp_env(&params.host.mcp_socket, token),
+    )?;
+    crate::provider_execution::launch::intent(
+        params.host.provider_execution.owner.as_ref(),
+        &params.worker_session_id,
+        &params.track_id,
+        &params.cwd,
+        id,
+        dir,
+        &registration.config.command,
+        args,
+        release.public,
+        &release.read_prefix,
+        release.payload,
+        calm_session::control::execution::AmbientEnvironment::None,
+    )
+    .await
+}
+
+pub(super) fn process_launch(
+    registration: Registration<'_>,
+    launch: &super::profile::ModeLaunch,
+    card_env: impl IntoIterator<Item = (&'static str, String)>,
+) -> Result<(
+    Vec<std::ffi::OsString>,
+    crate::provider_execution::launch::Release,
+)> {
     use crate::execution_environment::{PROXY_KEYS, proxy_value_is_secret};
     use crate::operation::stdin_payload::{KeySource, PayloadKeys};
     use std::{collections::BTreeMap, ffi::OsString};
     validate_registration(registration)?;
-    let launch = registration.profile.launch(permission);
     // Merge first, preserving each final value's source. Profile/kernel values
     // override registrations, exactly as the native Command::envs path did.
     let mut env: BTreeMap<String, (OsString, bool)> = registration
@@ -241,7 +270,7 @@ pub(super) async fn intent(
         "PATH".into(),
         (crate::kernel_bin_path::kernel_led_path()?.path, false),
     );
-    for (key, value) in crate::mcp_server::wiring::card_mcp_env(&params.host.mcp_socket, token) {
+    for (key, value) in card_env {
         env.insert(key.into(), (value.into(), key == "NEIGE_MCP_TOKEN"));
     }
     for (key, value) in launch.env {
@@ -271,19 +300,12 @@ pub(super) async fn intent(
         .map(OsString::from)
         .chain(registration.profile.argv(Some(launch)).map(OsString::from))
         .collect();
-    crate::provider_execution::launch::intent(
-        params.host.provider_execution.owner.as_ref(),
-        &params.worker_session_id,
-        &params.track_id,
-        &params.cwd,
-        id,
-        dir,
-        &registration.config.command,
+    Ok((
         args,
-        public,
-        &keys.read_prefix(),
-        payload,
-        calm_session::control::execution::AmbientEnvironment::None,
-    )
-    .await
+        crate::provider_execution::launch::Release {
+            public,
+            read_prefix: keys.read_prefix(),
+            payload,
+        },
+    ))
 }

@@ -3,6 +3,23 @@ use super::*;
 use calm_server::provider_execution as execution;
 use calm_truth::db::sqlite::{provider_execution as sql, workspace_execution as executions};
 
+async fn create(stack: &Stack) -> (String, String) {
+    stack
+        .create_historical_track_with(json!({"planner_provider":"grok","title":"Managed ACP"}))
+        .await
+}
+
+async fn boot(root: &Root) -> Stack {
+    boot_with(root, json!({}), None).await
+}
+
+async fn boot_with(root: &Root, mut env: Value, mode: Option<&str>) -> Stack {
+    env["ACP_FIXTURE_IDENTITY"] = json!("meta");
+    env["ACP_FIXTURE_VERSION"] = json!("1.0.70");
+    env["ACP_FIXTURE_AUTH_METHODS"] = json!("cached_token");
+    boot_as_with_creation_mode(root, "grok", env, "1.0.62", mode).await
+}
+
 async fn wait(mut ready: impl AsyncFnMut() -> bool) {
     tokio::time::timeout(Duration::from_secs(20), async {
         while !ready().await {
@@ -33,7 +50,7 @@ async fn c4_acp_existing_execution_refuses_before_credential_mint() {
     intent.metadata.consumer = "acp-planner".into();
     intent.metadata.alias = ProcessAlias(format!("planner:{worker}:{}", id.as_str()));
     intent.metadata.owner = OperationRef(format!("worker-session:{worker}"));
-    intent.metadata.track = TrackId(track);
+    intent.metadata.scope = workspace_runtime::execution::ExecutionOwnership::Track(TrackId(track));
     intent.metadata.program.program = "/bin/sh".into();
     intent.metadata.program.args = vec!["-c".into(), "read held".into()];
     let (admitted, guard) = owner
@@ -98,7 +115,7 @@ async fn c4_acp_registration_env_only_in_payload() {
         &root,
         json!({"OPERATOR_SECRET": secret,"HTTP_PROXY":proxy,
         "ACP_FIXTURE_PROBE_KEYS":"OPERATOR_SECRET,HTTP_PROXY,NEIGE_MCP_TOKEN"}),
-        "1.0.0",
+        None,
     )
     .await;
     let (_, card) = create(&stack).await;
@@ -226,17 +243,10 @@ async fn c4_lost_acp_driver_revokes_and_settles_receipt() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn c4_acp_profile_env_public_registration_env_secret() {
+async fn c4_acp_profile_args_public_registration_env_secret() {
     let root = Root::new("unused");
     let overridden = "c43-overridden-operator-value";
-    let stack = boot_as_with_creation_mode(
-        &root,
-        "opencode",
-        json!({"OPERATOR_SECRET":overridden}),
-        "1.0.0",
-        Some("full"),
-    )
-    .await;
+    let stack = boot_with(&root, json!({"OPERATOR_SECRET":overridden}), Some("full")).await;
     let (_, card) = create(&stack).await;
     std::fs::write(root.path().join("scenario"), "hold").unwrap();
     let (status, body) = stack.post_input(&card, "overrides").await;
@@ -246,25 +256,14 @@ async fn c4_acp_profile_env_public_registration_env_secret() {
         .fetch_one(stack.repo().sqlite_db().unwrap().read_pool()).await.unwrap();
     let metadata: workspace_runtime::execution::ExecutionMetadata =
         serde_json::from_str(&json).unwrap();
-    let permission = metadata
-        .program
-        .environment
-        .iter()
-        .find(|(key, _)| key == "OPENCODE_CONFIG_CONTENT")
-        .unwrap()
-        .1
-        .clone();
-    assert_eq!(
-        serde_json::from_str::<Value>(&permission).unwrap()["permissions"][0],
-        json!({"action":"shell","resource":"*","effect":"allow"})
+    assert!(
+        metadata
+            .program
+            .args
+            .iter()
+            .any(|argument| argument == "--always-approve"),
+        "the per-turn launch must carry Grok's Full option"
     );
-    let env = std::fs::read_to_string(root.path().join("environment.jsonl")).unwrap();
-    let env: Value = env
-        .lines()
-        .map(|line| serde_json::from_str::<Value>(line).unwrap())
-        .find(|env| env["NEIGE_MCP_TOKEN"] == true)
-        .unwrap();
-    assert_eq!(env["opencode_config_content"], permission);
     assert!(!json.contains(overridden));
     root.assert_execution_journal_excludes(overridden);
     stack.shutdown().await;
@@ -274,7 +273,7 @@ async fn c4_acp_profile_env_public_registration_env_secret() {
 async fn c4_existing_bad_acp_key_refuses_before_mint() {
     for key in ["IFS", "neige_forge_credential", "BAD-KEY"] {
         let root = Root::new("unused");
-        let stack = boot_with(&root, json!({key:"must-not-launch"}), "1.0.0").await;
+        let stack = boot_with(&root, json!({key:"must-not-launch"}), None).await;
         let (_, card) = create(&stack).await;
         let worker = stack.runtime(&card).await.id;
         let (status, body) = stack.post_input(&card, "invalid key").await;
@@ -421,7 +420,8 @@ async fn c4_acp_boot_never_resends_held_or_releasing_payload() {
         intent.metadata.consumer = "acp-planner".into();
         intent.metadata.alias = ProcessAlias(format!("planner:{worker}:{}", id.as_str()));
         intent.metadata.owner = OperationRef(format!("worker-session:{worker}"));
-        intent.metadata.track = TrackId(track);
+        intent.metadata.scope =
+            workspace_runtime::execution::ExecutionOwnership::Track(TrackId(track));
         intent.metadata.program.program = "/bin/sh".into();
         intent.metadata.program.args =
             vec!["-c".into(), "read value && touch forbidden-release".into()];

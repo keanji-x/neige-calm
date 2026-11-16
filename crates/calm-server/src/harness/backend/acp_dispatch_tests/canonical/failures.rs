@@ -11,7 +11,7 @@ async fn canonical_acp_revoke_stop_and_receipt_failures_never_qualify_end() {
         Receipt,
     }
     for failure in [Failure::Revoke, Failure::Stop, Failure::Receipt] {
-        let fx = Fixture::new("reply").await;
+        let fx = super::grok_compact::fixture().await;
         let pause = crate::acp_planner::test_seams::pause_after_fence(&fx.owner.worker);
         fx.dispatch().await.unwrap();
         tokio::time::timeout(Duration::from_secs(20), pause.entered.notified())

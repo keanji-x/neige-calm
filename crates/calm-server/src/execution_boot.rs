@@ -11,11 +11,15 @@ pub async fn recover(
     provider_consumers: &[&str],
 ) -> anyhow::Result<Option<Arc<ExecutionEngine>>> {
     let Some(key_file) = &cfg.kernel_client_key_file else {
+        crate::acp_planner::resident_execution::stop_previous(&pool, None, None).await?;
         return Ok(None);
     };
     let secret = serde_json::from_reader(std::fs::File::open(key_file)?)?;
     let executor = SessionExecutor::new(cfg.proc_supervisor_sock_resolved(), secret);
-    let mut store = SqliteExecutionStore::new(pool);
+    let mut store = SqliteExecutionStore::new(pool.clone()).with_projection(
+        crate::acp_planner::resident_execution::CONSUMER.into(),
+        Arc::new(crate::provider_execution::Projection),
+    );
     for consumer in provider_consumers {
         store = store.with_projection(
             (*consumer).into(),
@@ -46,6 +50,8 @@ pub async fn recover(
     #[cfg(feature = "fixtures")]
     let store = store.with_faults(cfg.execution_recovery_faults.clone());
     let engine = Arc::new(Engine::new(store, executor));
+    // The new kernel has no live ACP connection to any earlier generation.
+    crate::acp_planner::resident_execution::stop_previous(&pool, Some(&engine), None).await?;
     let report = engine.recover().await;
     if let Some(error) = report.error {
         anyhow::bail!("execution recovery: {}", error.0);

@@ -179,7 +179,7 @@ impl AcpPlannerSession {
             permission,
             held,
         };
-        if registration.profile.shared_server {
+        if registration.profile.resident.is_some() {
             return super::server::issue(
                 shared,
                 registration,

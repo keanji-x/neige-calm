@@ -7,7 +7,9 @@ use super::{
 
 pub(super) const PROFILE: AcpAgentProfile = AcpAgentProfile {
     context_snapshot: true,
-    shared_server: true,
+    resident: Some(&NOTHING),
+    supervise_resident: false,
+    mcp_call_session_key: None,
     background_tool_completions: true,
     mcp_tool_name_budget: Some(tool_name_budget),
     usage: provider::acp::usage::UsageSource::SessionUsage,

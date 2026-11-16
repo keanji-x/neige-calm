@@ -235,7 +235,8 @@ pub struct AcpPlannerHost {
     tool_names: Option<crate::mcp_server::transport::SessionToolNames>,
     /// Where each agent process's stderr is kept, one bounded file per worker, overwritten by its
     /// next launch.
-    pub(super) shared_server: tokio::sync::Mutex<Option<super::session::Server>>,
+    pub(super) shared_servers:
+        BTreeMap<&'static str, tokio::sync::Mutex<Option<super::session::Server>>>,
     pub(super) context_queries: tokio::sync::Semaphore,
     pub(super) agent_logs: PathBuf,
     readiness: tokio::sync::Mutex<()>,
@@ -255,6 +256,15 @@ impl AcpPlannerHost {
         if let Some(config) = &config {
             config.validate()?;
         }
+        let shared_servers = config
+            .iter()
+            .flat_map(|config| &config.agents)
+            .filter(|agent| {
+                AcpAgentProfile::of(&agent.provider)
+                    .is_some_and(|profile| profile.resident.is_some())
+            })
+            .map(|agent| (agent.provider.wire_name(), Default::default()))
+            .collect();
         let (provider_execution, completion) = super::execution::owner();
         std::fs::create_dir_all(data_dir.join("acp-agent-logs"))?;
         Ok(Self {
@@ -267,7 +277,7 @@ impl AcpPlannerHost {
             mcp_shim,
             mcp_socket,
             tool_names: None,
-            shared_server: Default::default(),
+            shared_servers,
             context_queries: tokio::sync::Semaphore::new(1),
             agent_logs: data_dir.join("acp-agent-logs"),
             readiness: tokio::sync::Mutex::new(()),
@@ -355,7 +365,7 @@ impl AcpPlannerHost {
     pub async fn check_ready(&self, provider: &AgentProvider) -> Result<()> {
         let _probe = self.readiness.lock().await;
         let registration = self.registration(provider)?;
-        let process =
+        let mut process =
             super::process::Process::spawn(self, registration, "readiness", &std::env::temp_dir())
                 .await?;
         process.stop().await
@@ -403,7 +413,7 @@ pub(super) async fn boot_with_sweep<F: std::future::Future<Output = Result<()>>>
         .providers()
         .filter(|provider| {
             super::profile::AcpAgentProfile::of(provider)
-                .is_some_and(|profile| profile.shared_server)
+                .is_some_and(|profile| profile.resident.is_some())
         })
         .collect();
     markers.extend(
@@ -419,7 +429,9 @@ pub(super) async fn boot_with_sweep<F: std::future::Future<Output = Result<()>>>
         }
     };
     for provider in shared {
-        super::session::recover_shared_after_boot(repo, provider, sweep_confirmed).await?;
+        if !AcpAgentProfile::of(&provider).is_some_and(|profile| profile.supervise_resident) {
+            super::session::recover_shared_after_boot(repo, provider, sweep_confirmed).await?;
+        }
     }
     let unproven = if sweep_confirmed {
         Default::default()
@@ -429,6 +441,16 @@ pub(super) async fn boot_with_sweep<F: std::future::Future<Output = Result<()>>>
     host.pre_c4
         .set(crate::provider_execution::PreC4Sweep { unproven })
         .map_err(|_| CalmError::Conflict("ACP boot sweep proof already initialized".into()))?;
+    Ok(())
+}
+
+/// Run after the execution owner verified that previous resident scopes drained.
+pub(crate) async fn recover_supervised_after_boot(repo: &dyn crate::db::Repo) -> Result<()> {
+    for provider in AgentProtocol::Acp.providers().filter(|provider| {
+        AcpAgentProfile::of(provider).is_some_and(|profile| profile.supervise_resident)
+    }) {
+        super::session::recover_shared_after_boot(repo, provider, true).await?;
+    }
     Ok(())
 }
 
@@ -450,20 +472,36 @@ pub async fn sweep_track(
     host: &AcpPlannerHost,
     track: &str,
 ) -> Result<()> {
-    let track = track.to_owned();
+    sweep_tracks(repo, host, [track]).await
+}
+
+pub(crate) async fn sweep_tracks<'a>(
+    repo: &dyn crate::db::RepoEventWrite,
+    host: &AcpPlannerHost,
+    tracks: impl IntoIterator<Item = &'a str>,
+) -> Result<()> {
+    let tracks: Vec<_> = tracks.into_iter().map(str::to_owned).collect();
     let proof = host.pre_c4.get().cloned();
     let ids = crate::db::write_in_tx_typed(repo, move |tx| {
         Box::pin(async move {
-            let ids = revoke_owned_tx(tx, Some(&track)).await?;
-            // A refusal rolls back revocation before any Stop can be requested.
-            crate::provider_execution::PreC4Sweep::require_absent(proof.as_ref(), &ids)?;
+            let mut ids = Vec::new();
+            for track in tracks {
+                let owned = revoke_owned_tx(tx, Some(&track)).await?;
+                // A refusal rolls back revocation before any Stop can be requested.
+                crate::provider_execution::PreC4Sweep::require_absent(proof.as_ref(), &owned)?;
+                ids.extend(owned);
+                ids.extend(
+                    calm_truth::db::sqlite::acp_resident::workers_for_track(tx, &track).await?,
+                );
+            }
+            ids.sort_unstable();
+            ids.dedup();
             Ok(ids)
         })
     })
     .await?;
-    for worker in &ids {
-        super::session::detach_worker(host, worker).await?;
-    }
+    let workers: Vec<_> = ids.iter().map(String::as_str).collect();
+    super::session::detach_workers(host, &workers).await?;
     let executions = crate::db::write_in_tx_typed(repo, move |tx| {
         Box::pin(async move {
             let mut executions = Vec::new();

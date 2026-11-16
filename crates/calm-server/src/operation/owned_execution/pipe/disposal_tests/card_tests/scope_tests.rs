@@ -147,7 +147,11 @@ async fn finish_owner(h: &Harness, id: &str, metadata: &ExecutionMetadata) {
 
 async fn scope_delete(area: bool) {
     let h = Harness::with_card(true).await;
-    let track = h.db.track_get(&h.metadata.track.0).await.unwrap().unwrap();
+    let track =
+        h.db.track_get(&h.metadata.scope.track().unwrap().0)
+            .await
+            .unwrap()
+            .unwrap();
     let other_track = if area {
         h.db.track_create(NewTrack {
             area_id: track.area_id.clone(),
@@ -263,13 +267,18 @@ async fn w_owned_track_delete_unknown_retains_scope() {
         request_with_state(
             state,
             "DELETE",
-            &format!("/api/tracks/{}", h.metadata.track.0),
+            &format!("/api/tracks/{}", h.metadata.scope.track().unwrap().0),
             None
         )
         .await,
         StatusCode::CONFLICT
     );
-    assert!(h.db.track_get(&h.metadata.track.0).await.unwrap().is_some());
+    assert!(
+        h.db.track_get(&h.metadata.scope.track().unwrap().0)
+            .await
+            .unwrap()
+            .is_some()
+    );
     assert!(h.db.card_get(card(&h)).await.unwrap().is_some());
     assert_eq!(task_status(&h, "worker").await.0, "running");
     assert_eq!(failed_events(&h).await, 0);
@@ -301,7 +310,7 @@ async fn w_owned_repoint_does_not_stop() {
         request(
             &h,
             "PATCH",
-            &format!("/api/tracks/{}", h.metadata.track.0),
+            &format!("/api/tracks/{}", h.metadata.scope.track().unwrap().0),
             Some(json!({"workspace":{"kind":"attached","path":target,"attach_folder":true}}))
         )
         .await,

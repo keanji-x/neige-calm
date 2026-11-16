@@ -271,11 +271,25 @@ impl<S: Store + 'static, X: Executor + 'static> Engine<S, X> {
         }
     }
     pub async fn wait_settled(&self, id: &ExecutionId) -> Result<(), DriveError> {
+        self.wait_stored(id, Stored::is_settled).await
+    }
+
+    /// Wait for the executor's retirement tombstone and the store's terminal acknowledgement.
+    pub async fn wait_retired(&self, id: &ExecutionId) -> Result<(), DriveError> {
+        self.wait_stored(id, |row| matches!(row, Stored::Finished { .. }))
+            .await
+    }
+
+    async fn wait_stored(
+        &self,
+        id: &ExecutionId,
+        reached: impl Fn(&Stored) -> bool,
+    ) -> Result<(), DriveError> {
         let mut changes = self.0.changed.subscribe();
         let wait = async {
             loop {
                 let row = self.0.store.load(id).await?.ok_or(DriveError::Missing)?;
-                if row.is_settled() {
+                if reached(&row) {
                     return Ok(());
                 }
                 if let Some(error) = self.error(id) {

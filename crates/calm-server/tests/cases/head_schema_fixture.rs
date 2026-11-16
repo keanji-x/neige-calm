@@ -158,6 +158,7 @@ const POST_0067_MIGRATION_NAMES: &[&str] = &[
     "0218_share_link_expiry.sql",
     "0219_share_creation_receipts.sql",
     "0220_track_workspace_source_only.sql",
+    "0221_acp_resident_workspace_bindings.sql",
 ];
 
 #[test]

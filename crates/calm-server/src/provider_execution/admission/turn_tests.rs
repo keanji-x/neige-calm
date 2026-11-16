@@ -62,7 +62,9 @@ async fn w_turn_admission_rolls_back_with_phase() {
                     let mut intent =
                         workspace_runtime::execution::test_support::intent(dir.path().into());
                     intent.metadata.consumer = Owner.consumer().into();
-                    intent.metadata.track.0 = binding.track.clone();
+                    intent.metadata.scope = workspace_runtime::execution::ExecutionOwnership::Track(
+                        workspace_runtime::execution::TrackId(binding.track.clone()),
+                    );
                     intent.metadata.alias.0 =
                         Owner.alias(&binding.worker, intent.metadata.id.as_str());
                     intent.metadata.program.program = "/bin/sh".into();

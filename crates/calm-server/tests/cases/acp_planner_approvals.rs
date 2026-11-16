@@ -13,13 +13,13 @@ fn permission_log(root: &Root) -> Vec<Value> {
         .collect()
 }
 
-/// The `OPENCODE_CONFIG_CONTENT` each Planner (not readiness) launch of the agent carried.
+/// The permission configuration on each resident OpenCode process.
 pub(super) fn launch_permissions(root: &Root) -> Vec<Value> {
     std::fs::read_to_string(root.path().join("environment.jsonl"))
         .unwrap_or_default()
         .lines()
         .map(|line| serde_json::from_str::<Value>(line).unwrap())
-        .filter(|launch| launch["NEIGE_MCP_TOKEN"] == true)
+        .filter(|launch| launch["opencode_config_content"].is_string())
         .map(|launch| {
             serde_json::from_str(launch["opencode_config_content"].as_str().unwrap()).unwrap()
         })
@@ -171,17 +171,14 @@ async fn run_recovery_acp_ask_mode_holds_each_request_and_answers_the_chosen_opt
     assert!(rows(&stack, &track, "ask.withdrawn").await.is_empty());
     assert_eq!(
         launch_permissions(&root),
-        vec![
-            json!({"permissions":[
-                {"action":"shell","resource":"*","effect":"ask"},
-                {"action":"edit","resource":"*","effect":"ask"},
-                {"action":"webfetch","resource":"*","effect":"ask"},
-                {"action":"external_directory","resource":"*","effect":"ask"},
-                {"action":"question","resource":"*","effect":"deny"}
-            ]});
-            3
-        ],
-        "every ask turn carries native shell, edit and fetch permission defaults"
+        vec![json!({"permissions":[
+            {"action":"shell","resource":"*","effect":"ask"},
+            {"action":"edit","resource":"*","effect":"ask"},
+            {"action":"webfetch","resource":"*","effect":"ask"},
+            {"action":"external_directory","resource":"*","effect":"ask"},
+            {"action":"question","resource":"*","effect":"deny"}
+        ]})],
+        "all three Ask turns use the single resident launch"
     );
     stack.shutdown().await;
 }
@@ -301,11 +298,9 @@ async fn acp_process_exit_withdraws_a_held_request_after_opening_it() {
     stack.shutdown().await;
 }
 
-/// #2441: a card the route set to `full` launches its agent allowing each acting tool by name, and
-/// a permission request that still arrives is answered `cancelled` as under `never`: no ask, and
-/// nothing reaches the held-request channel.
+/// A Full turn auto-approves one native request without creating a held ask.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn acp_full_mode_allows_the_agents_tools_and_refuses_a_stray_request() {
+async fn acp_full_mode_approves_the_agents_request_once() {
     let root = Root::new("unused");
     let stack = boot(&root).await;
     let (track, card) = create(&stack).await;
@@ -321,45 +316,55 @@ async fn acp_full_mode_allows_the_agents_tools_and_refuses_a_stray_request() {
     let mut held = observe_held(&stack.runtime(&card).await.id);
     assert_eq!(
         turn(&stack, &card, "request permission", 1).await["status"],
-        "interrupted"
-    );
-    let [permission] = launch_permissions(&root).try_into().expect("one launch");
-    let rules = permission["permissions"].as_array().unwrap();
-    for action in [
-        "shell",
-        "edit",
-        "webfetch",
-        "external_directory",
-        "read",
-        "grep",
-        "glob",
-        "websearch",
-        "subagent",
-        "skill",
-        "todowrite",
-        "opencode_list_mcp_resources",
-        "opencode_read_mcp_resource",
-    ] {
-        assert!(
-            rules
-                .iter()
-                .any(|rule| rule == &json!({"action":action,"resource":"*","effect":"allow"})),
-            "{permission}"
-        );
-    }
-    assert!(
-        rules
-            .iter()
-            .any(|rule| rule == &json!({"action":"question","resource":"*","effect":"deny"}))
+        "completed"
     );
     wait_file(&root, "permission-reply.json").await;
     let reply: Value = serde_json::from_str(
         &std::fs::read_to_string(root.path().join("permission-reply.json")).unwrap(),
     )
     .unwrap();
-    assert_eq!(reply["result"]["outcome"], json!({"outcome": "cancelled"}));
+    assert_eq!(
+        reply["result"]["outcome"],
+        json!({"outcome": "selected", "optionId": "yes"})
+    );
     assert!(held.try_recv().is_err(), "a full turn holds nothing");
     assert!(rows(&stack, &track, "ask.requested").await.is_empty());
+
+    let (_, sibling) = create(&stack).await;
+    assert_eq!(
+        turn(&stack, &sibling, "request without Full", 1).await["status"],
+        "interrupted",
+    );
+    let prompts = requests(&root, "session/prompt");
+    assert_eq!(prompts.len(), 2);
+    assert_eq!(prompts[0]["_pid"], prompts[1]["_pid"]);
+    assert_ne!(
+        prompts[0]["params"]["sessionId"],
+        prompts[1]["params"]["sessionId"]
+    );
+
+    assert_eq!(
+        stack
+            .send(
+                "PUT",
+                &format!("/api/cards/{card}/planner/permission-mode"),
+                Some(json!({"permission_mode": "never"})),
+            )
+            .await
+            .0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        turn(&stack, &card, "request after changing mode", 2).await["status"],
+        "interrupted",
+    );
+    let prompts = requests(&root, "session/prompt");
+    assert_eq!(prompts.len(), 3);
+    assert_eq!(prompts[0]["_pid"], prompts[2]["_pid"]);
+    assert_eq!(
+        prompts[0]["params"]["sessionId"],
+        prompts[2]["params"]["sessionId"]
+    );
     stack.shutdown().await;
 }
 

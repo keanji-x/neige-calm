@@ -56,7 +56,9 @@ async fn execution(h: &Harness, id: &str) {
                 Arc::new(crate::execution_store::tests::NoopProjection),
             );
     let mut intent = test_support::intent("/".into());
-    intent.metadata.track = workspace_runtime::execution::TrackId(h.track_id.clone());
+    intent.metadata.scope = workspace_runtime::execution::ExecutionOwnership::Track(
+        workspace_runtime::execution::TrackId(h.track_id.clone()),
+    );
     let owner = intent.metadata.owner.0.clone();
     let output = json!({"target_type":"card", "target_id":id, "result":{}, "data":{"execution_id":intent.metadata.id}});
     h.ctx_storage.sqlx_repo.db().writer().execute(sqlx::query("INSERT INTO operations(id,operation_key,kind,payload_hash,target_type,target_id,target_json,\

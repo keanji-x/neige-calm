@@ -187,7 +187,7 @@ async fn canonical_acp_prepared_stop_never_cancels_a_successor_reusing_native_se
                 fx.wait_end().await;
                 std::fs::write(fx.dir.path().join("scenario"), "hold").unwrap();
                 let successor = fx.claim_successor().await;
-                let listener =
+                let _prompt_marker =
                     tokio::net::UnixListener::bind(fx.dir.path().join("prompt-consumption.sock"))
                         .unwrap();
                 // A local send receipt is not proof that the native peer consumed the prompt.
@@ -201,12 +201,7 @@ async fn canonical_acp_prepared_stop_never_cancels_a_successor_reusing_native_se
                     report.report.delivery(),
                     InputDelivery::Unknown(_)
                 ));
-                let (mut peer, _) =
-                    tokio::time::timeout(Duration::from_secs(20), listener.accept())
-                        .await
-                        .unwrap()
-                        .unwrap();
-                fx.consume_held_prompt(&mut peer, &mut events).await;
+                fx.wait_held_prompt(&mut events).await;
                 let requests = fx.requests();
                 let prompts: Vec<_> = requests
                     .iter()
@@ -217,7 +212,7 @@ async fn canonical_acp_prepared_stop_never_cancels_a_successor_reusing_native_se
                     prompts[0]["params"]["sessionId"],
                     prompts[1]["params"]["sessionId"]
                 );
-                assert_ne!(prompts[0]["_pid"], prompts[1]["_pid"]);
+                assert_eq!(prompts[0]["_pid"], prompts[1]["_pid"]);
                 let admission = crate::harness::native_admission::NativePromptAdmission::new(
                     || Ok(()),
                     || Box::pin(async { Ok(()) }),

@@ -291,7 +291,7 @@ async fn acp_assistant_first_turn_model_prompt_and_restart() {
             .unwrap();
     assert_eq!(permission["result"]["outcome"]["outcome"], "cancelled");
     std::fs::write(root.path().join("scenario"), "reply").unwrap();
-    canonical_assistant_lifecycle(&stack, card, false).await;
+    canonical_assistant_lifecycle(&stack, card, true).await;
     let root_after: Option<String> =
         sqlx::query_scalar("SELECT root_session_id FROM tracks WHERE id=?1")
             .bind(&track)

@@ -43,7 +43,8 @@ async fn seed_legacy_reclaim(
     let mut intent = workspace_runtime::execution::test_support::intent(f.up.clone.clone());
     intent.metadata.consumer = "workspace-reclaim".into();
     intent.metadata.owner = OperationRef(op.clone());
-    intent.metadata.track = TrackId(f.track.clone());
+    intent.metadata.scope =
+        workspace_runtime::execution::ExecutionOwnership::Track(TrackId(f.track.clone()));
     intent.metadata.alias = ProcessAlias(format!("reclaim:{op}"));
     intent.metadata.program.program = "/bin/sh".into();
     intent.metadata.program.args = [

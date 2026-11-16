@@ -1,6 +1,76 @@
 //! Canonical cleanup requires evidence from the original shared attachment.
 use super::*;
 
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn canonical_opencode_shutdown_drains_detached_workspace_child() {
+    use workspace_runtime::execution::ExecutionId;
+
+    let fx =
+        Fixture::with_provider(AgentProvider::OpenCode, "resident-detached-child", false).await;
+    fx.dispatch().await.unwrap();
+    fx.wait_idle().await;
+    assert!(fx.complete().await.is_some());
+    let pid: i32 = std::fs::read_to_string(fx.dir.path().join("resident-detached-child.pid"))
+        .unwrap()
+        .parse()
+        .unwrap();
+    let start = crate::proc_identity::read_proc_start_time(pid)
+        .expect("detached child remains live after END");
+    let pool = fx.owner.repo.db();
+    let scopes =
+        calm_truth::db::sqlite::acp_resident::for_worker(pool.read_pool(), &fx.owner.worker)
+            .await
+            .unwrap();
+    let [id] = scopes.as_slice() else {
+        panic!("one supervised resident attachment")
+    };
+    let id = ExecutionId::try_from(id.clone()).unwrap();
+
+    fx.session.shutdown().await.unwrap();
+
+    assert_ne!(crate::proc_identity::read_proc_start_time(pid), Some(start));
+    assert!(
+        crate::provider_execution::settlement(pool, &id)
+            .await
+            .unwrap()
+            .unwrap()
+            .descendants_complete()
+    );
+    assert!(
+        calm_truth::db::sqlite::acp_resident::for_worker(pool.read_pool(), &fx.owner.worker)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn canonical_opencode_reuses_resident_process_and_native_session() {
+    let fx = Fixture::with_provider(AgentProvider::OpenCode, "reply", false).await;
+    fx.dispatch().await.unwrap();
+    fx.wait_idle().await;
+    assert!(fx.complete().await.is_some());
+
+    let successor = fx.claim_successor().await;
+    fx.dispatch_submission(&successor).await;
+    fx.wait_idle().await;
+    assert!(fx.complete().await.is_some());
+
+    let requests = fx.requests();
+    let prompts: Vec<_> = requests
+        .iter()
+        .filter(|request| request["method"] == "session/prompt")
+        .collect();
+    assert_eq!(prompts.len(), 2);
+    assert_eq!(prompts[0]["_pid"], prompts[1]["_pid"]);
+    assert_eq!(
+        prompts[0]["params"]["sessionId"],
+        prompts[1]["params"]["sessionId"]
+    );
+    fx.session.shutdown().await.unwrap();
+}
+
 #[tokio::test]
 async fn canonical_antigravity_normal_end_has_body_free_receipt_and_exact_end() {
     let fx = Fixture::with_provider(AgentProvider::Antigravity, "reply", false).await;
@@ -114,7 +184,7 @@ async fn canonical_antigravity_unconfirmed_revocation_cannot_manufacture_keep_cl
 }
 
 #[tokio::test]
-async fn canonical_antigravity_unconfirmed_process_stop_cannot_release_kept_input() {
+async fn canonical_antigravity_failed_stop_retains_the_owner_for_verified_retry() {
     let fx = Fixture::with_provider(AgentProvider::Antigravity, "lost", false).await;
     let fired = crate::test_seams::install_operation_fault_for_test(
         "acp-control-reap",
@@ -126,14 +196,14 @@ async fn canonical_antigravity_unconfirmed_process_stop_cannot_release_kept_inpu
         .unwrap();
     fx.wait_idle().await;
     fx.keep_unknown(&fx.submission, "keep-without-reap").await;
-    assert!(fx.backend.settle_kept_execution().await.unwrap().is_none());
+    assert!(fx.backend.settle_kept_execution().await.unwrap().is_some());
     let joins: i64 =
         sqlx::query_scalar("SELECT count(*) FROM acp_normal_joins WHERE worker_session_id=?")
             .bind(&fx.owner.worker)
             .fetch_one(fx.owner.repo.pool())
             .await
             .unwrap();
-    assert_eq!(joins, 0);
+    assert_eq!(joins, 1);
     assert!(fx.complete().await.is_none());
     assert_eq!(fx.prompts(), 1);
     fx.session.shutdown().await.unwrap();

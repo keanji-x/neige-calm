@@ -58,7 +58,7 @@ fn validate_rows(
             .transpose()?;
         if metadata.id.as_str() != id
             || metadata.consumer.0 != consumer
-            || metadata.track.0 != track
+            || metadata.scope.track().map(|value| value.0.as_str()) != Some(track)
             || metadata.alias.0 != alias.alias(session, id)
             || !settled.is_some_and(|s| s.descendants_complete())
         {

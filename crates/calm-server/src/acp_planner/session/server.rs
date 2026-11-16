@@ -21,10 +21,10 @@ struct Binding {
 
 struct Generation {
     id: uuid::Uuid,
-    /// Set only after revoking this generation's grants, confirming the ACP
-    /// service process exited, and executing the existing process-group cleanup.
-    /// This is not the execution owner's descendants-complete quiescence proof.
-    stopped: AtomicBool,
+    supervised: bool,
+    /// Set after the profile's process owner confirms cleanup. Supervised
+    /// generations require the executor's descendants-complete settlement.
+    stopped: Arc<AtomicBool>,
 }
 
 struct CleanupWitness {
@@ -42,8 +42,8 @@ pub(in crate::acp_planner) struct Server {
     process: process::Process,
     bindings: HashMap<String, Binding>,
     credential_owners: HashSet<String>,
+    touched_workers: HashSet<String>,
     generation: Arc<Generation>,
-    provider: AgentProvider,
 }
 impl std::fmt::Debug for Server {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -66,7 +66,7 @@ pub(super) struct Turn {
     pub client: provider::acp::Client,
     pub capabilities: protocol::AgentCapabilities,
     commands: process::Commands,
-    pub restart_owner: Option<crate::db::sqlite::AcpSharedProcessIdentity>,
+    pub restart_owner: Option<crate::db::sqlite::AcpSharedRestartOwner>,
     cleanup: CleanupWitness,
     snapshot: Option<super::super::context_snapshot::Selection>,
 }
@@ -86,7 +86,9 @@ pub(super) async fn issue(
         || Box::pin(async { Ok(()) }),
     );
     let source = input.contract.admission(&source);
-    let mut owned = params.host.shared_server.lock().await;
+    let mut owned = params.host.shared_servers[params.provider.wire_name()]
+        .lock()
+        .await;
     let (native, usage) = prepare::prepare(
         &mut owned,
         shared,
@@ -190,6 +192,8 @@ pub(super) async fn drive(
     // A completed native turn can no longer accept answers to its earlier permission requests.
     // Optional telemetry retains admission, never the approval window.
     approvals.close().await;
+    #[cfg(feature = "fixtures")]
+    super::super::test_seams::wait_after_fence(&shared.params.worker_session_id).await;
     let snapshot_cancelled = cancelled.clone();
     // Keep the native turn's active slot while sampling: the next input/maintenance cannot
     // overtake this reading. Maintenance never enters this driver and keeps its invalidation.
@@ -227,6 +231,7 @@ pub(super) async fn drive(
             },
         );
     }
+    drop(incoming);
     let cleaned = if outcome.is_err() {
         // A lost terminal response may leave native work running. Evidence
         // belongs to this exact attachment, never to a sibling's cleanup.
@@ -234,7 +239,8 @@ pub(super) async fn drive(
     } else {
         false
     };
-    drop(incoming);
+    #[cfg(feature = "fixtures")]
+    super::super::test_seams::wait_at_settlement(&shared.params.worker_session_id).await;
     settle(&shared, &receipt, retained, outcome, &cleanup, cleaned).await
 }
 
@@ -277,14 +283,13 @@ async fn settle(
         terminal["items"] = Value::Array(retained);
         terminal.to_string()
     });
-    let persisted = if let Some(pool) = shared.params.repo.sqlite_db() {
-        driver::settle_receipt(&pool, receipt, durable.as_deref())
-            .await
-            .is_ok()
+    use driver::ReceiptSettlement;
+    let settlement = if let Some(pool) = shared.params.repo.sqlite_db() {
+        driver::settle_receipt(&pool, receipt, durable.as_deref()).await
     } else {
-        false
+        ReceiptSettlement::Unconfirmed
     };
-    let known = persisted && durable.is_some();
+    let known = settlement == ReceiptSettlement::Completed;
     if !known && !cleaned {
         // A failed terminal receipt write also needs cleanup before canonical
         // Keep can consume the exact original attempt.
@@ -339,6 +344,8 @@ async fn settle(
         execution_end::Settlement::Completed
     } else if cleaned {
         execution_end::Settlement::CleanUnknown
+    } else if settlement == ReceiptSettlement::Unknown && cleanup.generation.supervised {
+        execution_end::Settlement::AwaitingResidentDrain(cleanup.generation.stopped.clone())
     } else {
         execution_end::Settlement::Unconfirmed
     }
@@ -374,6 +381,7 @@ async fn cleanup_unknown(
     match detach_worker_with_witness(
         &params.host,
         &params.worker_session_id,
+        params.provider.wire_name(),
         Some((&receipt.native_session_id, witness)),
     )
     .await
@@ -387,15 +395,37 @@ async fn cleanup_unknown(
 }
 
 pub(crate) async fn detach_worker(host: &AcpPlannerHost, worker: &str) -> Result<()> {
-    detach_worker_with_witness(host, worker, None).await
+    detach_workers(host, &[worker]).await
+}
+
+pub(crate) async fn detach_workers(host: &AcpPlannerHost, workers: &[&str]) -> Result<()> {
+    if workers.is_empty() {
+        return Ok(());
+    }
+    let (pool, previous) =
+        super::super::resident_execution::workspace_generations(host, workers).await?;
+    for provider in host.shared_servers.keys() {
+        detach_workers_for_provider(host, workers, provider, None).await?;
+    }
+    super::super::resident_execution::stop_detached_workspace(host, &pool, previous).await
 }
 
 async fn detach_worker_with_witness(
     host: &AcpPlannerHost,
     worker: &str,
+    provider: &str,
     expected: Option<(&str, &CleanupWitness)>,
 ) -> Result<()> {
-    let mut owned = host.shared_server.lock().await;
+    detach_workers_for_provider(host, &[worker], provider, expected).await
+}
+
+async fn detach_workers_for_provider(
+    host: &AcpPlannerHost,
+    workers: &[&str],
+    provider: &str,
+    expected: Option<(&str, &CleanupWitness)>,
+) -> Result<()> {
+    let mut owned = host.shared_servers[provider].lock().await;
     if expected.is_some_and(|(_, witness)| witness.confirmed()) {
         return Ok(());
     }
@@ -410,8 +440,10 @@ async fn detach_worker_with_witness(
     };
     if let Some((native, witness)) = expected {
         let matches = server.generation.id == witness.generation.id
-            && server.bindings.get(worker).is_some_and(|binding| {
-                binding.native == native && Arc::ptr_eq(&binding.closed, &witness.closed)
+            && workers.iter().any(|worker| {
+                server.bindings.get(*worker).is_some_and(|binding| {
+                    binding.native == native && Arc::ptr_eq(&binding.closed, &witness.closed)
+                })
             });
         if !matches {
             return Err(CalmError::Conflict(
@@ -419,48 +451,80 @@ async fn detach_worker_with_witness(
             ));
         }
     }
-    if server.process.connection.client.terminal_error().is_some() {
-        // EOF is not process-stop evidence. Retire and confirm the original
-        // process before any driver may claim the generation is quiescent.
+    if !workers.iter().any(|worker| {
+        server.bindings.contains_key(*worker)
+            || server.credential_owners.contains(*worker)
+            || server.touched_workers.contains(*worker)
+    }) {
+        return Ok(());
+    }
+    for &worker in workers {
+        if let Some(binding) = server.bindings.get_mut(worker) {
+            binding.closing = true;
+        }
+        if server.credential_owners.contains(worker) {
+            revoke_worker(host.completion.repo()?.as_ref(), worker).await?;
+            server.credential_owners.remove(worker);
+        }
+    }
+    let client = &server.process.connection.client;
+    if client.terminal_error().is_some() {
+        // EOF does not prove that native workspace users have exited.
         return retire(host, &mut owned).await;
     }
-    if let Some(binding) = server.bindings.get_mut(worker) {
-        binding.closing = true;
+    if server.process.is_supervised() {
+        client.retire_shared_when_idle();
+        let can_retire = client.can_retire_shared_while(|native| {
+            expected.is_none()
+                && workers.iter().any(|worker| {
+                    server
+                        .bindings
+                        .get(*worker)
+                        .is_some_and(|binding| binding.native == native)
+                })
+        });
+        if !can_retire {
+            return Err(CalmError::Conflict(
+                "ACP generation is draining other active sessions".into(),
+            ));
+        }
+        return retire(host, &mut owned).await;
     }
-    if server.credential_owners.contains(worker) {
-        revoke_worker(host.completion.repo()?.as_ref(), worker).await?;
-        server.credential_owners.remove(worker);
+    for &worker in workers {
+        let Some(binding) = server.bindings.get(worker) else {
+            continue;
+        };
+        let gate = provider::send_boundary::PreSendGate::new(|| Box::pin(async { Ok(()) }));
+        if let Err(error) = setup_request(
+            &mut server.process.connection,
+            &server.process.commands,
+            "session/close",
+            protocol::encode_close_session(&binding.native),
+            &gate,
+        )
+        .await
+        {
+            server.process.connection.client.retire_shared_when_idle();
+            return Err(error.into());
+        }
+        binding.closed.store(true, Ordering::Release);
+        server.process.commands.forget(&binding.native);
+        server.bindings.remove(worker);
     }
-    let Some(binding) = server.bindings.get(worker) else {
-        return Ok(());
-    };
-    let gate = provider::send_boundary::PreSendGate::new(|| Box::pin(async { Ok(()) }));
-    if let Err(error) = setup_request(
-        &mut server.process.connection,
-        &server.process.commands,
-        "session/close",
-        protocol::encode_close_session(&binding.native),
-        &gate,
-    )
-    .await
-    {
-        server.process.connection.client.retire_shared_when_idle();
-        return Err(error.into());
-    }
-    // Credential revocation and the matching native close both succeeded.
-    binding.closed.store(true, Ordering::Release);
-    server.process.commands.forget(&binding.native);
-    server.bindings.remove(worker);
     Ok(())
 }
 
 /// Drain unsolicited traffic while the setup owner is idle, and retire a failed generation
 /// under the same lock that admits attachment and mints credentials.
-async fn supervise(host: std::sync::Weak<AcpPlannerHost>, generation: uuid::Uuid) {
+async fn supervise(
+    host: std::sync::Weak<AcpPlannerHost>,
+    provider: &'static str,
+    generation: uuid::Uuid,
+) {
     loop {
         tokio::time::sleep(Duration::from_millis(25)).await;
         let Some(host) = host.upgrade() else { return };
-        let Ok(mut owned) = host.shared_server.try_lock() else {
+        let Ok(mut owned) = host.shared_servers[provider].try_lock() else {
             continue;
         };
         let Some(server) = owned
@@ -530,10 +594,13 @@ async fn retire(host: &AcpPlannerHost, owned: &mut Option<Server>) -> Result<()>
             revoke_worker(host.completion.repo()?.as_ref(), worker).await?;
         }
     }
-    if let Some(server) = owned.take() {
-        let generation = server.generation.clone();
+    if let Some(server) = owned.as_mut() {
         server.process.stop().await?;
-        generation.stopped.store(true, Ordering::Release);
+        server.generation.stopped.store(true, Ordering::Release);
+        for worker in &server.touched_workers {
+            host.completion.request_progress(worker);
+        }
+        owned.take();
     }
     Ok(())
 }

@@ -198,6 +198,27 @@ pub async fn settlement_history(
     .await
 }
 
+/// Resident owners use their consumer key as the prefix of every durable alias.
+/// Either ownership projection selects the row so damage cannot hide a live Run.
+pub async fn resident_inventory_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    consumer: &str,
+    backend: Option<&str>,
+) -> Result<Vec<String>, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT execution_id FROM workspace_executions
+         WHERE (desired <> 'retire' OR secrets_json IS NOT NULL)
+           AND ((alias >= ?1 || ':' AND alias < ?1 || ';')
+                 OR json_extract(intent_json, '$.consumer') = ?1)
+           AND (?2 IS NULL OR json_extract(intent_json, '$.track.backend') = ?2)
+         ORDER BY execution_id",
+    )
+    .bind(consumer)
+    .bind(backend)
+    .fetch_all(&mut **tx)
+    .await
+}
+
 /// Occupancy scopes; lifecycle policy belongs to callers.
 pub enum Scope<'a> {
     Card(&'a str),
@@ -295,6 +316,21 @@ pub async fn location_occupancy(
         })?;
         if root {
             occupants.push(id.try_into().map_err(crate::error::CalmError::Internal)?);
+        }
+    }
+    // A resident generation can enter additional workspaces after it starts.
+    // Only its lifecycle owner removes these obligations after a verified drain.
+    let attached: Vec<(String, String)> =
+        sqlx::query_as("SELECT execution_id, cwd FROM acp_resident_workspace_bindings")
+            .fetch_all(&mut *conn)
+            .await?;
+    for (id, cwd) in attached {
+        let candidate = PathLocation::allow_missing(std::path::Path::new(&cwd))?;
+        for target in targets {
+            if paths_overlap(&candidate, target, false)? {
+                occupants.push(id.try_into().map_err(crate::error::CalmError::Internal)?);
+                break;
+            }
         }
     }
     occupants.sort();

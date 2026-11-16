@@ -384,6 +384,9 @@ async fn dispatch_request(
             Ok(json!({ "tools": tools }))
         }
         "tools/call" => {
+            if let ConnectionIdentity::CardBound(bound) = connection_identity {
+                validate_native_mcp_caller(ctx, bound, &params).await?;
+            }
             dispatch_tools_call(ctx, request_meta, params, connection_identity, registry).await
         }
         "neige/cli" => {
@@ -393,6 +396,35 @@ async fn dispatch_request(
         "prompts/list" => Ok(json!({ "prompts": [] })),
         other => Err(RpcError::method_not_found(other)),
     }
+}
+
+async fn validate_native_mcp_caller(
+    ctx: &AppContext,
+    bound: &CardIdentity,
+    params: &Value,
+) -> Result<(), RpcError> {
+    let Some(key) = crate::acp_planner::wiring::mcp_call_session_key(&bound.provider) else {
+        return Ok(());
+    };
+    // OpenCode exposes ACP-provided MCP servers to other sessions in the same directory.
+    // Authenticate the connection as usual and require the actual invoking native session.
+    let caller = params
+        .get("_meta")
+        .and_then(|meta| meta.get(key))
+        .and_then(Value::as_str)
+        .filter(|caller| !caller.is_empty())
+        .ok_or_else(|| RpcError::invalid_params("tools/call: missing native session origin"))?;
+    let session = ctx
+        .repo
+        .session_get_by_id(&WorkerSessionId::from(bound.session_id.clone()))
+        .await
+        .map_err(|error| RpcError::internal(format!("native MCP session lookup: {error}")))?;
+    if !session.is_some_and(|session| session.agent_session_id.as_deref() == Some(caller)) {
+        return Err(RpcError::invalid_params(
+            "tools/call: native session origin does not own this connection",
+        ));
+    }
+    Ok(())
 }
 
 async fn bootstrap_tool_descriptors(

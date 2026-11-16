@@ -196,6 +196,7 @@ export function ModelPill<Provider extends string = AgentProvider>({
           }}
         >
           {shown.map((group, index) => {
+            const heading = group.provider === 'opencode' ? 'OpenCode (Beta)' : providerLabel(group, group.provider);
             const choices = (
               <GroupChoices group={group} selection={group.provider === provider ? selection : null}
                 onChange={(next) => onChange(next, group.provider)} />
@@ -203,8 +204,8 @@ export function ModelPill<Provider extends string = AgentProvider>({
             return grouped ? (
               <Fragment key={group.provider}>
                 {index > 0 && <Divider />}
-                <div role="group" aria-label={providerLabel(group, group.provider)}>
-                  <div className={styles.groupHeading} aria-hidden="true">{providerLabel(group, group.provider)}</div>
+                <div role="group" aria-label={heading}>
+                  <div className={styles.groupHeading} aria-hidden="true">{heading}</div>
                   {choices}
                 </div>
               </Fragment>

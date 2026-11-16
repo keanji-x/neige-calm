@@ -23,7 +23,9 @@ pub(in crate::acp_planner::session) async fn compact(
     }
     let params = &shared.params;
     let permission = PlannerPermissionMode::Never;
-    let mut owned = params.host.shared_server.lock().await;
+    let mut owned = params.host.shared_servers[params.provider.wire_name()]
+        .lock()
+        .await;
     prepare::prepare(
         &mut owned,
         shared,
@@ -111,16 +113,17 @@ pub(in crate::acp_planner::session) async fn compact(
         .await;
         // A routed overflow invalidates even a fast matching RPC result.
         let confirmed = matches!(outcome, Ok(true)) && !*incoming.overflow().borrow();
+        drop(incoming);
         if !confirmed {
             // Close/revoke only this exact attachment; no ordinary compact stops the server.
             let _ = detach_worker_with_witness(
                 &task.params.host,
                 &task.params.worker_session_id,
+                task.params.provider.wire_name(),
                 Some((&task_native, &cleanup)),
             )
             .await;
         }
-        drop(incoming);
         let mut state = task.state.lock().expect("ACP state");
         if state
             .active

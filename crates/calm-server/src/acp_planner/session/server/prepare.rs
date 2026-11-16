@@ -28,28 +28,29 @@ pub(super) async fn prepare(
         let process =
             process::Process::spawn_shared(&params.host, registration, &std::env::temp_dir())
                 .await?;
-        if process.capabilities.session_capabilities.close.is_none() {
+        if !process.is_supervised() && process.capabilities.session_capabilities.close.is_none() {
             return Err(refused("Shared ACP requires session close"));
         }
         let generation = uuid::Uuid::new_v4();
+        let supervised = process.is_supervised();
         *owned = Some(Server {
             process,
             bindings: HashMap::new(),
             credential_owners: HashSet::new(),
+            touched_workers: HashSet::new(),
             generation: Arc::new(Generation {
                 id: generation,
-                stopped: AtomicBool::new(false),
+                supervised,
+                stopped: Arc::new(AtomicBool::new(false)),
             }),
-            provider: registration.config.provider.clone(),
         });
-        tokio::spawn(supervise(Arc::downgrade(&params.host), generation));
-    }
-    let server = owned.as_mut().expect("shared ACP server installed");
-    if server.provider != params.provider {
-        return Err(refused(
-            "The shared ACP host already owns a different provider",
+        tokio::spawn(supervise(
+            Arc::downgrade(&params.host),
+            params.provider.wire_name(),
+            generation,
         ));
     }
+    let server = owned.as_mut().expect("shared ACP server installed");
     if server.process.connection.client.shared_retiring() {
         return Err(refused(
             "Shared ACP server is waiting for active sessions before retirement",
@@ -87,7 +88,30 @@ pub(super) async fn prepare(
         server
             .credential_owners
             .insert(params.worker_session_id.clone());
+        if server.process.is_supervised() {
+            server
+                .touched_workers
+                .insert(params.worker_session_id.clone());
+        }
         let mut attachment_guard = AttachmentGuard(Some(server.process.connection.client.clone()));
+        if let Some(id) = server.process.supervision_id() {
+            let (execution, worker, track, cwd) = (
+                id.as_str().to_owned(),
+                params.worker_session_id.clone(),
+                params.track_id.clone(),
+                params.cwd.clone(),
+            );
+            write_in_tx_typed(params.repo.as_ref(), move |tx| {
+                Box::pin(async move {
+                    calm_truth::db::sqlite::acp_resident::bind_workspace(
+                        tx, &execution, &worker, &track, &cwd,
+                    )
+                    .await?;
+                    Ok(())
+                })
+            })
+            .await?;
+        }
         let token = mint_token(params).await?;
         let mut attached_native = None;
         // The durable worker owns this attachment across reconnects and shared-process

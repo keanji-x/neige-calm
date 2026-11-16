@@ -332,6 +332,16 @@ impl Harness {
         self.call_with_token(&self.token, name, args).await
     }
     pub async fn call_with_token(&self, token: &str, name: &str, args: Value) -> Value {
+        self.call_with_token_and_origin(token, name, args, None)
+            .await
+    }
+    pub async fn call_with_token_and_origin(
+        &self,
+        token: &str,
+        name: &str,
+        args: Value,
+        native: Option<&str>,
+    ) -> Value {
         let stream = UnixStream::connect(&self.socket).await.unwrap();
         let (read, mut write) = stream.into_split();
         let mut read = BufReader::new(read);
@@ -344,7 +354,10 @@ impl Harness {
         read.read_line(&mut line).await.unwrap();
         let initialized: Value = serde_json::from_str(&line).unwrap();
         assert!(initialized.get("error").is_none(), "{initialized}");
-        let call = json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":name,"arguments":args}});
+        let mut call = json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":name,"arguments":args}});
+        if let Some(native) = native {
+            call["params"]["_meta"] = json!({"ai.opencode/sessionID": native});
+        }
         write
             .write_all(format!("{call}\n").as_bytes())
             .await

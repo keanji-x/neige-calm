@@ -110,6 +110,20 @@ async fn stop_timeout_recovery() {
     // The production shutdown/registered execution owner may prove cleanup;
     // an aborted join still cannot fabricate a native completion receipt.
     let _ = session.shutdown().await;
+    let settlement: String = sqlx::query_scalar(
+        "SELECT e.settlement_json FROM acp_submissions r
+         JOIN workspace_executions e
+           ON e.execution_id=json_extract(r.shared_restart_owner_json,'$.execution_id')
+         WHERE r.worker_session_id=?1 AND r.turn_id=?2",
+    )
+    .bind(&worker)
+    .bind(saved.header.last_turn_id.as_deref().unwrap())
+    .fetch_one(fixture.repo.pool())
+    .await
+    .expect("shutdown must drain the resident even after a failed join");
+    let settlement: workspace_runtime::execution::Settlement =
+        serde_json::from_str(&settlement).unwrap();
+    assert!(settlement.descendants_complete());
     let _ = state.harness.shutdown_and_remove(&worker).await;
     fixture.shutdown_process(&state).await;
     drop((session, harness, state, app));

@@ -217,9 +217,21 @@ impl Client {
 
     /// A saturated or quarantined generation can be retired without interrupting any routed turn.
     pub fn can_recycle_shared(&self) -> bool {
+        self.can_retire_shared_while(|_| false)
+    }
+
+    /// The owner may interrupt routes explicitly included in a teardown. It must
+    /// prevent new routes from being registered until retirement finishes.
+    pub fn can_retire_shared_while(&self, can_interrupt: impl Fn(&str) -> bool) -> bool {
         self.0.shared
             && (self.shared_retiring() || self.0.overloaded.load(Ordering::Acquire))
-            && self.0.routes.lock().expect("ACP routes").is_empty()
+            && self
+                .0
+                .routes
+                .lock()
+                .expect("ACP routes")
+                .keys()
+                .all(|id| can_interrupt(id))
     }
 
     /// Route subsequent frames for an already identified native session to its owner.
