@@ -17,7 +17,7 @@ pub struct Footprint {
     pub material: usize,
 }
 impl Footprint {
-    pub fn add(self, other: Self) -> Self {
+    pub fn combine(self, other: Self) -> Self {
         Self {
             text: self.text.saturating_add(other.text),
             material: self.material.saturating_add(other.material),
@@ -28,7 +28,7 @@ impl Footprint {
             text: self.text - old.text,
             material: self.material - old.material,
         }
-        .add(new)
+        .combine(new)
     }
     pub fn check(self) -> Result<Self, Error> {
         if self.text > TEXT_LIMIT || self.material > MATERIAL_LIMIT {
@@ -87,7 +87,7 @@ fn binary(data: &str) -> Result<(), Error> {
     if !bytes.len().is_multiple_of(4) {
         return Err(Error::Protocol("invalid content base64"));
     }
-    for (i, group) in bytes.chunks_exact(4).enumerate() {
+    for (i, group) in bytes.as_chunks::<4>().0.iter().enumerate() {
         let last = (i + 1) * 4 == bytes.len();
         let valid = value(group[0]).is_some()
             && value(group[1]).is_some()
@@ -104,48 +104,54 @@ fn binary(data: &str) -> Result<(), Error> {
 }
 fn optional_fields(value: &Value, strings: &[&str], resource_link: bool) -> Result<(), Error> {
     for key in ["_meta", "annotations"] {
-        if let Some(v) = value.get(key) {
-            if !v.is_null() && !v.is_object() {
-                return Err(Error::Protocol("invalid content metadata"));
-            }
+        if let Some(v) = value.get(key)
+            && !v.is_null()
+            && !v.is_object()
+        {
+            return Err(Error::Protocol("invalid content metadata"));
         }
     }
     if let Some(annotations) = value.get("annotations").filter(|v| !v.is_null()) {
-        if let Some(meta) = annotations.get("_meta") {
-            if !meta.is_null() && !meta.is_object() {
-                return Err(Error::Protocol("invalid annotation metadata"));
-            }
+        if let Some(meta) = annotations.get("_meta")
+            && !meta.is_null()
+            && !meta.is_object()
+        {
+            return Err(Error::Protocol("invalid annotation metadata"));
         }
-        if let Some(audience) = annotations.get("audience").filter(|v| !v.is_null()) {
-            if !audience.as_array().is_some_and(|a| {
+        if let Some(audience) = annotations.get("audience").filter(|v| !v.is_null())
+            && !audience.as_array().is_some_and(|a| {
                 a.iter()
                     .all(|v| matches!(v.as_str(), Some("user" | "assistant")))
-            }) {
-                return Err(Error::Protocol("invalid annotation audience"));
-            }
+            })
+        {
+            return Err(Error::Protocol("invalid annotation audience"));
         }
-        if let Some(priority) = annotations.get("priority") {
-            if !priority.is_null() && !priority.is_number() {
-                return Err(Error::Protocol("invalid annotation priority"));
-            }
+        if let Some(priority) = annotations.get("priority")
+            && !priority.is_null()
+            && !priority.is_number()
+        {
+            return Err(Error::Protocol("invalid annotation priority"));
         }
-        if let Some(timestamp) = annotations.get("lastModified") {
-            if !timestamp.is_null() && !timestamp.is_string() {
-                return Err(Error::Protocol("invalid annotation timestamp"));
-            }
+        if let Some(timestamp) = annotations.get("lastModified")
+            && !timestamp.is_null()
+            && !timestamp.is_string()
+        {
+            return Err(Error::Protocol("invalid annotation timestamp"));
         }
     }
     for key in strings {
-        if let Some(v) = value.get(key) {
-            if !v.is_null() && !v.is_string() {
-                return Err(Error::Protocol("invalid optional content string"));
-            }
+        if let Some(v) = value.get(key)
+            && !v.is_null()
+            && !v.is_string()
+        {
+            return Err(Error::Protocol("invalid optional content string"));
         }
     }
-    if let Some(v) = value.get("size").filter(|_| resource_link) {
-        if !v.is_null() && v.as_u64().is_none() {
-            return Err(Error::Protocol("invalid resource size"));
-        }
+    if let Some(v) = value.get("size").filter(|_| resource_link)
+        && !v.is_null()
+        && v.as_u64().is_none()
+    {
+        return Err(Error::Protocol("invalid resource size"));
     }
     Ok(())
 }
@@ -316,10 +322,11 @@ pub fn tool_blocks(tool: &Value) -> Result<Vec<OutputBlock>, Error> {
                 for key in ["type", "path", "newText"] {
                     fields.remove(key);
                 }
-                if let Some(old) = fields.get("oldText") {
-                    if !old.is_null() && !old.is_string() {
-                        return Err(Error::Protocol("invalid diff old text"));
-                    }
+                if let Some(old) = fields.get("oldText")
+                    && !old.is_null()
+                    && !old.is_string()
+                {
+                    return Err(Error::Protocol("invalid diff old text"));
                 }
                 let mut metadata = fields.clone();
                 metadata.remove("oldText");
@@ -385,10 +392,10 @@ pub fn wire_block(block: &OutputBlock) -> Value {
     if let Some(Value::Object(fields)) = object.remove("fields") {
         object.extend(fields);
     }
-    if let Some(resource) = object.get_mut("resource").and_then(Value::as_object_mut) {
-        if let Some(Value::Object(fields)) = resource.remove("fields") {
-            resource.extend(fields);
-        }
+    if let Some(resource) = object.get_mut("resource").and_then(Value::as_object_mut)
+        && let Some(Value::Object(fields)) = resource.remove("fields")
+    {
+        resource.extend(fields);
     }
     value
 }

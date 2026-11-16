@@ -184,7 +184,7 @@ impl TurnTranslator {
                         &json!({"outputContent":OutputContentV1::new(Vec::new()),"outputSegment":segment}),
                     );
                 }
-                let retained = self.retained.add(cost).check()?;
+                let retained = self.retained.combine(cost).check()?;
                 // No mutation, seal or observation precedes candidate validation.
                 if let Some(ordinal) = next {
                     self.complete_current(&mut events, at_ms);
@@ -290,7 +290,7 @@ impl TurnTranslator {
                 content::bounded_metadata(&overhead)?;
                 let cost = output.blocks.iter().enumerate().fold(
                     Footprint { text:0, material:content::json_size(&json!({"native":overhead,"outputContent":OutputContentV1::new(Vec::new())})) },
-                    |cost,(index,block)| cost.add(content::footprint(block)).add(Footprint {text:0,material:usize::from(index>0)}),
+                    |cost,(index,block)| cost.combine(content::footprint(block)).combine(Footprint {text:0,material:usize::from(index>0)}),
                 );
                 let retained = self
                     .retained
