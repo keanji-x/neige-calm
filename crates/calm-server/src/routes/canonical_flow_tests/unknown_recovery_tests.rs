@@ -353,6 +353,17 @@ async fn acp_recovery(scenario: &str) {
                 StatusCode::CONFLICT
             );
             assert_eq!(acp_carrier(&fixture, &card).await.1, worker);
+            assert!(
+                crate::mcp_server::handshake::handle_initialize(
+                    state.repo.as_ref(),
+                    None,
+                    &token_params,
+                    "2024-11-05",
+                )
+                .await
+                .is_ok(),
+                "refusing the exit proof must roll back credential revocation"
+            );
         } else {
             let run = super::presentation_read_feedback_tests::read_run(&app, &cookie, &card).await;
             assert_eq!(run["recovery"]["action"], "abandon_session");
