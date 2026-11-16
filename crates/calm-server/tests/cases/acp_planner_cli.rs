@@ -121,6 +121,15 @@ async fn retiring_resident_opencode_preserves_routed_sibling_until_it_finishes()
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn resident_opencode_keep_uses_later_exact_drain_after_a_sibling_finishes() {
+    keep_after_resident_sibling_drain(false).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn resident_opencode_keep_uses_durable_unknown_after_terminal_write_refused() {
+    keep_after_resident_sibling_drain(true).await;
+}
+
+async fn keep_after_resident_sibling_drain(refuse_completion: bool) {
     use axum::http::Request;
     use calm_types::harness::snapshot::CanonicalHarnessSnapshot;
     let root = Root::new("unused");
@@ -138,12 +147,36 @@ async fn resident_opencode_keep_uses_later_exact_drain_after_a_sibling_finishes(
         StatusCode::OK
     );
     wait_file(&root, "resident-sibling-held").await;
-    std::fs::write(root.path().join("scenario"), "shared-unknown").unwrap();
+    let pool = stack.repo().sqlite_db().unwrap();
+    if refuse_completion {
+        let runtime = stack.runtime(&first).await;
+        let worker = runtime.id;
+        pool.writer()
+            .execute(sqlx::query(&format!(
+                concat!(
+                    "CREATE TRIGGER refuse_resident_end BEFORE UPDATE ON acp_submissions ",
+                    "WHEN NEW.worker_session_id='{}' AND NEW.state='completed' ",
+                    "BEGIN SELECT RAISE(ABORT,'fixture terminal write refusal'); END"
+                ),
+                worker
+            )))
+            .await
+            .unwrap();
+        std::fs::write(root.path().join("scenario"), "reply").unwrap();
+    } else {
+        std::fs::write(root.path().join("scenario"), "shared-unknown").unwrap();
+    }
     assert_eq!(
         stack.post_input(&first, "lost result").await.0,
         StatusCode::OK
     );
     assert_eq!(stack.wait_outcomes(&first, 2).await[1]["status"], "failed");
+    if refuse_completion {
+        pool.writer()
+            .execute(sqlx::query("DROP TRIGGER refuse_resident_end"))
+            .await
+            .unwrap();
+    }
     let runtime = stack.runtime(&first).await;
     let snapshot: CanonicalHarnessSnapshot =
         serde_json::from_value(runtime.handle_state_json.unwrap()).unwrap();
@@ -175,7 +208,6 @@ async fn resident_opencode_keep_uses_later_exact_drain_after_a_sibling_finishes(
         stack.wait_outcomes(&sibling, 1).await[0]["status"],
         "completed"
     );
-    let pool = stack.repo().sqlite_db().unwrap();
     tokio::time::timeout(Duration::from_secs(20), async {
         loop {
             if !calm_server::db::sqlite::acp_submission_unresolved(pool.read_pool(), &runtime.id)

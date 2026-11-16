@@ -105,18 +105,13 @@ pub(super) async fn drive(
     durable["items"] = Value::Array(retained);
     #[cfg(feature = "fixtures")]
     super::super::test_seams::wait_at_settlement(&params.worker_session_id).await;
-    let settle = async {
-        let pool = params
-            .repo
-            .sqlite_db()
-            .ok_or_else(|| CalmError::Internal("ACP journal pool missing".into()))?;
-        // Serialize once: every persistence attempt must commit these exact bytes and items.
-        let outcome_json = known.then(|| serde_json::to_string(&durable)).transpose()?;
+    let settlement = if let Some(pool) = params.repo.sqlite_db() {
+        let outcome_json = known.then(|| durable.to_string());
         settle_receipt(&pool, &receipt, outcome_json.as_deref()).await
-    }
-    .await;
-    let persisted = settle.is_ok();
-    if !persisted {
+    } else {
+        ReceiptSettlement::Unconfirmed
+    };
+    if settlement != ReceiptSettlement::Completed {
         turn = unknown_outcome(&receipt.turn_id);
         events = vec![PlannerEvent {
             thread_id: Some(receipt.thread_id.clone()),
@@ -167,7 +162,7 @@ pub(super) async fn drive(
         // The retained task still returns the cleanup/receipt facts it observed.
         // A failed owner write retains the claim; it does not erase a normal join.
     }
-    if known && persisted {
+    if settlement == ReceiptSettlement::Completed {
         super::execution_end::Settlement::Completed
     } else if cleanup_confirmed {
         super::execution_end::Settlement::CleanUnknown
@@ -269,26 +264,39 @@ pub(super) fn retain_item(retained: &mut Vec<Value>, event: &PlannerEvent) {
     }
 }
 
+#[derive(PartialEq, Eq)]
+pub(super) enum ReceiptSettlement {
+    Completed,
+    Unknown,
+    Unconfirmed,
+}
+
 /// Persistence pending is not execution unknown. This function has no provider access.
 pub(super) async fn settle_receipt(
     pool: &crate::db::sqlite::SqliteDb,
     receipt: &AcpSubmission,
     outcome_json: Option<&str>,
-) -> Result<()> {
-    let result = settle_with_retry(pool, receipt, outcome_json).await;
-    if let Err(error) = &result {
-        #[cfg(feature = "fixtures")]
-        super::super::test_seams::settlement_note(&receipt.worker_session_id, "failed");
-        tracing::error!(%error, "ACP settlement failed; durable submission remains fenced");
-        // The receipt stays unresolved even if the writer remains unavailable.
-        // Never overwrite a completed CAS winner with an unknown outcome.
-        let _ = tokio::time::timeout(
-            Duration::from_secs(1),
-            acp_submission_finish(pool, &receipt.worker_session_id, &receipt.client_id, None),
-        )
-        .await;
+) -> ReceiptSettlement {
+    match settle_with_retry(pool, receipt, outcome_json).await {
+        Ok(()) if outcome_json.is_some() => ReceiptSettlement::Completed,
+        Ok(()) => ReceiptSettlement::Unknown,
+        Err(error) => {
+            #[cfg(feature = "fixtures")]
+            super::super::test_seams::settlement_note(&receipt.worker_session_id, "failed");
+            tracing::error!(%error, "ACP settlement failed; durable submission remains fenced");
+            // The receipt stays unresolved even if the writer remains unavailable.
+            // Never overwrite a completed CAS winner with an unknown outcome.
+            match tokio::time::timeout(
+                Duration::from_secs(1),
+                acp_submission_finish(pool, &receipt.worker_session_id, &receipt.client_id, None),
+            )
+            .await
+            {
+                Ok(Ok(())) => ReceiptSettlement::Unknown,
+                _ => ReceiptSettlement::Unconfirmed,
+            }
+        }
     }
-    result
 }
 
 async fn settle_with_retry(

@@ -283,14 +283,13 @@ async fn settle(
         terminal["items"] = Value::Array(retained);
         terminal.to_string()
     });
-    let persisted = if let Some(pool) = shared.params.repo.sqlite_db() {
-        driver::settle_receipt(&pool, receipt, durable.as_deref())
-            .await
-            .is_ok()
+    use driver::ReceiptSettlement;
+    let settlement = if let Some(pool) = shared.params.repo.sqlite_db() {
+        driver::settle_receipt(&pool, receipt, durable.as_deref()).await
     } else {
-        false
+        ReceiptSettlement::Unconfirmed
     };
-    let known = persisted && durable.is_some();
+    let known = settlement == ReceiptSettlement::Completed;
     if !known && !cleaned {
         // A failed terminal receipt write also needs cleanup before canonical
         // Keep can consume the exact original attempt.
@@ -345,7 +344,7 @@ async fn settle(
         execution_end::Settlement::Completed
     } else if cleaned {
         execution_end::Settlement::CleanUnknown
-    } else if persisted && durable.is_none() && cleanup.generation.supervised {
+    } else if settlement == ReceiptSettlement::Unknown && cleanup.generation.supervised {
         execution_end::Settlement::AwaitingResidentDrain(cleanup.generation.stopped.clone())
     } else {
         execution_end::Settlement::Unconfirmed
