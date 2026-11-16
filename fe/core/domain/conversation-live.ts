@@ -93,7 +93,8 @@ export type LiveReplyObservation =
  * T is retired at the first of: (a) X's `item/completed` row is in the transcript; (b) the
  * transcript's newest page comes from a read that started after a non-streaming phase was seen;
  * (c) a poll or confirmed run names a turn other than T. A poll outside a known active turn is ignored. A poll that omits X does not retire it, and no poll
- * shortens a held text.
+ * shortens a held text. Typed native output uses positive Completed/erase or visit/turn fences;
+ * a phase followed by a history miss cannot prove that its frozen partial was stored.
  */
 export function reconcileLiveReplies(
   copies: readonly LiveReplyCopy[], observation: LiveReplyObservation,
@@ -110,7 +111,7 @@ export function reconcileLiveReplies(
         if(Object.hasOwn(item,'output')){
           const revision=outputRecord(item.output)?.revision,old=held?.revision;
           if(decimalU64(old) && decimalU64(revision) && BigInt(revision)<=BigInt(old))continue;
-          next[index<0 ? next.length:index]={turnId:turn.turn_id,nativeThreadId:turn.thread_id,itemId:item.item_id,text:item.text,output:item.output,revision:decimalU64(revision) ? revision:held?.revision,atMs:held?.atMs ?? observation.atMs,settledAt:held?.settledAt ?? null};
+          next[index<0 ? next.length:index]={turnId:turn.turn_id,nativeThreadId:turn.thread_id,itemId:item.item_id,text:item.text,output:item.output,revision:decimalU64(revision) ? revision:held?.revision,atMs:held?.atMs ?? observation.atMs,settledAt:null};
         }else if(held === undefined || (!Object.hasOwn(held,'output') && item.text.length>held.text.length)){
           next[index<0 ? next.length:index]={turnId:turn.turn_id,nativeThreadId:turn.thread_id,itemId:item.item_id,text:item.text,atMs:held?.atMs ?? observation.atMs,settledAt:held?.settledAt ?? null};
         }
@@ -121,22 +122,26 @@ export function reconcileLiveReplies(
     case 'phase': {
       if (!awaitsSettling(copies, observation.phase)) return copies;
       const start = observation.latestReadStart;
-      return copies.map((copy) => copy.settledAt === null ? { ...copy, settledAt: start } : copy);
+      return copies.map((copy) => nativeOutputCopy(copy) ? copy : copy.settledAt === null ? { ...copy, settledAt: start } : copy);
     }
     case 'transcript': {
       const stored = storedItemIds(observation.items);
       const kept = copies.filter((copy) => !(copy.nativeThreadId === null ? stored.has(copy.itemId)
         : observation.items.some(item=>item.method === 'item/completed' && item.item_uuid === copy.itemId
           && item.thread_id === copy.nativeThreadId && item.turn_id === copy.turnId))
-        && (copy.settledAt === null || observation.readStart <= copy.settledAt));
+        && (nativeOutputCopy(copy) || copy.settledAt === null || observation.readStart <= copy.settledAt));
       return kept.length === copies.length ? copies : kept;
     }
   }
 }
 
-/** Whether observing `phase` would settle a held copy: no reply streams, and one is not yet settled. */
+/** Native typed content needs a positive Completed/erase/visit fence. An idle read is not storage evidence. */
+function nativeOutputCopy(copy:LiveReplyCopy):boolean {
+  return copy.nativeThreadId !== null && Object.hasOwn(copy,'output');
+}
+
 export function awaitsSettling(copies: readonly LiveReplyCopy[], phase: HarnessPhaseTag): boolean {
-  return !replyMayStream(phase) && copies.some((copy) => copy.settledAt === null);
+  return !replyMayStream(phase) && copies.some((copy) => !nativeOutputCopy(copy) && copy.settledAt === null);
 }
 
 /** A run's confirmed identity and a live poll use the same retirement rule. */

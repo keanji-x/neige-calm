@@ -162,3 +162,13 @@ it('shows a malformed present native envelope as unavailable while retaining the
   expect(liveReplyTurns(reconcileLiveReplies(held,observe(output('11'))))[0]).toMatchObject({text:'Output unavailable'});
   expect(liveReplyTurns(reconcileLiveReplies(held,observe(output('13'))))[0]).toMatchObject({text:'accepted typed'});
 });
+
+it('holds typed native content through an ended phase and a newer Started-only read until a matching Completed',()=>{
+  const native:LiveReplyObservation={kind:'native-poll',atMs:1,reply:{contract:'conversation_v1',turn:{thread_id:'thread',turn_id:'turn',items:[{item_id:'item',text:'compatibility',output:{revision:'1',segment:{channel:'message',ordinal:'0'},content:{version:1,blocks:[{type:'text',text:'Frozen typed partial',fields:{}}]}}}]}}};
+  const held=run(native);
+  const started={method:'item/started',thread_id:'thread',turn_id:'turn',item_uuid:'item'};
+  const after=run(native,phase('wedged',10),transcript(11,[started]));
+  expect(liveReplyTurns(after)[0]).toMatchObject({text:'Frozen typed partial'});
+  expect(awaitsSettling(held,'wedged')).toBe(false);
+  expect(reconcileLiveReplies(after,transcript(12,[{...started,method:'item/completed'}]))).toEqual([]);
+});
