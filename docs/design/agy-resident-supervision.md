@@ -17,8 +17,10 @@ close retires the session attachment, revokes its grant and lets sibling
 sessions remain on the same server. Its durable workspace obligation lasts
 until the process generation drains. Track and Area teardown, and explicit
 abandonment that requires generation proof, stop the generation only after
-work outside the operation has finished. After confirmed exit, existing
-native session IDs can be reopened and attached credentials are renewed.
+work outside the operation has finished. During restart recovery, Antigravity
+accepts the executor’s exact interrupted-exit proof for the old generation.
+This policy assumes no background commands survive that exit. Existing native
+session IDs can then be reopened and attached credentials are renewed.
 [Service contract](https://antigravity.google/docs/ide/extensions/acp) ·
 [Close behavior](https://antigravity.google/docs/changelog?ide=vscode&tab=extensions)
 
