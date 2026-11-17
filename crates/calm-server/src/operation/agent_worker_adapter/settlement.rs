@@ -148,7 +148,7 @@ pub(super) async fn compensate(
     ctx: &SpawnCtx,
 ) -> Result<()> {
     let card = output.output_string("card_id", "agent worker cleanup")?;
-    let worker = output.output_string("runtime_id", "agent worker cleanup")?;
+    let worker = output.output_string("worker_session_id", "agent worker cleanup")?;
     adapter.harness.stop_task_worker(&worker).await?;
     if let Some(runtime) = ctx.repo.session_projection_by_id(&worker).await?
         && runtime.agent_provider == Some(AgentProvider::Codex)

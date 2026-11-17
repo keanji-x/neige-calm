@@ -1,6 +1,6 @@
 //! Read-only native transcript projection; source selection belongs to the card's declared profile.
 use super::*;
-use crate::model::HarnessItem;
+use crate::model::HarnessItem as TranscriptRow;
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
 enum EntryKey {
@@ -14,10 +14,10 @@ pub(super) async fn conversation(
 ) -> Result<String, TrackFsError> {
     let mut after = 0;
     let mut order = Vec::new();
-    let mut latest = BTreeMap::<EntryKey, HarnessItem>::new();
+    let mut latest = BTreeMap::<EntryKey, TranscriptRow>::new();
     loop {
         let rows = repo
-            .harness_item_list_transcript_by_card(card.as_str(), after, 500, false)
+            .transcript_renderable_items_by_card(card.as_str(), after, 500, false)
             .await
             .map_err(|error| TrackFsError::Internal(format!("native transcript read: {error}")))?;
         let count = rows.len();

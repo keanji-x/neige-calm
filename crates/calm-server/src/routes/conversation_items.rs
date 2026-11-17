@@ -121,7 +121,7 @@ pub(crate) async fn read(
     } else {
         let mut rows = s
             .repo
-            .harness_item_list_transcript_by_card(&id, after, limit, descending)
+            .transcript_renderable_items_by_card(&id, after, limit, descending)
             .await?;
         for item in &mut rows {
             project_item(item);

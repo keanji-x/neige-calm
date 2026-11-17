@@ -813,7 +813,7 @@ async fn turn_completed_failed_persists_outcome_row_readable_by_transcript() {
 
     // The read that `TRANSCRIPT_METHOD_PREDICATE` narrows in SQL.
     let transcript = repo
-        .harness_item_list_transcript_by_card(&card_id, 0, 100, false)
+        .transcript_renderable_items_by_card(&card_id, 0, 100, false)
         .await
         .unwrap();
     assert_eq!(

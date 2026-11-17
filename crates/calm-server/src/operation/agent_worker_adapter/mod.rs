@@ -156,7 +156,7 @@ impl WorkerAdmission for AgentWorkerAdapter {
         let (lease, event) =
             acquire_workspace_lease_tx(tx, &card_id, &task.track_id, &op.id, &plan).await?;
         let mut output = TxOutput::new("card", Some(card_id.clone()), serde_json::to_value(&card)?);
-        output.data = json!({"card_id":card_id,"runtime_id":worker,"track_id":task.track_id,"cwd":cwd,
+        output.data = json!({"card_id":card_id,"worker_session_id":worker,"track_id":task.track_id,"cwd":cwd,
             "lease_id":lease.lease_id,"branch":plan.branch,"base_sha":plan.base.base_sha,
             "canonical_path":plan.base.canonical_path,"prompt":prompt,"provider":provider,"selection":StoredSelection {model:turn.model.clone(),effort:turn.effort.clone()}});
         record_declared_head(&mut output.data, plan.declared_head());

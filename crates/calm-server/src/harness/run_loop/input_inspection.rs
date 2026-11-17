@@ -111,7 +111,7 @@ pub(super) async fn inspect(
     loop {
         let page = inner
             .repo
-            .harness_item_list_transcript_by_card(inner.card_id.as_str(), before, 128, true)
+            .transcript_renderable_items_by_card(inner.card_id.as_str(), before, 128, true)
             .await?;
         if page.is_empty() {
             break;

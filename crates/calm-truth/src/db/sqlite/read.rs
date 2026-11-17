@@ -723,7 +723,7 @@ impl RepoRead for SqlxRepo {
             .await
     }
 
-    async fn harness_item_list_transcript_by_card(
+    async fn transcript_renderable_items_by_card(
         &self,
         card_id: &str,
         after_id: i64,

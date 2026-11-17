@@ -131,7 +131,7 @@ async fn native_worker(mode: EndMode) {
             .tx_output
             .unwrap();
         let card = output.output_string("card_id", "test").unwrap();
-        let worker = output.output_string("runtime_id", "test").unwrap();
+        let worker = output.output_string("worker_session_id", "test").unwrap();
         assert!(h.repo.card_get(&card).await.unwrap().is_none());
         assert!(
             h.repo
@@ -336,7 +336,7 @@ async fn native_worker(mode: EndMode) {
             .await
             .unwrap()
             .unwrap();
-        registry.interrupt_task_worker(&output.output_string("runtime_id", "test").unwrap());
+        registry.interrupt_task_worker(&output.output_string("worker_session_id", "test").unwrap());
         let call = request(&mut peer).await;
         assert_eq!(call["method"], "turn/interrupt");
         send(&mut peer, json!({"id":call["id"],"result":{}})).await;
@@ -386,7 +386,14 @@ async fn native_worker(mode: EndMode) {
         .await
         .unwrap();
     assert_eq!(terminals, 0);
-    let replies:i64=sqlx::query_scalar("SELECT count(*) FROM harness_items WHERE card_id=?1 AND method='item/completed' AND json_extract(params,'$.item.text')='streamed'").bind(&card).fetch_one(h.repo.pool()).await.unwrap();
+    let replies: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM harness_items WHERE card_id=?1
+         AND method='item/completed' AND json_extract(params,'$.item.text')='streamed'",
+    )
+    .bind(&card)
+    .fetch_one(h.repo.pool())
+    .await
+    .unwrap();
     assert_eq!(replies, 1);
     let inputs:i64=sqlx::query_scalar("SELECT count(*) FROM harness_items WHERE card_id=?1 AND item_type='userMessage' AND method='item/completed'").bind(&card).fetch_one(h.repo.pool()).await.unwrap();
     assert_eq!(inputs, 1);

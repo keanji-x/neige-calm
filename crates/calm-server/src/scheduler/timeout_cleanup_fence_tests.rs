@@ -677,7 +677,15 @@ async fn agent_worker_turn_ended_rolls_back_failure_if_release_fails() {
         )
         .await
         .unwrap();
-    f.repo.db().writer().execute(sqlx::query("CREATE TRIGGER refuse_agent_worker_release BEFORE UPDATE OF state ON workspace_leases WHEN NEW.state='released' BEGIN SELECT RAISE(ABORT,'injected release failure'); END")).await.unwrap();
+    f.repo
+        .db()
+        .writer()
+        .execute(sqlx::query(
+            "CREATE TRIGGER refuse_agent_worker_release BEFORE UPDATE OF state ON workspace_leases
+         WHEN NEW.state='released' BEGIN SELECT RAISE(ABORT,'injected release failure'); END",
+        ))
+        .await
+        .unwrap();
     let result = crate::operation::agent_worker_adapter::settlement::settle(
         f.repo.as_ref(),
         &f.scheduler.events,

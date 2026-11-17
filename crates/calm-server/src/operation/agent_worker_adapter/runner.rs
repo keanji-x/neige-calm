@@ -30,7 +30,7 @@ pub(super) async fn spawn(
 ) -> Result<()> {
     if adapter
         .harness
-        .has_task_worker(&output.output_string("runtime_id", "agent-worker")?)
+        .has_task_worker(&output.output_string("worker_session_id", "agent-worker")?)
     {
         return Ok(());
     }
@@ -47,7 +47,7 @@ pub(super) async fn spawn(
     super::super::admit_task_side_effect(ctx.repo.as_ref(), &p.idempotency_key).await?;
     let saved = ctx
         .repo
-        .session_projection_by_id(&output.output_string("runtime_id", "agent-worker")?)
+        .session_projection_by_id(&output.output_string("worker_session_id", "agent-worker")?)
         .await?;
     if saved.is_some_and(|r| r.thread_id.is_some() || r.session_id.is_some()) {
         return Err(CalmError::Conflict(
@@ -55,7 +55,7 @@ pub(super) async fn spawn(
         ));
     }
     let card = output.output_string("card_id", "agent-worker")?;
-    let worker = output.output_string("runtime_id", "agent-worker")?;
+    let worker = output.output_string("worker_session_id", "agent-worker")?;
     let track = output.output_string("track_id", "agent-worker")?;
     let cwd = output.output_string("cwd", "agent-worker")?;
     let prompt = output.output_string("prompt", "agent-worker")?;

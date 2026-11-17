@@ -82,7 +82,9 @@ mod tests {
             let card=format!("task-worker-{}",provider.wire_name());
             let worker=format!("session-{card}");
             let op=format!("spawn-{}",provider.wire_name());
-            sqlx::query("INSERT INTO operations(id,operation_key,kind,idempotency_key,payload_hash,target_type,target_json,payload_json,phase,created_at_ms,updated_at_ms) VALUES(?1,?1,'agent-worker',?1,'fixture','card','{}','{}','pending',1,1)")
+            sqlx::query("INSERT INTO operations(id,operation_key,kind,idempotency_key,payload_hash,
+                target_type,target_json,payload_json,phase,created_at_ms,updated_at_ms)
+                VALUES(?1,?1,'agent-worker',?1,'fixture','card','{}','{}','pending',1,1)")
                 .bind(&op).execute(&mut **tx).await.unwrap();
             let digest=(provider!=AgentProvider::Codex).then(||"registration".to_owned());
             task_worker_create_tx(&mut tx,card.clone(),worker.clone(),op.clone(),NewCard {
@@ -115,7 +117,9 @@ mod tests {
         let writer_track = track.clone();
         db.writer().with_writer(move|session|Box::pin(async move {
             let mut tx=session.begin_immediate().await.unwrap();
-            sqlx::query("INSERT INTO operations(id,operation_key,kind,idempotency_key,payload_hash,target_type,target_json,payload_json,phase,created_at_ms,updated_at_ms) VALUES('native-op','native-op','agent-worker','native-attempt','fixture','card','{}','{}','pending',1,1)").execute(&mut **tx).await.unwrap();
+            sqlx::query("INSERT INTO operations(id,operation_key,kind,idempotency_key,payload_hash,
+                target_type,target_json,payload_json,phase,created_at_ms,updated_at_ms)
+                VALUES('native-op','native-op','agent-worker','native-attempt','fixture','card','{}','{}','pending',1,1)").execute(&mut **tx).await.unwrap();
             task_worker_create_tx(&mut tx,"native-card".into(),"native-session".into(),"native-op".into(),NewCard {
                 track_id:writer_track.clone().into(),kind:"codex".into(),title:None,sort:None,
                 payload:json!({"schemaVersion":1,"harness_profile":"task_worker","worker_provider":"codex","idempotency_key":"native-attempt"}),

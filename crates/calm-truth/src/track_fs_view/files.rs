@@ -71,7 +71,7 @@ impl TrackFsView<'_> {
                     .unwrap_or(card.updated_at);
                 let conversation_updated_at = if self.uses_native_transcript(&card).await? {
                     self.repo
-                        .harness_item_list_transcript_by_card(card.id.as_str(), 0, 1, true)
+                        .transcript_renderable_items_by_card(card.id.as_str(), 0, 1, true)
                         .await
                         .map_err(|error| {
                             TrackFsError::Internal(format!("native transcript metadata: {error}"))
