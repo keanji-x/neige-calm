@@ -112,3 +112,13 @@ describe('ReportTaskBlock', () => {
     expect(screen.getByText('Declaration ready')).toBeTruthy();
   });
 });
+
+it('shows agent provider, model and reasoning settings in the task details', async () => {
+  render(<ReportTaskBlock blockId="agent" payload={{ key: 'agent-run', kind: 'agent', goal: 'Inspect',
+    ready: true, declared_by: 'user', provider: 'opencode', model: 'model-x', reasoning_effort: 'high' }} />);
+  openTask();
+  expect(await screen.findByText('opencode')).toBeTruthy();
+  expect(screen.getByText('model-x')).toBeTruthy();
+  expect(screen.getByText('high')).toBeTruthy();
+  expect(screen.getByText('agent')).toBeTruthy();
+});

@@ -66,7 +66,7 @@ export function useConversationEscape({ open, store }: Readonly<{
   store: Pick<ConversationStore, 'working' | 'stopping' | 'interrupt'>;
 }>) {
   useEffect(() => {
-    if (open === null) return;
+    if (open === null || open.readOnly === true) return;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== 'Escape' || event.defaultPrevented || isImeKeyEvent(event)) return;
       if (!store.working || store.stopping) return;

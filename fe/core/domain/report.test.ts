@@ -1067,3 +1067,14 @@ describe('compact task declarations', () => {
     expect(taskBlockPayloadSchema.safeParse({ ...payload, goal: 'forbidden' }).success).toBe(false);
   });
 });
+
+it('decodes agent tasks without losing provider execution settings', () => {
+  const payload = { key: 'worker', kind: 'agent', provider: 'opencode', model: 'model-x', reasoning_effort: 'high',
+    goal: 'Inspect the change', ready: true, declared_by: 'user' };
+  const blocks = [{ id: 'agent-task', kind: 'task', payload }];
+  const report = readTrackReport([card({ payload: { body: '', blocks } })]);
+  const block = report?.blocks?.[0];
+  expect(block?.kind === 'task' ? block.payload : null).toEqual(payload);
+  const rows = deriveReportTasks(report?.blocks ?? [], []);
+  expect(rows[0]).toMatchObject({ state: 'ready', kind: 'agent' });
+});

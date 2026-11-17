@@ -101,6 +101,11 @@ export function ReportTaskBlock({ payload, blockId, task, renderExecution, textC
             </dd>
           </>
         )}
+        {worker !== null && 'provider' in worker && <>
+          {worker.provider != null && <><dt className={styles.label}>Provider</dt><dd className={styles.value}>{worker.provider}</dd></>}
+          {worker.model != null && <><dt className={styles.label}>Model</dt><dd className={styles.value}>{worker.model}</dd></>}
+          {worker.reasoning_effort != null && <><dt className={styles.label}>Reasoning effort</dt><dd className={styles.value}>{worker.reasoning_effort}</dd></>}
+        </>}
         <dt className={styles.label}>Declared by</dt>
         <dd className={styles.value}>{DECLARED_BY[live.declared_by]}</dd>
       </dl></>}

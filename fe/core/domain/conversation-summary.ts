@@ -3,6 +3,7 @@ import { CONVERSATION_STATE_SOURCE, conversationNameFrom, isOptimisticConversati
 
 /** Everything about the open conversation that does *not* come from its turns. */
 export type ConversationFacts = Readonly<{
+  readOnly?: boolean;
   sourceCardId?: string;
   cardId: string;
   provider: AgentProvider;
@@ -24,6 +25,7 @@ export function describeConversation(
 ): Conversation {
   return {
     provider: facts.provider,
+    ...(facts.readOnly === true ? { readOnly: true } : {}),
     id: facts.cardId, trackId: facts.trackId,
     ...(facts.sourceCardId === undefined ? {} : { sourceCardId: facts.sourceCardId }),
     /* Absent, not `''`: list rows do not repeat the surrounding Track title.

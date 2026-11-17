@@ -50,7 +50,7 @@ it('reveals the failed task with a reachable cause on hover and neutral declarat
 });
 
 
-it.each(['codex', 'claude'] as const)('keeps a completed %s review readable in task references and inventory', async (kind) => {
+it.each(['agent', 'codex', 'claude'] as const)('keeps a completed %s review readable in task references and inventory', async (kind) => {
   const report = readTrackReport([{
     id: 'report', track_id: 't', kind: 'track-report', title: null, sort: 0,
     deletable: false, created_at: 0, updated_at: 0,
