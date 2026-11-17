@@ -446,10 +446,12 @@ async fn canonical_antigravity_restart_resumes_native_and_dispatches_only_pendin
 async fn canonical_antigravity_restart_retires_interrupted_generation() {
     use workspace_runtime::execution::*;
 
-    let mut fx = Fixture::with_provider(AgentProvider::Antigravity, "reply", true).await;
+    let mut fx = Fixture::with_provider(AgentProvider::Antigravity, "shared-unknown", true).await;
     fx.dispatch().await.unwrap();
     fx.wait_idle().await;
-    assert!(fx.complete().await.is_some());
+    assert!(fx.complete().await.is_none());
+    let original = fx.receipt_bytes(&fx.submission).await;
+    assert_eq!(original.2, "unknown");
     let db = fx.owner.repo.db();
     let ids = calm_truth::db::sqlite::acp_resident::for_worker(db.read_pool(), &fx.owner.worker)
         .await
@@ -494,6 +496,14 @@ async fn canonical_antigravity_restart_retires_interrupted_generation() {
         .await
         .unwrap();
 
+    assert!(matches!(
+        crate::provider_execution::settlement(db, &execution)
+            .await
+            .unwrap(),
+        Some(Settlement::Journal(
+            ExecutionState::InterruptedQuiescent { .. }
+        ))
+    ));
     let (backend, session, _held) =
         session_for_provider(&fx.owner, &fx.dir, AgentProvider::Antigravity);
     recover_agy_fixture(&fx.owner, &session).await;
@@ -514,6 +524,14 @@ async fn canonical_antigravity_restart_retires_interrupted_generation() {
         .unwrap();
     assert_eq!(fx.prompts(), 1);
 
+    assert_eq!(fx.receipt_bytes(&fx.submission).await, original);
+    let frame = runtime_frame_observation(fx.owner.repo.pool(), &fx.owner.card, &fx.owner.worker)
+        .await
+        .unwrap();
+    assert_eq!(frame.snapshot.header.phase, HarnessPhaseTag::Idle);
+    assert!(frame.snapshot.canonical_inputs.active.is_none());
+
+    std::fs::write(fx.dir.path().join("scenario"), "reply").unwrap();
     fx.backend = backend;
     fx.session = session;
     let next = fx.claim_successor().await;

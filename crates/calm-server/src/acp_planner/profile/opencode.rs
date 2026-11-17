@@ -2,7 +2,7 @@
 //! `@opencode/cli` outside Neige; ACP authentication is deliberately not invoked.
 use super::{
     AcpAgentProfile, AgentEntry, AgentIdentity, AgentVersions, ModeLaunch, NOTHING, ResidentDetach,
-    ResidentProfile,
+    ResidentProfile, ResidentRestart,
 };
 
 // Native v2.1.3 config schema: packages/schema/src/config.ts and permission.ts.
@@ -33,8 +33,7 @@ pub(super) const PROFILE: AcpAgentProfile = AcpAgentProfile {
     resident: Some(ResidentProfile {
         launch: &RESIDENT_LAUNCH,
         detach: ResidentDetach::DrainGeneration,
-        restart_after_interrupted_quiescence: false,
-        release_unknown_on_restart: false,
+        restart: ResidentRestart::KeepUnconfirmed,
     }),
     mcp_call_session_key: Some("ai.opencode/sessionID"),
     background_tool_completions: false,

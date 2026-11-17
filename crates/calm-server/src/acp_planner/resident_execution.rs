@@ -1,6 +1,6 @@
 //! Engine ownership for one resident ACP generation. No card owns its process.
 use super::config::{AcpPlannerHost, Registration};
-use super::profile::AcpAgentProfile;
+use super::profile::{AcpAgentProfile, ResidentRestart};
 use crate::{
     db::sqlite::SqliteDb,
     error::{CalmError, Result},
@@ -286,7 +286,7 @@ async fn drain(
 fn accepts_interrupted_restart(provider: &AgentProvider) -> bool {
     AcpAgentProfile::of(provider)
         .and_then(|profile| profile.resident)
-        .is_some_and(|resident| resident.restart_after_interrupted_quiescence)
+        .is_some_and(|resident| resident.restart == ResidentRestart::ResumeAfterOwnerExit)
 }
 
 async fn interrupted_restart_allowed(pool: &SqliteDb, id: &ExecutionId) -> Result<bool> {

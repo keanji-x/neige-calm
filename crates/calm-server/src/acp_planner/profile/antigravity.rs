@@ -2,7 +2,7 @@
 //! with `agy acp --login` before registering it.
 use super::{
     AcpAgentProfile, AgentEntry, AgentIdentity, AgentVersions, CompactionWire, ContractCompaction,
-    NOTHING, ResidentDetach, ResidentProfile,
+    NOTHING, ResidentDetach, ResidentProfile, ResidentRestart,
 };
 
 pub(super) const PROFILE: AcpAgentProfile = AcpAgentProfile {
@@ -10,8 +10,7 @@ pub(super) const PROFILE: AcpAgentProfile = AcpAgentProfile {
     resident: Some(ResidentProfile {
         launch: &NOTHING,
         detach: ResidentDetach::CloseSession,
-        restart_after_interrupted_quiescence: true,
-        release_unknown_on_restart: true,
+        restart: ResidentRestart::ResumeAfterOwnerExit,
     }),
     mcp_call_session_key: None,
     background_tool_completions: true,

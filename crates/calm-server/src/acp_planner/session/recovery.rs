@@ -1,6 +1,7 @@
 //! Canonical retained recovery. Receipt identity comes from the Initial's
 //! checkpoint/proof, never a latest-row heuristic or the historical queue.
 use super::*;
+use crate::acp_planner::profile::ResidentRestart;
 use crate::db::sqlite::conversation::*;
 use crate::db::sqlite::{AcpCanonicalInput, AcpSubmissionInput, AcpSubmissionState};
 use calm_types::conversation::{InputAttemptFact, InputCorrelationFact, InputDeliveryFact};
@@ -225,7 +226,7 @@ pub(in crate::acp_planner) async fn recover_shared_after_boot(
             &card,
             &worker,
             &provider,
-            policy.release_unknown_on_restart,
+            policy.restart,
             legacy_swept,
         )
         .await
@@ -241,7 +242,7 @@ async fn recover_shared_claim(
     card: &str,
     worker: &str,
     provider: &AgentProvider,
-    release_unknown_on_restart: bool,
+    restart: ResidentRestart,
     legacy_swept: bool,
 ) -> Result<()> {
     let completed = write_in_tx_typed(repo, {
@@ -285,7 +286,7 @@ async fn recover_shared_claim(
                     // Stopping the resident proves there can be no later END, but
                     // cannot tell whether its prompt reached the provider. Preserve
                     // the active input so explicit Keep or Abandon owns the decision.
-                    if !release_unknown_on_restart {
+                    if restart == ResidentRestart::KeepUnconfirmed {
                         if matches!(receipt.state, AcpSubmissionState::Sending) {
                             crate::db::sqlite::acp_submission_finish_tx(
                                 tx,

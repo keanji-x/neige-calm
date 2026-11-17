@@ -35,13 +35,19 @@ pub(crate) enum ResidentDetach {
     DrainGeneration,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ResidentRestart {
+    /// Require a full drain and keep unconfirmed turns for explicit resolution.
+    KeepUnconfirmed,
+    /// Resume after verified owner exit, preserving unconfirmed outcomes without resending.
+    ResumeAfterOwnerExit,
+}
+
 #[derive(Clone, Copy)]
 pub(crate) struct ResidentProfile {
     pub(crate) launch: &'static ModeLaunch,
     pub(crate) detach: ResidentDetach,
-    /// Accept the executor’s original-process exit proof after a restart.
-    pub(crate) restart_after_interrupted_quiescence: bool,
-    pub(crate) release_unknown_on_restart: bool,
+    pub(crate) restart: ResidentRestart,
 }
 
 pub(crate) struct AcpAgentProfile {
