@@ -800,4 +800,5 @@ mod agent_backend_tests;
 #[cfg(test)]
 mod agent_backend_binding_tests;
 
+#[cfg(test)]
 mod task_worker_tests;

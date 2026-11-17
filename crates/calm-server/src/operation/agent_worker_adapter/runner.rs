@@ -259,35 +259,32 @@ pub(super) async fn spawn(
         } else {
             crate::provider_execution::StopReason::Finished
         };
-        if result.is_err() || cancel_requested {
-            if let provider::control::InterruptOutcome::Unconfirmed { error, .. } =
+        if (result.is_err() || cancel_requested)
+            && let provider::control::InterruptOutcome::Unconfirmed { error, .. } =
                 runner.turn.interrupt(&turn_id).await
-            {
-                if runner.provider == AgentProvider::Codex {
-                    let stopped = async {
-                        let runtime = runner
-                            .ctx
-                            .repo
-                            .session_projection_by_id(&runner.worker)
-                            .await?
-                            .ok_or_else(|| {
-                                CalmError::Conflict("worker identity disappeared".into())
-                            })?;
-                        let daemon = runner.adapter.backends.for_session(&runner.worker).await?;
-                        crate::harness::backend::factory::PlannerFactory::stop_timed_out_worker(
-                            &runtime,
-                            Some(daemon),
-                        )
-                        .await
-                    }
-                    .await;
-                    if let Err(error) = stopped {
-                        tracing::error!(%error,worker=%runner.worker,"worker stop unconfirmed; retaining lease");
-                        return;
-                    }
-                } else {
-                    tracing::warn!(%error,worker=%runner.worker,"native cancel unconfirmed; stopping managed execution");
+        {
+            if runner.provider == AgentProvider::Codex {
+                let stopped = async {
+                    let runtime = runner
+                        .ctx
+                        .repo
+                        .session_projection_by_id(&runner.worker)
+                        .await?
+                        .ok_or_else(|| CalmError::Conflict("worker identity disappeared".into()))?;
+                    let daemon = runner.adapter.backends.for_session(&runner.worker).await?;
+                    crate::harness::backend::factory::PlannerFactory::stop_timed_out_worker(
+                        &runtime,
+                        Some(daemon),
+                    )
+                    .await
                 }
+                .await;
+                if let Err(error) = stopped {
+                    tracing::error!(%error,worker=%runner.worker,"worker stop unconfirmed; retaining lease");
+                    return;
+                }
+            } else {
+                tracing::warn!(%error,worker=%runner.worker,"native cancel unconfirmed; stopping managed execution");
             }
         }
         if let Err(error) = result {

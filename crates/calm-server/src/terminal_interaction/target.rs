@@ -360,15 +360,15 @@ impl TerminalInteraction {
             Target::Attempt(id) => {
                 let task = Self::current_task(repo, track, id).await?;
                 let card = Self::attempt_worker_card(repo, &task).await?;
-                if let Some(owner) = repo.card_get(card).await? {
-                    if owner.payload["harness_profile"] == "task_worker" {
-                        return Err(refused(
-                            "headless_worker",
-                            "Agent Worker uses structured conversation; no terminal is available"
-                                .into(),
-                        )
-                        .into());
-                    }
+                if let Some(owner) = repo.card_get(card).await?
+                    && owner.payload["harness_profile"] == "task_worker"
+                {
+                    return Err(refused(
+                        "headless_worker",
+                        "Agent Worker uses structured conversation; no terminal is available"
+                            .into(),
+                    )
+                    .into());
                 }
                 let terminal = repo.terminal_get_by_card(card).await?;
                 (Some(task), terminal)

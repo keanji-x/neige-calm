@@ -190,9 +190,7 @@ pub(super) async fn compensate(
             {
                 // A committed business outcome takes precedence over startup compensation.
                 let events = settle_tx(tx, &write, attempt, card, worker).await?;
-                return Ok(
-                    super::super::workspace_lease::append_workspace_events_tx(tx, events).await?,
-                );
+                return super::super::workspace_lease::append_workspace_events_tx(tx, events).await;
             }
             let existing = match crate::db::sqlite::card_for_update_tx(tx, &card).await {
                 Ok(card) => Some(card),
