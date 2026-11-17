@@ -291,7 +291,8 @@ describe('mobile and desktop paint the same data-nc-activity set', () => {
   const verdicts = track({ cards: { 'card-1': 'working', 'card-9': 'failed' } });
 
   it.each(['tasks', 'cards'] as const)('on the %s module', (panel) => {
-    const { container } = renderPage({ cards: CARDS, tasks: TASKS, track: verdicts, panel });
+    const { container } = renderPage({ cards: CARDS, tasks: TASKS, track: verdicts, panel,
+      existingCardIds: new Set(['card-1', 'card-2', 'card-3', 'card-9']) });
     const mobile = activityByRow(mobilePanel(container));
     openInventoryDisclosures(container);
     const desktop = activityByRow(container.querySelector('[data-nc-desktop-panel]')!);
