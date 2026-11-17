@@ -96,5 +96,4 @@ impl Commands {
 }
 
 #[cfg(test)]
-#[path = "command_tests.rs"]
 mod tests;
