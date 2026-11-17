@@ -1,4 +1,4 @@
-//! Owner publication fences shared by finite Report and conversation reads.
+//! Owner publication fences shared by finite Track resource reads.
 use crate::{auth::Principal, db::RouteRepo, error::Result, ids::AreaId};
 
 pub(crate) struct ReadFence {

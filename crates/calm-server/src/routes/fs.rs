@@ -25,6 +25,8 @@ pub(crate) mod host_access_tests;
 mod html_page;
 pub(crate) mod share_read;
 use share_read::ShareRead;
+#[cfg(test)]
+mod text_read_tests;
 mod track_workspace;
 use track_workspace::open_track_workspace_file;
 
@@ -368,16 +370,24 @@ pub(crate) async fn readfile_raw(
 )]
 pub(crate) async fn read_track_workspace_file(
     State(s): State<RouteState>,
+    principal: Principal,
     RoutePath(track_id): RoutePath<String>,
     Query(q): Query<WorkspacePathQuery>,
 ) -> Result<Json<ReadFileResponse>> {
+    let fence =
+        crate::read_access::ReadFence::check(s.repo.as_ref(), &track_id, &principal).await?;
     let track = s
         .repo
         .track_get(&track_id)
         .await?
         .ok_or_else(|| CalmError::NotFound(format!("track {track_id}")))?;
+    crate::track_access::require_same_area(&fence.area, &track.area_id)?;
     let opened = open_track_workspace_file(Path::new(track.workspace.agent_cwd()), &q.path).await?;
-    Ok(Json(read_workspace_file_response(opened).await?))
+    let file = read_workspace_file_response(opened).await?;
+    fence
+        .publish(s.repo.as_ref(), &track_id, &principal)
+        .await?;
+    Ok(Json(file))
 }
 
 #[utoipa::path(
@@ -398,16 +408,24 @@ pub(crate) async fn read_track_workspace_file(
 )]
 pub(crate) async fn read_track_workspace_file_raw(
     State(s): State<RouteState>,
+    principal: Principal,
     RoutePath(track_id): RoutePath<String>,
     Query(q): Query<WorkspacePathQuery>,
 ) -> Result<Response> {
+    let fence =
+        crate::read_access::ReadFence::check(s.repo.as_ref(), &track_id, &principal).await?;
     let track = s
         .repo
         .track_get(&track_id)
         .await?
         .ok_or_else(|| CalmError::NotFound(format!("track {track_id}")))?;
+    crate::track_access::require_same_area(&fence.area, &track.area_id)?;
     let opened = open_track_workspace_file(Path::new(track.workspace.agent_cwd()), &q.path).await?;
-    read_workspace_file_raw_response(opened).await
+    let response = read_workspace_file_raw_response(opened).await?;
+    fence
+        .publish(s.repo.as_ref(), &track_id, &principal)
+        .await?;
+    Ok(response)
 }
 
 #[utoipa::path(
@@ -1293,9 +1311,12 @@ fn decode_capped_utf8(
     binary_message: &str,
     path: impl Display,
 ) -> Result<String> {
+    if buf.contains(&0) {
+        return Err(CalmError::BadRequest(format!("{binary_message}: {path}")));
+    }
     match std::str::from_utf8(buf) {
         Ok(s) => Ok(s.to_string()),
-        Err(e) if truncated => {
+        Err(e) if truncated && e.error_len().is_none() => {
             let valid = e.valid_up_to();
             Ok(String::from_utf8_lossy(&buf[..valid]).into_owned())
         }
@@ -1623,6 +1644,7 @@ mod tests {
                 answers.push(("readfile-raw", answered(e).await));
                 let Err(e) = read_track_workspace_file(
                     State(state.clone()),
+                    host_access_tests::owner_principal().await,
                     RoutePath(track.clone()),
                     workspace(),
                 )
@@ -1633,6 +1655,7 @@ mod tests {
                 answers.push(("workspace readfile", answered(e).await));
                 let e = read_track_workspace_file_raw(
                     State(state.clone()),
+                    host_access_tests::owner_principal().await,
                     RoutePath(track),
                     workspace(),
                 )
@@ -1905,6 +1928,7 @@ mod tests {
         ] {
             let Json(text) = read_track_workspace_file(
                 State(state.clone()),
+                host_access_tests::owner_principal().await,
                 RoutePath(track.clone()),
                 Query(WorkspacePathQuery {
                     path: "same.txt".into(),
@@ -1915,6 +1939,7 @@ mod tests {
             assert_eq!(text.text, expected_text);
             let raw = read_track_workspace_file_raw(
                 State(state.clone()),
+                host_access_tests::owner_principal().await,
                 RoutePath(track.clone()),
                 Query(WorkspacePathQuery {
                     path: "same.png".into(),
@@ -1932,6 +1957,7 @@ mod tests {
 
         let unknown = read_track_workspace_file(
             State(state.clone()),
+            host_access_tests::owner_principal().await,
             RoutePath("missing-track".into()),
             Query(WorkspacePathQuery {
                 path: "same.txt".into(),
@@ -1943,6 +1969,7 @@ mod tests {
 
         let escaping = read_track_workspace_file(
             State(state),
+            host_access_tests::owner_principal().await,
             RoutePath(track_a),
             Query(WorkspacePathQuery {
                 path: "../same.txt".into(),
@@ -1980,20 +2007,26 @@ mod tests {
 
         let text = read_track_workspace_file(
             State(state.clone()),
+            host_access_tests::owner_principal().await,
             RoutePath(track_a.clone()),
             missing_path(),
         )
         .await
         .unwrap_err();
         assert_eq!(answered(text).await, path_not_found);
-        let raw =
-            read_track_workspace_file_raw(State(state.clone()), RoutePath(track_a), missing_path())
-                .await
-                .unwrap_err();
+        let raw = read_track_workspace_file_raw(
+            State(state.clone()),
+            host_access_tests::owner_principal().await,
+            RoutePath(track_a),
+            missing_path(),
+        )
+        .await
+        .unwrap_err();
         assert_eq!(answered(raw).await, path_not_found);
 
         let gone_track = read_track_workspace_file(
             State(state.clone()),
+            host_access_tests::owner_principal().await,
             RoutePath("missing-track".into()),
             missing_path(),
         )
@@ -2285,7 +2318,7 @@ mod tests {
         assert!(!diff.truncated);
     }
 
-    fn git(root: &Path, args: &[&str]) {
+    pub(super) fn git(root: &Path, args: &[&str]) {
         let status = StdCommand::new("git")
             .arg("-C")
             .arg(root)

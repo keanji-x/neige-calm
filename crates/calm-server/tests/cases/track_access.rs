@@ -12,6 +12,9 @@ use tower::ServiceExt;
 const PRIVATE_CARD: &str = "private Track card body";
 const PRIVATE_OVERLAY: &str = "private Track overlay body";
 
+#[path = "track_access/workspace_files.rs"]
+mod workspace_files;
+
 struct Fixture {
     app: axum::Router,
     state: calm_server::state::AppState,
@@ -25,6 +28,10 @@ struct Fixture {
 
 impl Fixture {
     async fn new() -> Self {
+        Self::in_workspace(std::path::Path::new("/fixture/private-track")).await
+    }
+
+    async fn in_workspace(workspace: &std::path::Path) -> Self {
         let state = fresh_state().await;
         let repo = state.raw_repo();
         let pool = repo.sqlite_db().unwrap();
@@ -75,7 +82,7 @@ impl Fixture {
                     area_id: area.id.clone(),
                     title: "Private Track".into(),
                     sort: None,
-                    cwd: "/fixture/private-track".into(),
+                    cwd: workspace.to_string_lossy().into_owned(),
                     template_id: None,
                     plugin_scope: None,
                     template_input: Some(json!({"private": "template input"})),
