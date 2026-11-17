@@ -739,6 +739,8 @@ async fn c1_fence_cancelled_compact_system_error_recovery_under_track() {
         inner.backend.subscribe_events(),
         inner.live_claim.writer(),
         false,
+        // This unstarted historical fixture has no canonical progress signal.
+        None,
     ));
     tokio::time::timeout(
         Duration::from_secs(2),

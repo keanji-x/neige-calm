@@ -6,6 +6,8 @@
 //! Detach leases fence one thread and fail recheck on source-generation changes.
 use super::*;
 mod detach;
+mod source_loss;
+pub(crate) use source_loss::SourceLossWatch;
 #[cfg(test)]
 mod diagnostics;
 mod history;
@@ -186,6 +188,7 @@ impl ThreadSlot {
 
 #[derive(Default)]
 struct State {
+    source_loss: source_loss::SourceLoss,
     source: Option<Weak<CodexAppServer>>,
     slots: HashMap<String, ThreadSlot>,
     // The bool records a thread removal deferred until this lease drops.
