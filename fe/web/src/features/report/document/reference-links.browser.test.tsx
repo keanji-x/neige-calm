@@ -7,6 +7,22 @@ import { ReportDocument } from './public.tsx';
 
 afterEach(() => { cleanup(); document.getSelection()?.removeAllRanges(); });
 
+it('previews a Chinese inline-code file through the existing report file resource', async () => {
+  const path = '_local/2026-11-17/交付-productlist-pl_tianji1116.md';
+  const report = { summary: '', body: '`tasks/green_shared/deliverables/productlist_pl_tianji1116/`，交付 md `' + path + '`，飞书 delivery 已发。', blocks: null };
+  render(<ReportDocument report={report} fileRoot="/repo" empty={null} linkPreview={{ trackId: 't', report,
+    files: {
+      readFile: (requested) => requested === path
+        ? Promise.resolve({ path, text: '# 中文交付内容', size: 20, truncated: false })
+        : Promise.reject(new Error('Unexpected file path')),
+      rawUrl: (value) => value,
+    },
+  }} />);
+  expect(screen.queryByRole('button', { name: 'tasks/green_shared/deliverables/productlist_pl_tianji1116/' })).toBeNull();
+  await userEvent.click(screen.getByRole('button', { name: path }));
+  expect(await screen.findByRole('heading', { name: '中文交付内容' })).toBeTruthy();
+});
+
 it('links issue references and Markdown in the real Reference task fields', async () => {
   const openFile = vi.fn();
   render(<ReportDocument report={{ summary: '', body: '', blocks: [

@@ -27,6 +27,15 @@ function prose(id: string, markdown: string): ReportBlock {
 }
 
 describe('ReportDocument', () => {
+  it('opens the complete Chinese inline-code file path while leaving directories literal', () => {
+    const openFile = vi.fn();
+    render(<ReportDocument report={flat('`tasks/green_shared/deliverables/productlist_pl_tianji1116/`，交付 md `_local/2026-11-17/交付-productlist-pl_tianji1116.md`，飞书 delivery 已发。')}
+      fileRoot="/repo" onOpenFileLink={openFile} empty={EMPTY} />);
+    expect(screen.queryByRole('button', { name: 'tasks/green_shared/deliverables/productlist_pl_tianji1116/' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: '_local/2026-11-17/交付-productlist-pl_tianji1116.md' }));
+    expect(openFile).toHaveBeenCalledWith({ path: '_local/2026-11-17/交付-productlist-pl_tianji1116.md' });
+  });
+
   it('renders the empty state when there is no report', () => {
     render(<ReportDocument report={null} empty={EMPTY} />);
     expect(screen.getByText('Nothing yet.')).toBeTruthy();

@@ -42,6 +42,14 @@ it('normalizes source line/range suffixes through the file owner', () => {
   expect(target !== null && reportFilePathRelativeToRoot('/repo', target)).toBeNull();
 });
 
+it.each(['_local/2026-11-17/交付-productlist-pl_tianji1116.md', '交付/报告.md', './docs/cafe\u0301.md:12-20'])('recognizes the complete Unicode inline-code file path %s', value => {
+  expect(qualifiedReportFileReference(value)).toBe(true);
+});
+
+it.each(['tasks/green_shared/deliverables/productlist_pl_tianji1116/', '交付/报告/', '交付/报告', '报告.md', 'cat 交付/报告.md', 'https://example.com/交付/报告.md'])('keeps non-file expressions out of inline-code navigation: %s', value => {
+  expect(qualifiedReportFileReference(value)).toBe(false);
+});
+
 it.each(['foo.bar', 'api_suite', '/api/tracks', 'cargo fmt --check', 'https://evil.invalid/a/code.ts', 'javascript:bad/code.ts', 'user@folder/code.ts'])('does not turn unrelated expression %s into a file destination', text => {
   expect(reportTextReferences(text, null)).toEqual([{ text, destination: null }]);
 });
