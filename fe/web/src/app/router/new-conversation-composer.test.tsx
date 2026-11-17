@@ -186,7 +186,9 @@ it('offers the registered managed backend and sends the selected provider', asyn
   const { requests } = renderApp(true);
   await expectEmptyConversationList();
   await pressPlus();
-  fireEvent.click(await screen.findByRole('button', { name: /Model:/ }));
+  fireEvent.click(await screen.findByRole('button', { name: /^Agent:/ }));
+  fireEvent.click(await screen.findByRole('menuitem', { name: 'claude' }));
+  fireEvent.click(await screen.findByRole('button', { name: /^Model:/ }));
   fireEvent.click(await screen.findByRole('menuitem', { name: 'Sonnet' }));
   await typeInto('Use the selected backend');
   fireEvent.click(screen.getByRole('button', { name: 'Send' }));

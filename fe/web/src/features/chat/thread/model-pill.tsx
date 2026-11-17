@@ -1,6 +1,6 @@
 // The model picker in a planner conversation's composer footer, and on the new-track page. Presentational:
-// every value is a prop; the queries and the write live in `app/router`. Each provider's catalog is one
-// group; on the new-track page the pick also decides the Planner's provider (#1810), and each group
+// every value is a prop; the queries and the write live in `app/router`. Agent and model have separate
+// controls; on the new-track page the agent also decides the Planner's provider (#1810), and each catalog
 // follows its provider's availability (#1817). A Claude group is the Claude CLI's own list (#1822).
 // Beside it, a Planner conversation's approval setting (#2348), and the Planner's role on the new-track page and in
 // an existing Planner conversation, triggers of the same kind.
@@ -11,7 +11,7 @@ import { HStack } from '@astryxdesign/core/HStack';
 import { Icon as AstryxIcon } from '@astryxdesign/core/Icon';
 import { Text } from '@astryxdesign/core/Text';
 import { VisuallyHidden } from '@astryxdesign/core/VisuallyHidden';
-import { Fragment, useRef, type KeyboardEvent, type ReactNode, type RefObject } from 'react';
+import { useRef, type KeyboardEvent, type ReactNode, type RefObject } from 'react';
 
 import type { AgentProvider, PlannerPermissionMode } from '../../../../../core/api/generated/wire.ts';
 import {
@@ -137,11 +137,10 @@ export function ModelPill<Provider extends string = AgentProvider>({
   const hostRef = useRef<HTMLSpanElement | null>(null);
 
   const shown = visibleModelGroups(groups, provider);
-  const grouped = shown.length > 1 || shown.some(group => group.selectionProblem !== undefined);
-  const catalog = groups.find((group) => group.provider === provider)?.catalog ?? null;
+  const currentGroup = groups.find((group) => group.provider === provider);
+  const catalog = currentGroup?.catalog ?? null;
   const models = catalog?.models ?? [];
-  const unreachable = shown.length > 0
-    && shown.every((group) => group.catalog !== null && group.catalog.source === 'unavailable');
+  const unreachable = catalog?.source === 'unavailable';
   const defaultName = defaultNameOf(catalog);
   /* Following the installation default is still running a model, so the effort control belongs here too: these are the efforts of whatever the default resolves to now. */
   const followed = catalog?.default.model == null
@@ -153,11 +152,9 @@ export function ModelPill<Provider extends string = AgentProvider>({
   /* A Claude default resolves to a model a listed entry also runs (#1822): that entry's name is the one to show. */
   const defaultEntry = defaultName === null ? undefined : models.find((model) => model.resolved_model === defaultName);
   /* The trigger names the model, not the route to it; `Default` alone only when nothing truer can be said, and an unlisted slug still names what runs. */
-  const named = selection.model === null
+  const label = selection.model === null
     ? (defaultEntry?.display_name ?? defaultName ?? FOLLOW_DEFAULT_LABEL)
     : (chosen?.display_name ?? selection.model);
-  /* With more than one provider on offer, the pick is a provider too, and the trigger says whose. */
-  const label = grouped ? `${providerLabel(groups.find(group => group.provider === provider), provider)} ${named}` : named;
   /* The accessible name keeps what the visible one dropped. A person reading
      the pill has the menu one press away; a person hearing it does not. */
   const spokenLabel = selection.model === null && defaultName !== null
@@ -170,10 +167,12 @@ export function ModelPill<Provider extends string = AgentProvider>({
   const effortDefault = selection.model === null
     ? catalog?.default.reasoning_effort ?? null
     : chosen?.default_reasoning_effort ?? null;
-  const switchNote = shown.some((group) => group.selectionProblem === undefined && legacyPresentation(group.provider)?.switchNote);
+  const switchNote = currentGroup?.selectionProblem === undefined && legacyPresentation(provider)?.switchNote;
 
   return (
     <HStack gap={1} align="center" wrap="wrap" className={styles.group}>
+      <AgentPill groups={shown} provider={provider} isDisabled={isDisabled} placement={placement}
+        effortControl={effortControl} onChange={(next) => onChange({ model: null, reasoning_effort: null }, next)} />
       <span ref={hostRef} className={styles.host} onKeyDownCapture={closeOnEscape(open, setOpen, hostRef)}>
         <DropdownMenu
           placement={placement}
@@ -191,26 +190,12 @@ export function ModelPill<Provider extends string = AgentProvider>({
             ),
             variant: effortControl === 'in-menu' ? 'secondary' : 'ghost',
             size: 'sm',
-            isDisabled: isDisabled || (unreachable && !shown.some(group => group.selectionProblem === null || group.acceptsUnavailableBlankTrack === true)),
+            isDisabled: isDisabled || currentGroup === undefined || (unreachable && currentGroup.selectionProblem !== null && currentGroup.acceptsUnavailableBlankTrack !== true),
             className: styles.trigger,
           }}
         >
-          {shown.map((group, index) => {
-            const heading = group.provider === 'opencode' ? 'OpenCode (Beta)' : providerLabel(group, group.provider);
-            const choices = (
-              <GroupChoices group={group} selection={group.provider === provider ? selection : null}
-                onChange={(next) => onChange(next, group.provider)} />
-            );
-            return grouped ? (
-              <Fragment key={group.provider}>
-                {index > 0 && <Divider />}
-                <div role="group" aria-label={heading}>
-                  <div className={styles.groupHeading} aria-hidden="true">{heading}</div>
-                  {choices}
-                </div>
-              </Fragment>
-            ) : <Fragment key={group.provider}>{choices}</Fragment>;
-          })}
+          {currentGroup !== undefined && <GroupChoices group={currentGroup} selection={selection}
+            onChange={(next) => onChange(next, provider)} />}
           {effortControl === 'in-menu' && efforts.length > 1 && (
             <>
               <Divider />
@@ -246,7 +231,44 @@ export function ModelPill<Provider extends string = AgentProvider>({
   );
 }
 
-/** One group's rows: Default, then the catalog. `selection` is `null` when the pick lies in another group. */
+/** Provider changes start at that provider's default; reselecting it preserves the current model. */
+function AgentPill<Provider extends string>({ groups, provider, onChange, isDisabled, placement, effortControl }: Readonly<{
+  groups: readonly ModelGroup<Provider>[];
+  provider: Provider;
+  onChange: (provider: Provider) => void;
+  isDisabled: boolean;
+  placement: 'above' | 'below';
+  effortControl: 'separate' | 'in-menu';
+}>) {
+  const [open, setOpen] = useState(false);
+  const hostRef = useRef<HTMLSpanElement | null>(null);
+  const label = providerLabel(groups.find(group => group.provider === provider), provider);
+  return <span ref={hostRef} className={styles.host} onKeyDownCapture={closeOnEscape(open, setOpen, hostRef)}>
+    <DropdownMenu placement={placement} isMenuOpen={open && !isDisabled}
+      onOpenChange={next => setOpen(next && !isDisabled)} hasChevron={false}
+      button={{ label: `Agent: ${label}`, children: <Text type="inherit" color="inherit" maxLines={1} hasTruncateTooltip>{label}</Text>,
+        variant: effortControl === 'in-menu' ? 'secondary' : 'ghost', size: 'sm', isDisabled, className: styles.trigger }}>
+      {groups.map(group => <div key={group.provider} role="group" aria-label={providerLabel(group, group.provider)}>
+        <GroupNotices group={group} />
+        <Choice label={group.provider === 'opencode' ? 'OpenCode (Beta)' : providerLabel(group, group.provider)}
+          isSelected={group.provider === provider} isDisabled={selectionBlocked(group)}
+          onSelect={() => { if (group.provider !== provider) onChange(group.provider); }} />
+      </div>)}
+    </DropdownMenu>
+  </span>;
+}
+
+function selectionBlocked(group: ModelGroup<string>): boolean {
+  return unavailabilityReason(group) !== null
+    && (group.selectionProblem !== undefined || group.acceptsUnavailableBlankTrack !== true);
+}
+
+function unavailabilityReason(group: ModelGroup<string>): string | null {
+  return group.selectionProblem === undefined
+    ? (group.availability?.status === 'unavailable' ? group.availability.reason : null) : group.selectionProblem;
+}
+
+/** The selected agent's rows: Default, then its catalog. */
 function GroupChoices<Provider extends string>({ group, selection, onChange }: Readonly<{
   group: ModelGroup<Provider>;
   selection: ModelSelection | null;
@@ -254,24 +276,8 @@ function GroupChoices<Provider extends string>({ group, selection, onChange }: R
 }>) {
   const models: readonly CatalogEntry[] = group.catalog?.models ?? [];
   const defaultName = defaultNameOf(group.catalog);
-  const unreachable = group.catalog !== null && group.catalog.source === 'unavailable';
-  /* A provider that cannot run now says why in the server's own words; one create refuses then offers
-     nothing to pick, and one create still accepts stays pickable under a warning. */
-  const reason = group.selectionProblem === undefined
-    ? (group.availability?.status === 'unavailable' ? group.availability.reason : null) : group.selectionProblem;
-  const refused = group.selectionProblem !== undefined || group.acceptsUnavailableBlankTrack !== true;
-  const blocked = refused ? reason : null;
   return <>
-    {group.selectionProblem !== undefined && group.availability?.authentication_notice != null && (
-      <div className={styles.reason} role="note"><Text type="supporting">{group.availability.authentication_notice.text}</Text></div>
-    )}
-    {reason !== null && (
-      <div className={refused ? styles.reason : `${styles.reason} ${styles.warning}`} role="note">
-        <Text type="supporting" color={refused ? undefined : 'inherit'}>
-          {`${providerLabel(group, group.provider)} is unavailable: ${reason}${refused ? '' : ` ${unavailableCreationNote(providerLabel(group, group.provider))}`}`}
-        </Text>
-      </div>
-    )}
+    <GroupNotices group={group} />
     <Choice
       /* A Claude default is described by the CLI's own entry: "Default", and the model it resolves to beside it. */
       label={group.catalog?.default_source === 'acp_session' ? `Session settings (${defaultName ?? 'current'})`
@@ -279,7 +285,7 @@ function GroupChoices<Provider extends string>({ group, selection, onChange }: R
         : group.catalog?.default_source === 'claude_cli' ? <ResolvedLabel name={FOLLOW_DEFAULT_LABEL} resolved={defaultName} />
           : `${FOLLOW_DEFAULT_LABEL} (${defaultName})`}
       isSelected={selection !== null && selection.model === null}
-      isDisabled={blocked !== null}
+      isDisabled={selectionBlocked(group)}
       onSelect={() => onChange({ model: null, reasoning_effort: null })}
     />
     {models.map((model) => (
@@ -289,17 +295,35 @@ function GroupChoices<Provider extends string>({ group, selection, onChange }: R
         label={model.resolved_model === null ? model.display_name
           : <ResolvedLabel name={model.display_name} resolved={model.resolved_model} />}
         isSelected={selection !== null && selection.model === model.model}
-        isDisabled={blocked !== null}
+        isDisabled={selectionBlocked(group)}
         /* Switching model drops the effort: one chosen for the previous model may not exist on this one. */
         onSelect={() => onChange({ model: model.model, reasoning_effort: null })}
       />
     ))}
-    {models.length === 0 && reason === null && (
-      <DropdownMenuItem
-        label={unreachable ? (group.selectionProblem !== undefined ? `${group.provider} model catalog is unavailable`
-          : legacyPresentation(group.provider)?.unavailable ?? `${group.provider} is unavailable`) : 'No models available on this account'}
-        isDisabled
-      />
+    {models.length === 0 && group.catalog?.source !== 'unavailable' && unavailabilityReason(group) === null && (
+      <DropdownMenuItem label="No models available on this account" isDisabled />
+    )}
+  </>;
+}
+
+/** Agent and model menus share the host's admission and authentication explanation. */
+function GroupNotices({ group }: Readonly<{ group: ModelGroup<string> }>) {
+  const reason = unavailabilityReason(group);
+  const refused = selectionBlocked(group);
+  return <>
+    {group.selectionProblem !== undefined && group.availability?.authentication_notice != null && (
+      <div className={styles.reason} role="note"><Text type="supporting">{group.availability.authentication_notice.text}</Text></div>
+    )}
+    {reason !== null && <div className={refused ? styles.reason : `${styles.reason} ${styles.warning}`} role="note">
+      <Text type="supporting" color={refused ? undefined : 'inherit'}>
+        {`${providerLabel(group, group.provider)} is unavailable: ${reason}${refused ? '' : ` ${unavailableCreationNote(providerLabel(group, group.provider))}`}`}
+      </Text>
+    </div>}
+    {reason === null && group.catalog?.source === 'unavailable' && group.catalog.models.length === 0 && (
+      <div className={styles.reason} role="note"><Text type="supporting">
+        {group.selectionProblem !== undefined ? `${group.provider} model catalog is unavailable`
+          : legacyPresentation(group.provider)?.unavailable ?? `${group.provider} is unavailable`}
+      </Text></div>
     )}
   </>;
 }

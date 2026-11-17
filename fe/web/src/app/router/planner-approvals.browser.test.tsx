@@ -277,13 +277,16 @@ it.each([
   if (width < 600) await revealComposerControls();
   const trigger = page.getByRole('button', { name: 'Approvals: Never' });
   await expect.element(trigger).toBeVisible();
-  /* Beside the model picker, inside the composer, and the composer's Send still inside the viewport. */
+  /* Controls stay in reading order when the narrow composer wraps its settings. */
   const triggerElement = await trigger.findElement();
   expect(triggerElement.closest('[data-nc-composer]')).not.toBeNull();
   const model = (await page.getByRole('button', { name: /^Model:/ }).findElement()).getBoundingClientRect();
   const box = triggerElement.getBoundingClientRect();
-  expect(Math.abs(box.top - model.top)).toBeLessThan(4);
-  expect(box.left).toBeGreaterThanOrEqual(model.right);
+  if (Math.abs(box.top - model.top) < 4) expect(box.left).toBeGreaterThanOrEqual(model.right);
+  else expect(box.top).toBeGreaterThanOrEqual(model.bottom);
+  expect(box.left).toBeGreaterThanOrEqual(0);
+  const hit = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
+  expect(hit === triggerElement || (hit !== null && triggerElement.contains(hit))).toBe(true);
   expect(box.right).toBeLessThanOrEqual(window.innerWidth);
   expectNoHorizontalScroll();
 

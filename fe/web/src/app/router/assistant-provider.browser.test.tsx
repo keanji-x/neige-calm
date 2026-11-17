@@ -20,6 +20,8 @@ it.each([1280, 390])('selects a dynamically registered backend through the keybo
     await page.getByRole('button', { name: '发起新对话', exact: true }).click();
   } else await page.getByRole('button', { name: 'New conversation', exact: true }).click();
   if (width < 600) await page.getByLabelText('对话选项').click();
+  await page.getByRole('button', { name: /^Agent:/ }).click();
+  await page.getByRole('menuitem', { name: 'claude', exact: true }).click();
   const model = page.getByRole('button', { name: /^Model:/ });
   await model.click();
   await expect.element(page.getByRole('menuitem', { name: 'Selected model' })).toBeVisible();
@@ -86,7 +88,7 @@ it.each(['unsupported', 'unavailable', 'missing-version', 'old-version'] as cons
   const fixture = renderAssistantProviderFixture({ answers: [answer], assistantProviders: condition !== 'missing-version', webCompatVersion: condition === 'old-version' ? 50 : WEB_COMPAT_VERSION });
   await page.getByRole('button', { name: 'New conversation', exact: true }).click();
   if (condition !== 'missing-version' && condition !== 'old-version') {
-    await page.getByRole('button', { name: /^Model:/ }).click();
+    await page.getByRole('button', { name: /^Agent:/ }).click();
     await expect.element(page.getByText(condition === 'unsupported' ? /does not support managed/ : /Authenticate on this server/)).toBeVisible();
     await userEvent.keyboard('{Escape}');
   }
@@ -118,10 +120,12 @@ it('renders, selects and sends a managed identifier independently of legacy UI l
   const fixture = renderAssistantProviderFixture({ answers: [answer] });
   await page.getByRole('button', { name: 'New conversation', exact: true }).click();
   const model = page.getByRole('button', { name: /^Model:/ });
+  await page.getByRole('button', { name: /^Agent:/ }).click();
+  await page.getByRole('menuitem', { name: 'OpenCode (Beta)', exact: true }).click();
   await model.click();
-  await expect.element(page.getByRole('group', { name: 'OpenCode (Beta)', exact: true })).toBeVisible();
+  await expect.element(page.getByRole('button', { name: 'Agent: opencode' })).toBeVisible();
   await page.getByRole('menuitem', { name: 'Selected model' }).click();
-  await expect.element(model).toHaveAccessibleName('Model: opencode Selected model');
+  await expect.element(model).toHaveAccessibleName('Model: Selected model');
   await page.getByRole('combobox', { name: 'Message' }).fill('Owner registered backend');
   await userEvent.keyboard('{Enter}');
   await expect.poll(() => fixture.requests.filter(request => request.method === 'POST' && request.path.endsWith('/conversations')).length).toBe(1);
@@ -145,6 +149,8 @@ it('adopts a landed frozen request before stale or missing metadata can refuse i
   const options = { answers: [CLAUDE], failFirstCreate: true, landFirstCreate: true, hideLanded: true };
   const fixture = renderAssistantProviderFixture(options);
   await page.getByRole('button', { name: 'New conversation', exact: true }).click();
+  await page.getByRole('button', { name: /^Agent:/ }).click();
+  await page.getByRole('menuitem', { name: 'claude', exact: true }).click();
   await page.getByRole('button', { name: /^Model:/ }).click();
   await page.getByRole('menuitem', { name: 'Selected model' }).click();
   await page.getByRole('combobox', { name: 'Message' }).fill('Already committed');

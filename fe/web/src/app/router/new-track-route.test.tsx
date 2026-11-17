@@ -99,16 +99,20 @@ const NO_CATALOG = {
   models: [], default: { model: null, reasoning_effort: null, supported_reasoning_efforts: null },
   default_source: 'unknown', source: 'unavailable', fetched_at_ms: null,
 };
-/* What the grouped trigger says while a Claude pick follows the CLI's default. */
-const CLAUDE_DEFAULT_TRIGGER = "Model: Claude Opus (1M context) (this installation's default)";
+/* What the model trigger says while following the Claude CLI's default. */
+const CLAUDE_DEFAULT_TRIGGER = "Model: Opus (1M context) (this installation's default)";
 
-/** Pick `item` from the `group` section of the open model menu. */
-async function pick(trigger: string, group: 'Codex' | 'Claude', item: string | RegExp) {
-  (await screen.findByRole('button', { name: trigger })).focus();
-  /* By keyboard: astryx swallows a trigger click that lands right after its menu hid. */
+/** Choose the agent first, then its model through the visible controls. */
+async function pick(group: 'Codex' | 'Claude', item: string | RegExp) {
+  const agent = screen.getByRole('button', { name: /^Agent:/ });
+  if (agent.getAttribute('aria-label') !== `Agent: ${group}`) {
+    agent.focus();
+    await userEvent.keyboard('{ArrowDown}');
+    await userEvent.click(await screen.findByRole('menuitem', { name: group }));
+  }
+  screen.getByRole('button', { name: /^Model:/ }).focus();
   await userEvent.keyboard('{ArrowDown}');
-  const section = await screen.findByRole('group', { name: group });
-  await userEvent.click(within(section).getByRole('menuitem', { name: item }));
+  await userEvent.click(await screen.findByRole('menuitem', { name: item }));
 }
 
 function harness(options: {
@@ -357,11 +361,11 @@ describe('New track model selection', () => {
     const { sent } = harness({ claudePlanner: true, claudeUnavailable: reason });
     await userEvent.click(await screen.findByRole('button', { name: 'New track in Work' }));
     await findComposer();
-    (await screen.findByRole('button', { name: 'Model: Codex Default' })).focus();
+    (await screen.findByRole('button', { name: /^Agent:/ })).focus();
     await userEvent.keyboard('{ArrowDown}');
     const claude = await screen.findByRole('group', { name: 'Claude' });
     expect(within(claude).getByRole('note').textContent).toBe(`Claude is unavailable: ${reason} A track can still be created; it runs once Claude is back.`);
-    const defaultChoice = within(claude).getByRole('menuitem', { name: /^Default/ });
+    const defaultChoice = within(claude).getByRole('menuitem', { name: 'Claude' });
     expect(defaultChoice.getAttribute('aria-disabled') === 'true' || defaultChoice.hasAttribute('disabled')).toBe(false);
     await userEvent.click(defaultChoice);
     await userEvent.type(screen.getByLabelText(TASK_LABEL), 'Plan while Claude is down');
@@ -378,8 +382,8 @@ describe('New track model selection', () => {
     const { sent } = harness({ claudePlanner: true, codexUnavailable: reason });
     await userEvent.click(await screen.findByRole('button', { name: 'New track in Work' }));
     await findComposer();
-    await pick('Model: Codex Default', 'Codex', 'GPT-5');
-    expect(await screen.findByRole('button', { name: 'Model: Codex GPT-5' })).toBeTruthy();
+    await pick('Codex', 'GPT-5');
+    expect(await screen.findByRole('button', { name: 'Model: GPT-5' })).toBeTruthy();
     await userEvent.type(screen.getByLabelText(TASK_LABEL), 'Plan while Codex is down');
     await userEvent.click(screen.getByRole('button', { name: 'Create track' }));
     await waitFor(() => expect(createdTrackRequests(sent)).toHaveLength(1));
@@ -391,9 +395,9 @@ describe('New track model selection', () => {
     const { sent } = harness({ claudePlanner: true, codexUnavailable: 'shared codex app-server is not running' });
     await userEvent.click(await screen.findByRole('button', { name: 'New track in Work' }));
     await findComposer();
-    await pick('Model: Codex Default', 'Claude', /^Sonnet/);
-    await pick('Model: Claude Sonnet', 'Codex', /^Default/);
-    expect(await screen.findByRole('button', { name: 'Model: Codex Default' })).toBeTruthy();
+    await pick('Claude', /^Sonnet/);
+    await pick('Codex', /^Default/);
+    expect(await screen.findByRole('button', { name: 'Model: Default' })).toBeTruthy();
     await userEvent.type(screen.getByLabelText(TASK_LABEL), 'Back on Codex');
     await userEvent.click(screen.getByRole('button', { name: 'Create track' }));
     await waitFor(() => expect(createdTrackRequests(sent)).toHaveLength(1));
@@ -404,11 +408,11 @@ describe('New track model selection', () => {
     const { sent } = harness({ claudePlanner: true });
     await userEvent.click(await screen.findByRole('button', { name: 'New track in Work' }));
     await findComposer();
-    await pick('Model: Codex Default', 'Codex', 'GPT-5');
+    await pick('Codex', 'GPT-5');
     await userEvent.click(screen.getByRole('button', { name: 'Reasoning effort: low (the default)' }));
     await userEvent.click(screen.getByRole('menuitem', { name: /high/ }));
-    await pick('Model: Codex GPT-5', 'Claude', /^Sonnet/);
-    expect(await screen.findByRole('button', { name: 'Model: Claude Sonnet' })).toBeTruthy();
+    await pick('Claude', /^Sonnet/);
+    expect(await screen.findByRole('button', { name: 'Model: Sonnet' })).toBeTruthy();
     /* Sonnet's own levels are offered, starting from its default: Codex's `high` did not come along. */
     expect(screen.getByRole('button', { name: 'Reasoning effort: Default' })).toBeTruthy();
     await userEvent.type(screen.getByLabelText(TASK_LABEL), 'Plan with Claude');
@@ -423,7 +427,7 @@ describe('New track model selection', () => {
     const { sent } = harness({ claudePlanner: true });
     await userEvent.click(await screen.findByRole('button', { name: 'New track in Work' }));
     await findComposer();
-    await pick('Model: Codex Default', 'Claude', /^Default/);
+    await pick('Claude', /^Default/);
     expect(await screen.findByRole('button', { name: CLAUDE_DEFAULT_TRIGGER })).toBeTruthy();
     await userEvent.type(screen.getByLabelText(TASK_LABEL), 'Plan with Claude');
     await userEvent.click(screen.getByRole('button', { name: 'Create track' }));
@@ -437,9 +441,9 @@ describe('New track model selection', () => {
     const { sent } = harness({ claudePlanner: true });
     await userEvent.click(await screen.findByRole('button', { name: 'New track in Work' }));
     await findComposer();
-    await pick('Model: Codex Default', 'Claude', /^Opus \(1M context\)/);
-    await pick('Model: Claude Opus (1M context)', 'Codex', /^Default/);
-    expect(await screen.findByRole('button', { name: 'Model: Codex Default' })).toBeTruthy();
+    await pick('Claude', /^Opus \(1M context\)/);
+    await pick('Codex', /^Default/);
+    expect(await screen.findByRole('button', { name: 'Model: Default' })).toBeTruthy();
     await userEvent.type(screen.getByLabelText(TASK_LABEL), 'Back on Codex');
     await userEvent.click(screen.getByRole('button', { name: 'Create track' }));
     await waitFor(() => expect(createdTrackRequests(sent)).toHaveLength(1));
@@ -452,26 +456,26 @@ describe('New track model selection', () => {
     harness({ claudePlanner: true });
     await userEvent.click(await screen.findByRole('button', { name: 'New track in Work' }));
     await findComposer();
-    await pick('Model: Codex Default', 'Claude', /^Haiku/);
+    await pick('Claude', /^Haiku/);
     await userEvent.click(screen.getByRole('button', { name: 'Go to Today' }));
     await userEvent.click(await screen.findByRole('button', { name: 'New track in Reading' }));
-    expect(await screen.findByRole('button', { name: 'Model: Codex Default' })).toBeTruthy();
+    expect(await screen.findByRole('button', { name: 'Model: Default' })).toBeTruthy();
     await userEvent.click(screen.getByRole('button', { name: 'Go to Today' }));
     await userEvent.click(await screen.findByRole('button', { name: 'New track in Work' }));
-    expect(await screen.findByRole('button', { name: 'Model: Claude Haiku' })).toBeTruthy();
+    expect(await screen.findByRole('button', { name: 'Model: Haiku' })).toBeTruthy();
     await userEvent.type(screen.getByLabelText(TASK_LABEL), 'Plan with Claude');
     await userEvent.click(screen.getByRole('button', { name: 'Create track' }));
     await waitFor(() => expect(window.location.pathname).toBe(`${APP_BASEPATH}/track/w-new`));
     await userEvent.click(screen.getByRole('button', { name: 'Go to Today' }));
     await userEvent.click(await screen.findByRole('button', { name: 'New track in Work' }));
-    expect(await screen.findByRole('button', { name: 'Model: Codex Default' })).toBeTruthy();
+    expect(await screen.findByRole('button', { name: 'Model: Default' })).toBeTruthy();
   });
 
   it('inside a Claude track lists only the Claude CLI\'s models, offers the default\'s levels and stores a pick', async () => {
     const { sent } = harness({ claudePlanner: true, plannerProvider: 'claude' });
     await userEvent.click(await screen.findByRole('button', { name: 'New track in Work' }));
     await findComposer();
-    await pick('Model: Codex Default', 'Claude', /^Sonnet/);
+    await pick('Claude', /^Sonnet/);
     await userEvent.type(screen.getByLabelText(TASK_LABEL), 'Plan with Claude');
     await userEvent.click(screen.getByRole('button', { name: 'Create track' }));
     await waitFor(() => expect(window.location.pathname).toBe(`${APP_BASEPATH}/track/w-new`));

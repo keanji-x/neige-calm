@@ -60,10 +60,10 @@ it('keeps phone preferences compact while selecting model and effort in one menu
     await userEvent.click(screen.getByRole('menuitem', { name: /high/ }));
     expect(onChange).toHaveBeenLastCalledWith({ model: 'test-model', reasoning_effort: 'high' });
     expect(screen.queryByRole('button', { name: /^Reasoning effort:/ })).toBeNull();
-    expect(screen.getAllByRole('button')).toHaveLength(3); // Options, Model and Create track.
+    expect(screen.getAllByRole('button')).toHaveLength(4); // Options, Agent, Model and Create track.
     for (const [width, height] of [[390, 844], [320, 700]]) {
       await page.viewport(width, height);
-      expect(await screen.findByRole('button', { name: width === 320 ? 'Track options' : 'Repo: Neige workspace' })).toBeTruthy();
+      expect(await screen.findByRole('button', { name: 'Track options' })).toBeTruthy();
       const model = screen.getByRole('button', { name: 'Model: Test model' }).getBoundingClientRect();
       const send = screen.getByRole('button', { name: 'Create track' }).getBoundingClientRect();
       expect(Math.abs(model.top + model.height / 2 - send.top - send.height / 2)).toBeLessThan(2);
@@ -86,7 +86,7 @@ it('gives the phone composer a compact input and one aligned preference row with
       const input = screen.getByRole('textbox', { name: 'What this track should do' });
       const model = screen.getByRole('button', { name: 'Model: Default' }).getBoundingClientRect();
       const send = screen.getByRole('button', { name: 'Create track' }).getBoundingClientRect();
-      if (width === 320) {
+      if (width < 600) {
         expect(await screen.findByRole('button', { name: 'Track options' })).toBeTruthy();
         expect(screen.queryByRole('button', { name: 'Template: No template' })).toBeNull();
       } else {
@@ -167,7 +167,7 @@ it('keeps Model beside Create and moves preferences into overflow before they st
     const model = screen.getByRole('button', { name: 'Model: Default' }).getBoundingClientRect();
     const send = screen.getByRole('button', { name: 'Create track' }).getBoundingClientRect();
     expect(Math.abs(model.top + model.height / 2 - send.top - send.height / 2)).toBeLessThan(2);
-    expect(await screen.findByRole('button', { name: 'Repo: Neige workspace' })).toBeTruthy();
+    expect(await screen.findByRole('button', { name: 'Track options' })).toBeTruthy();
     await page.viewport(320, 740);
     expect(await screen.findByRole('button', { name: 'Track options' })).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Template: No template' })).toBeNull();

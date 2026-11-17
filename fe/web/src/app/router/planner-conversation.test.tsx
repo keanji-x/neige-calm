@@ -316,7 +316,7 @@ describe('planner conversation regressions', () => {
     expect(screen.queryByText(/Pick a model to start it again/)).toBeNull();
   });
 
-  it('offers exactly the close, the resize edge, Send, the model picker, the approval setting and the role, and no other control at all', async () => {
+  it('offers the agent and model pickers with the conversation controls', async () => {
     setupWithTurns();
     await openConversationWithTurns();
     const drawer = screen.getByRole('complementary', { name: 'Planner chat' });
@@ -325,7 +325,7 @@ describe('planner conversation regressions', () => {
       .map((button) => button.getAttribute('aria-label') ?? button.textContent);
     /* No catalog answers `GET /api/models`, so the trigger reads `Model: Default` and no effort control appears. */
     expect([...names].sort()).toEqual([
-      'Approvals: Never', 'Attach an image', 'Close conversation', 'Model: Default', 'Role: Member', 'Send',
+      'Agent: Codex', 'Approvals: Never', 'Attach an image', 'Close conversation', 'Model: Default', 'Role: Member', 'Send',
     ]);
     /* One shell contract and one shared host edge serve the conversation layout. */
     expect(screen.getAllByRole('separator').map((edge) => edge.getAttribute('aria-label'))).toEqual(['Resize conversation']);
