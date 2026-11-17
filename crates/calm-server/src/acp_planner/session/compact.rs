@@ -212,6 +212,11 @@ impl AcpPlannerSession {
                     &mut usage,
                 )
                 .await?;
+            process
+                .commands
+                .wait_for_declaration(&mut process.connection, &native, &[native.as_str()])
+                .await
+                .map_err(StartFailure::Failed)?;
             if !process.commands.contains(&native, "compact") {
                 return Err(refused("ACP did not declare the compact command"));
             }

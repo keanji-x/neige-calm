@@ -39,35 +39,17 @@ pub(in crate::acp_planner::session) async fn compact(
     .await
     .map_err(|error| CompactFailure::Before(error.into()))?;
     let server = owned.as_mut().expect("prepared shared ACP server");
-    // The new/resumed session can publish its menu just after the setup result.
-    // The same catalog consumes setup, routed and idle notifications.
-    tokio::time::timeout(Duration::from_secs(10), async {
-        while !server.process.commands.declared(native) {
-            let frame = server
-                .process
-                .connection
-                .incoming
-                .recv()
-                .await
-                .ok_or_else(|| before("ACP command catalog was not declared"))?;
-            if let Incoming::Notification { params, .. } = &frame
-                && server
-                    .bindings
-                    .values()
-                    .any(|binding| Some(binding.native.as_str()) == params["sessionId"].as_str())
-            {
-                server.process.commands.observe(&frame);
-            }
-            if let Incoming::Request { id, method, .. } = frame {
-                provider::acp::approvals::refuse(&server.process.connection.client, id, &method)
-                    .await
-                    .map_err(|error| CompactFailure::Before(wire_error(error)))?;
-            }
-        }
-        Ok::<_, CompactFailure>(())
-    })
-    .await
-    .map_err(|_| before("ACP command catalog timed out"))??;
+    let bound_sessions: Vec<_> = server
+        .bindings
+        .values()
+        .map(|binding| binding.native.as_str())
+        .collect();
+    server
+        .process
+        .commands
+        .wait_for_declaration(&mut server.process.connection, native, &bound_sessions)
+        .await
+        .map_err(CompactFailure::Before)?;
     if !server.process.commands.contains(native, "compact") {
         return Err(before("ACP did not declare the compact command"));
     }
