@@ -74,6 +74,21 @@ it.each([[1280, 844], [390, 844], [320, 700]])('Role: Admin beside the model pic
   expect(document.documentElement.scrollWidth).toBe(width);
 });
 
+it.each(['Never', 'Ask me', 'Full access'] as const)('keeps the selected approval value and Create inside 320px (%s)', async value => {
+  await page.viewport(320, 700);
+  mount();
+  await page.getByRole('button', { name: /^Approvals:/ }).click();
+  await page.getByRole('menuitem', { name: new RegExp(`^${value}`) }).click();
+  const approvals = page.getByRole('button', { name: `Approvals: ${value}` });
+  await expect.element(approvals).toHaveTextContent(value);
+  for (const control of [approvals, roleTrigger('Member'), page.getByRole('button', { name: 'Create track' })]) {
+    const bounds = control.element().getBoundingClientRect();
+    expect(bounds.left).toBeGreaterThanOrEqual(0);
+    expect(bounds.right).toBeLessThanOrEqual(320);
+  }
+  expect(document.documentElement.scrollWidth).toBe(320);
+});
+
 it('the default Member role sends no `admin` key', async () => {
   const { creates } = mount();
   await expect.element(roleTrigger('Member')).toBeVisible();

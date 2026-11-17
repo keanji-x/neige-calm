@@ -202,11 +202,11 @@ async fn side_context_activation_uses_assistant_policy_and_original_ack_after_cr
                         params.contains("assistant"),
                         "Assistant profile instructions and MCP role: {params}"
                     );
-                    assert!(!params.contains("neige_task_done"), "no worker tools");
+                    assert!(params.contains("neige_task_done"), "shared Planner catalog");
                     let tools = &call["params"]["config"]["mcp_servers"]["neige"]["tools"];
                     assert!(
-                        tools.get("neige_terminal_open").is_none(),
-                        "Assistant must not gain Planner terminal creation"
+                        tools.get("neige_terminal_open").is_some(),
+                        "Assistant shares Planner terminal creation"
                     );
                     assert!(params.contains("neige_terminal_control"));
                     assert!(params.contains("neige_terminal_input"));
@@ -439,6 +439,7 @@ async fn historical_create_key_is_factual_replay_without_canonical_adoption() {
             headers,
             track.clone(),
             NewTrackConversationBody {
+                permission_mode: None,
                 provider: AssistantProviderRequest::LegacyCodex,
                 side: None,
                 text: FIRST_BODY.into(),

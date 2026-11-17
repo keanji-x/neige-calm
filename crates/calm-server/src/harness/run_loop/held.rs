@@ -19,7 +19,6 @@ use crate::db::write_with_actor_events_typed;
 use crate::event::AskQuestion;
 use crate::harness::held_requests::{ConnectionId, HeldRequestMessage, HeldResponder, RequestKey};
 use crate::harness::state::HarnessState;
-use crate::ids::ActorId;
 use crate::state::WriteContext;
 
 fn session(inner: &Inner) -> WorkerSessionId {
@@ -69,7 +68,7 @@ async fn open(
     responder: Box<dyn HeldResponder>,
 ) {
     let card = inner.card_id.clone();
-    let actor = ActorId::AiPlannerSession(session(inner));
+    let owner_session = session(inner);
     let written = write_with_actor_events_typed::<(), _>(
         inner.repo.as_ref(),
         None,
@@ -77,8 +76,15 @@ async fn open(
         &write_context(inner),
         move |tx| {
             Box::pin(async move {
+                let (actor, owner_scope) =
+                    crate::ask::conversation_owner_tx(tx, &owner_session).await?;
                 let (scope, event) =
                     crate::ask::hold_ask_requested_tx(tx, &card, questions).await?;
+                if scope != owner_scope {
+                    return Err(crate::error::CalmError::Conflict(
+                        "native Hold card changed".into(),
+                    ));
+                }
                 Ok(((), vec![(actor, scope, event)]))
             })
         },
@@ -200,3 +206,6 @@ pub(super) fn reset_held_time(inner: &Inner) {
 
 #[cfg(all(test, feature = "fixtures"))]
 mod accounting_tests;
+
+#[cfg(all(test, feature = "fixtures"))]
+mod native_tests;

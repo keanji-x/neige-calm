@@ -48,6 +48,7 @@ fn expected_planner_toolset() -> Vec<&'static str> {
         "neige_track_rename",
         "neige_track_set",
         "neige_user_ask",
+        "neige_worker_report",
     ]
 }
 
@@ -246,28 +247,10 @@ async fn tools_list_for_worker_role_returns_completion_tools() {
 /// The read every report write is anchored by is listed beside the writes (#2289).
 /// #1883: the single-op block writers are gone; the assistant writes through `commit`.
 #[tokio::test]
-async fn tools_list_for_assistant_role_returns_reports_and_track_reads() {
-    let names = tools_list_names_for_role(CardRole::Assistant).await;
+async fn tools_list_for_assistant_role_reuses_the_planner_catalog() {
     assert_eq!(
-        names,
-        vec![
-            "neige_cat",
-            "neige_ls",
-            "neige_report_commit",
-            "neige_report_describe",
-            "neige_report_read",
-            "neige_report_write",
-            "neige_terminal_control",
-            "neige_terminal_input",
-            "neige_terminal_read",
-            "neige_terminal_show",
-            "neige_track_diff",
-            "neige_track_log",
-            "neige_track_show",
-            "neige_worker_report",
-        ],
-        "assistant tools/list includes workspace and bound-Track reads and \
-         the worker watcher's terminal tools and report (#2492)",
+        tools_list_names_for_role(CardRole::Assistant).await,
+        expected_planner_toolset()
     );
 }
 

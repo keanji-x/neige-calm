@@ -31,7 +31,10 @@ pub(crate) fn guard_objective_blocks(
             ));
         }
     }
-    if !matches!(author, EditAuthor::Planner | EditAuthor::User) {
+    if !matches!(
+        author,
+        EditAuthor::Planner | EditAuthor::Assistant | EditAuthor::User
+    ) {
         let unchanged = |a: &ReportBlock, b: &ReportBlock| {
             a.id == b.id
                 && a.kind == b.kind

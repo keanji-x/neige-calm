@@ -1,6 +1,6 @@
 //! #2492: `neige_worker_report` over the production MCP socket. Each call becomes one
 //! kernel-written `track.wake_requested` (source `worker_watch`) for the caller's Track under its own
-//! key; malformed, cross-Track, non-Assistant and revoked-session reports write nothing.
+//! key; malformed, cross-Track and revoked-session reports write nothing.
 use super::assistant_terminal::{agent_token, foreign_track};
 use super::task_terminal::worker_running;
 use super::terminal_support::Harness;
@@ -149,7 +149,7 @@ async fn a_report_from_a_session_retired_mid_call_writes_nothing() {
 }
 
 #[tokio::test]
-async fn malformed_cross_track_and_planner_reports_write_nothing() {
+async fn malformed_and_cross_track_reports_write_nothing_before_shared_planner_success() {
     let h = Harness::start().await;
     let (_, _, assistant) = agent_token(&h, &h.track, CardRole::Assistant).await;
     let w = worker_running(&h, "claude", &h.track, None).await;
@@ -191,19 +191,27 @@ async fn malformed_cross_track_and_planner_reports_write_nothing() {
             .contains("outside the caller's Track"),
         "{cross}"
     );
+    assert!(wakes(&h).await.is_empty());
     let planner = h
         .call(
             "neige_worker_report",
             json!({"attempt_id":w.task,"outcome":"unclear"}),
         )
         .await;
-    assert_eq!(planner["error"]["code"], -32403, "{planner}");
-    assert!(
-        planner["error"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("got=Planner"),
-        "{planner}"
+    assert!(planner.get("error").is_none(), "{planner}");
+    let key = planner["result"]["structuredContent"]["key"]
+        .as_str()
+        .unwrap();
+    let task_key = h.sql.task_get(&w.task).await.unwrap().unwrap().key;
+    let verdict = Verdict::new(Outcome::Unclear, None).unwrap();
+    assert_eq!(
+        wakes(&h).await,
+        vec![(
+            r#"{"kind":"Kernel"}"#.to_owned(),
+            h.track.clone(),
+            WORKER_WATCH_WAKE_SOURCE.to_owned(),
+            key.to_owned(),
+            report_line(&task_key, &w.task, &verdict).unwrap(),
+        )]
     );
-    assert!(wakes(&h).await.is_empty());
 }

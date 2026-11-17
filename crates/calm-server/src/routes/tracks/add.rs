@@ -425,6 +425,7 @@ impl TrackCreator for RouteTrackCreator {
             creator: Some(admission),
             creation_message: Some(args.message),
             planner_provider,
+            permission_source: crate::planner_permission_mode::CreationSource::Independent,
             model: None,
             reasoning_effort: None,
             folder_claim,
@@ -569,6 +570,7 @@ impl RouteTrackCreator {
                 creator: Some(admission),
                 creation_message: Some(request.args.message),
                 planner_provider: request.planner_provider,
+                permission_source: crate::planner_permission_mode::CreationSource::Independent,
                 model: None,
                 reasoning_effort: None,
                 folder_claim: prepared.folder_claim,
@@ -634,6 +636,10 @@ impl RouteTrackCreator {
             CreateShape::MessageLess(KeyedPlan::Mint(plan)) => (None, plan),
         };
         let provider = request.planner_provider.clone();
+        let permission_source = request
+            .permission_mode
+            .map(crate::planner_permission_mode::CreationSource::Selected)
+            .unwrap_or(crate::planner_permission_mode::CreationSource::Independent);
         let model = request.model.clone();
         let reasoning_effort = request.reasoning_effort.clone();
         let isolation = super::CreateIsolation::decode(&request.cwd, request.isolation)?;
@@ -648,6 +654,7 @@ impl RouteTrackCreator {
             creator: None,
             creation_message: None,
             planner_provider: provider,
+            permission_source,
             model,
             reasoning_effort,
             folder_claim: prepared.folder_claim,

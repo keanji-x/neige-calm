@@ -246,3 +246,111 @@ async fn the_backfill_stamps_never_on_exactly_the_cards_from_shape_binds_as_a_pl
     .expect("rerun the backfill");
     assert_eq!(payloads(&pool).await, after);
 }
+
+#[tokio::test]
+async fn assistant_upgrade_preserves_effective_never_without_activating_stray_modes() {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(
+            SqliteConnectOptions::new()
+                .in_memory(true)
+                .foreign_keys(true),
+        )
+        .await
+        .unwrap();
+    migrator(|version| version < 222).run(&pool).await.unwrap();
+    sqlx::raw_sql(
+        "INSERT INTO areas(id,name,color,sort,created_at,updated_at) VALUES('a','a','#000',0,1,1);
+        INSERT INTO tracks(id,area_id,title,sort,created_at,updated_at) VALUES('t','a','t',0,1,1);",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let rows = [
+        (
+            "missing",
+            "assistant",
+            r#"{"harness_profile":"assistant","assistant_provider":"codex","other":7}"#,
+            true,
+        ),
+        (
+            "never",
+            "assistant",
+            r#"{"harness_profile":"assistant","assistant_provider":"claude","permission_mode":"never"}"#,
+            true,
+        ),
+        (
+            "stray-full",
+            "assistant",
+            r#"{"harness_profile":"assistant","assistant_provider":"codex","permission_mode":"full","other":7}"#,
+            true,
+        ),
+        (
+            "stray-ask",
+            "assistant",
+            r#"{"harness_profile":"assistant","assistant_provider":"codex","permission_mode":"ask"}"#,
+            true,
+        ),
+        (
+            "planner",
+            "planner",
+            r#"{"planner_provider":"codex","permission_mode":"full"}"#,
+            false,
+        ),
+        (
+            "plain",
+            "worker",
+            r#"{"harness_profile":"plain_chat","permission_mode":"full"}"#,
+            false,
+        ),
+        (
+            "wrong-role",
+            "worker",
+            r#"{"harness_profile":"assistant","permission_mode":"full"}"#,
+            false,
+        ),
+        ("array", "assistant", "[]", false),
+        ("null", "assistant", "null", false),
+        ("invalid", "assistant", "{invalid", false),
+    ];
+    for (id, role, payload, _) in rows {
+        sqlx::query("INSERT INTO cards(id,track_id,kind,role,sort,payload,created_at,updated_at) VALUES(?1,'t','codex',?2,0,?3,1,7)")
+            .bind(id).bind(role).bind(payload).execute(&pool).await.unwrap();
+    }
+    calm_truth::MIGRATOR.run(&pool).await.unwrap();
+    for (id, _, before, stamps) in rows {
+        let (after, updated): (String, i64) =
+            sqlx::query_as("SELECT payload,updated_at FROM cards WHERE id=?1")
+                .bind(id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(updated, 7);
+        if stamps {
+            let mut expected: Value = serde_json::from_str(before).unwrap();
+            expected["permission_mode"] = Value::from("never");
+            assert_eq!(
+                serde_json::from_str::<Value>(&after).unwrap(),
+                expected,
+                "{id}"
+            );
+        } else {
+            assert_eq!(after, before, "{id}");
+        }
+    }
+    // The version ledger never re-applies the backfill to later user choices.
+    sqlx::query(
+        "UPDATE cards SET payload=json_set(payload,'$.permission_mode','full') WHERE id='missing'",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    calm_truth::MIGRATOR.run(&pool).await.unwrap();
+    let mode: String = sqlx::query_scalar(
+        "SELECT json_extract(payload,'$.permission_mode') FROM cards WHERE id='missing'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(mode, "full");
+}

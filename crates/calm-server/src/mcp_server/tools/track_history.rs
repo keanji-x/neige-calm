@@ -64,7 +64,7 @@ fn diff_descriptor() -> ToolDescriptor {
         }),
         annotations: Some(read_only_annotations()),
         roles: &[CardRole::Planner, CardRole::Worker, CardRole::Assistant],
-        listed_for: &[CardRole::Assistant],
+        listed_for: &[],
     }
 }
 
@@ -85,7 +85,7 @@ fn cat_at_descriptor() -> ToolDescriptor {
         }),
         annotations: Some(read_only_annotations()),
         roles: &[CardRole::Planner, CardRole::Worker, CardRole::Assistant],
-        listed_for: &[CardRole::Assistant],
+        listed_for: &[],
     }
 }
 
@@ -106,7 +106,7 @@ fn log_descriptor() -> ToolDescriptor {
         }),
         annotations: Some(read_only_annotations()),
         roles: &[CardRole::Planner, CardRole::Worker, CardRole::Assistant],
-        listed_for: &[CardRole::Assistant],
+        listed_for: &[],
     }
 }
 

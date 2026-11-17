@@ -8,13 +8,11 @@ use calm_types::worker::WorkerSessionId;
 use super::Inner;
 use crate::db::write_with_actor_events_typed;
 use crate::event::Event;
-use crate::harness::profile::{HarnessProfile, HarnessProfileExt};
-use crate::ids::ActorId;
 use crate::state::WriteContext;
 
 /// Write the Planner's `ask.requested` for one completed item that asks the user `questions`,
-/// once per item (`item_id`). Only a Planner conversation asks: a PlainChat or Assistant card runs
-/// this loop too and writes nothing. The author is this loop's session, as `neige_user_ask`'s is,
+/// once per source card and item (`item_id`). Managed conversations share this
+/// entry; PlainChat has no live conversation tool authority. The author is this loop's session, as `neige_user_ask`'s is,
 /// so the role gate refuses a session that is no longer the card's live one (a reset superseded
 /// it before stopping this loop). A refused write (that, a question the shared entry does not
 /// accept, a card gone by the write) is logged and skipped: it never fails the event, so the
@@ -24,9 +22,6 @@ pub(super) async fn ask_from_item(
     item_id: Option<&str>,
     questions: Vec<AskQuestion>,
 ) {
-    if !is_planner_conversation(inner).await {
-        return;
-    }
     let Some(item_id) = item_id else {
         tracing::warn!(
             card_id = %inner.card_id,
@@ -55,7 +50,7 @@ pub(super) async fn ask_from_item(
         }
     }
     let card = inner.card_id.clone();
-    let actor = ActorId::AiPlannerSession(WorkerSessionId::from(inner.worker_session_id.as_str()));
+    let session = WorkerSessionId::from(inner.worker_session_id.as_str());
     let source_item_id = item_id.to_string();
     // The transaction checks again, so two writers racing on one item still ask once; the loser
     // is logged as refused.
@@ -69,6 +64,7 @@ pub(super) async fn ask_from_item(
         ),
         move |tx| {
             Box::pin(async move {
+                let (actor, _) = crate::ask::conversation_owner_tx(tx, &session).await?;
                 let asked =
                     crate::ask::provider_ask_requested_tx(tx, &card, questions, source_item_id)
                         .await?;
@@ -103,34 +99,7 @@ async fn already_asked(inner: &Inner, item_id: &str) -> crate::error::Result<boo
         .iter()
         .any(|row| {
             matches!(&row.event, Event::AskRequested { source_item_id: Some(source), .. }
-                if source == item_id)
+                if source == item_id && (row.scope.card_id() == Some(&inner.card_id)
+                    || matches!(&row.actor, crate::ids::ActorId::AiPlannerSession(id) if id.as_str()==inner.worker_session_id)))
         }))
-}
-
-/// Whether this loop runs the card's Planner conversation, by the profile its card names. A card
-/// that is gone is not one; a card that cannot be read is not one either, and says so.
-async fn is_planner_conversation(inner: &Inner) -> bool {
-    let card_id = inner.card_id.as_str();
-    let read = async {
-        Ok::<_, crate::error::CalmError>((
-            inner.repo.card_get(card_id).await?,
-            inner.repo.card_role_get(card_id).await?,
-        ))
-    }
-    .await;
-    match read {
-        Ok((Some(card), Some(role))) => {
-            HarnessProfile::from_shape(&card.kind, role, &card.payload)
-                == Some(HarnessProfile::Planner)
-        }
-        Ok(_) => false,
-        Err(error) => {
-            tracing::warn!(
-                card_id = %inner.card_id,
-                %error,
-                "planner harness: cannot read the card; a provider question asks nothing"
-            );
-            false
-        }
-    }
 }

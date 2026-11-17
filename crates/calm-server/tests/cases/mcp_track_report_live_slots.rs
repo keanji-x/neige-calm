@@ -3,7 +3,7 @@
 #![cfg(unix)]
 
 use crate::mcp_track_report::{
-    Boot, assistant_identity, boot, call_tool, planner_identity, upsert_block,
+    Boot, assistant_identity, boot, call_tool, planner_identity, upsert_block, worker_identity,
 };
 use calm_server::model::NewOverlay;
 use serde_json::{Value, json};
@@ -782,7 +782,7 @@ async fn objective_close_tool_requires_planner_and_capability() {
                 .unwrap();
                 tx.commit().await.unwrap();
                 // Bypass only the registry's role label: the host still checks persisted authority.
-                let mut spoofed = assistant_identity(&boot);
+                let mut spoofed = worker_identity(&boot);
                 spoofed.role = calm_server::model::CardRole::Planner;
                 let error = call_tool(
                     &boot,
@@ -809,6 +809,20 @@ async fn objective_close_tool_requires_planner_and_capability() {
                     .unwrap_err();
                     assert_eq!(error.code, -32602);
                 }
+                // A live Assistant card shares the Planner objective authority.
+                call_tool(
+                    &boot,
+                    "neige_objective_close",
+                    assistant_identity(&boot),
+                    json!({"key":"missing"}),
+                )
+                .await
+                .expect("assistant closes with the Planner capability");
+                let events: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM objective_events")
+                    .fetch_one(db.read_pool())
+                    .await
+                    .unwrap();
+                assert_eq!(events, 1);
             })
         })
         .await

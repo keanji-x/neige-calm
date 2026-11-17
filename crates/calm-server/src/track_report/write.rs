@@ -297,7 +297,7 @@ pub(crate) async fn agent_report_intent(
     let knowledge_session = match &source {
         AgentReportSource::Interactive => Some(identity.session_id.clone()),
         AgentReportSource::ObjectiveEvaluator(_) => {
-            if identity.role != crate::model::CardRole::Planner {
+            if identity.role.capability_role() != crate::model::CardRole::Planner {
                 return Err(CalmError::Forbidden(
                     "Evaluator declarations require a Planner".into(),
                 )

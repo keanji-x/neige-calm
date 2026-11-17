@@ -9,7 +9,7 @@ struct Refuse;
 impl HeldResponder for Refuse {
     fn respond(self: Box<Self>, _: usize) {}
 }
-async fn open(inner: &Inner, key: &str) -> i64 {
+pub(super) async fn open(inner: &Inner, key: &str) -> i64 {
     on_message(
         inner,
         HeldRequestMessage::Open {
@@ -26,7 +26,7 @@ async fn open(inner: &Inner, key: &str) -> i64 {
     .await;
     *inner.held_requests.ask_ids().iter().max().unwrap()
 }
-async fn close(inner: &Inner, key: &str) {
+pub(super) async fn close(inner: &Inner, key: &str) {
     on_message(
         inner,
         HeldRequestMessage::Gone {
@@ -58,7 +58,22 @@ async fn clock(inner: &Inner) -> Instant {
 
 #[tokio::test]
 async fn held_intervals_coalesced_between_passes_are_accounted_once() {
-    let fx = Fixture::new().await;
+    held_intervals_coalesced_between_passes_are_accounted_once_for(crate::model::CardRole::Planner)
+        .await;
+}
+
+#[tokio::test]
+async fn assistant_held_intervals_coalesced_between_passes_are_accounted_once() {
+    held_intervals_coalesced_between_passes_are_accounted_once_for(
+        crate::model::CardRole::Assistant,
+    )
+    .await;
+}
+
+async fn held_intervals_coalesced_between_passes_are_accounted_once_for(
+    role: crate::model::CardRole,
+) {
+    let fx = Fixture::for_role(role).await;
     let inner = &fx.harness.inner;
     start(inner, "coalesced").await;
     // Age the real running clock far enough for the full actual-held interval;
@@ -93,7 +108,22 @@ async fn held_intervals_coalesced_between_passes_are_accounted_once() {
 
 #[tokio::test]
 async fn new_running_clock_never_inherits_a_closed_prerunning_hold() {
-    let fx = Fixture::new().await;
+    new_running_clock_never_inherits_a_closed_prerunning_hold_for(crate::model::CardRole::Planner)
+        .await;
+}
+
+#[tokio::test]
+async fn assistant_new_running_clock_never_inherits_a_closed_prerunning_hold() {
+    new_running_clock_never_inherits_a_closed_prerunning_hold_for(
+        crate::model::CardRole::Assistant,
+    )
+    .await;
+}
+
+async fn new_running_clock_never_inherits_a_closed_prerunning_hold_for(
+    role: crate::model::CardRole,
+) {
+    let fx = Fixture::for_role(role).await;
     let inner = &fx.harness.inner;
     open(inner, "before-start").await;
     inner

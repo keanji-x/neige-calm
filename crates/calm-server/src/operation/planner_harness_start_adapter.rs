@@ -334,6 +334,8 @@ pub struct PlannerHarnessStartOperationPayload {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct LazyMintCardSeed {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission_mode: Option<crate::planner_permission_mode::PlannerPermissionMode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub side: Option<crate::side_conversation::SideConversation>,
     #[serde(default)]
     pub title: Option<String>,
@@ -490,11 +492,13 @@ pub(crate) async fn planner_instructions(
         .get(crate::validation::TRACK_CREATION_CONTEXT_PAYLOAD_KEY)
         .is_some();
     let prompt = crate::planner_card::SeededCardRole::Planner.prompt_template();
-    let discovery =
-        crate::harness::profile::PlannerBinding::from_card(&card, crate::model::CardRole::Planner)
-            .map(|binding| {
-                crate::harness::backend::PlannerBackend::metadata(&binding.provider).discovery
-            });
+    let discovery = crate::harness::profile::PlannerBinding::from_card(
+        &card,
+        repo.card_role_get(card_id)
+            .await?
+            .ok_or_else(|| CalmError::Conflict("conversation role is missing".into()))?,
+    )
+    .map(|binding| crate::harness::backend::PlannerBackend::metadata(&binding.provider).discovery);
     let rendered_prompt = discovery
         .filter(|discovery| discovery.lists_track_reads())
         .map(|discovery| discovery.render_planner(prompt));
@@ -831,6 +835,12 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
                 ("harness_profile".to_string(), json!(minted_marker)),
             ]);
             if payload.profile == HarnessProfile::Assistant {
+                crate::planner_permission_mode::mint_at_creation(
+                    &mut card_payload,
+                    crate::planner_permission_mode::assistant_creation(seed.permission_mode),
+                    &decoded.mint_provider,
+                    &self.acp_host,
+                );
                 card_payload.insert(
                     crate::validation::ASSISTANT_PROVIDER_PAYLOAD_KEY.into(),
                     json!(decoded.mint_provider),

@@ -31,7 +31,7 @@ function setup(areas: readonly Area[], rows: readonly Track[], overlays: readonl
 
 function activity(id: string, at: number): OverlayWire {
   return { id: `activity-${id}`, plugin_id: 'kernel', entity_kind: 'track', entity_id: id,
-    kind: 'activity', payload: { schemaVersion: 4, working: false, attention: 'none',
+    kind: 'activity', payload: { schemaVersion: 5, working: false, attention: 'none',
       activity_at_ms: at, items: [], cards: [] }, updated_at: at };
 }
 

@@ -135,7 +135,7 @@ it('retains the displayed report while a replacement prepares and does not ackno
   await screen.findByRole('heading', { name: 'Staged report' });
   await waitFor(() => expect(fixture.client.isFetching()).toBe(0));
   const activity = (at: number) => ({ id: 'activity-daily', plugin_id: 'kernel', entity_kind: 'track', entity_id: 'daily',
-    kind: 'activity', payload: { schemaVersion: 4, working: false, attention: 'none', activity_at_ms: at, items: [], cards: [] }, updated_at: at });
+    kind: 'activity', payload: { schemaVersion: 5, working: false, attention: 'none', activity_at_ms: at, items: [], cards: [] }, updated_at: at });
   await act(() => fixture.client.setQueryData<TrackDetailWire>(queryKeys.trackDetail('daily'), detail => detail === undefined ? detail : ({
     ...detail, overlays: [activity(200)], cards: detail.cards.map(card => ({ ...card, payload: {
       schemaVersion: 3, docRev: 2, summary: '', body: '', blocks: [

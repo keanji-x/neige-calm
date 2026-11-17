@@ -32,6 +32,7 @@ function setup(outcome?: 'interrupted' | 'failed', longText?: string, live?: { t
     cwd: '/tmp', pinned_at: null, closed_at: null, created_at: 1, updated_at: 2 };
   const parent: Conversation & { provider: 'codex' } = { id: 'parent', trackId: track.id, title: 'Main discussion', kind: 'track-assistant', provider: 'codex', state: 'idle', updatedAt: 2, archivedAt: null, lastTurnCompletedAt: null };
   const rows = [parent];
+  const modes = new Map<string, string>([[parent.id, 'full']]);
   const transport: ApiTransportPort = { async send(request) {
     await Promise.resolve();
     requests.push(request);
@@ -52,6 +53,7 @@ function setup(outcome?: 'interrupted' | 'failed', longText?: string, live?: { t
       if (request.method === 'POST') {
         const id = trackConversationCardId(track.id, request.headers?.['Idempotency-Key'] ?? '');
         const created: typeof parent = { ...parent, id, title: 'Side discussion', sourceCardId: parent.id, updatedAt: 3 };
+        modes.set(id, (request.body as { permission_mode: string }).permission_mode);
         rows.push(created); body = { ...created, initialInput: { kind: 'known', receipt: initialReceiptFor(request, 'first-entry', 0) } }; status = 201;
       } else body = rows;
     }
@@ -64,8 +66,12 @@ function setup(outcome?: 'interrupted' | 'failed', longText?: string, live?: { t
         text: (post.body as { text: string }).text, textSha256: receipt.textSha256 };
     }
     const cardId = request.path.split('/')[3];
+    if (request.method === 'PUT' && request.path.endsWith('/planner/permission-mode')) {
+      modes.set(cardId, (request.body as { permission_mode: string }).permission_mode);
+      return { status: 200, statusText: 'OK', body: { card_id: cardId, permission_mode: modes.get(cardId) } };
+    }
     if (request.path.includes('/planner/run?contract=conversation_v1')) body = historicalConversationRun({ card_id: cardId, worker_session_id: `session-${cardId}`,
-      phase: cardId === 'parent' && live !== undefined ? 'issuing_turn' : 'idle', model: null, reasoning_effort: null, permission_mode: null, blocked_reason: null, manual_compact_supported: true, recovery: null, compact_outcome: null, context_usage_invalidated: false, running_turn: null }, 'idle', true);
+      phase: cardId === 'parent' && live !== undefined ? 'issuing_turn' : 'idle', model: null, reasoning_effort: null, permission_mode: modes.get(cardId) ?? 'never', blocked_reason: null, manual_compact_supported: true, recovery: null, compact_outcome: null, context_usage_invalidated: false, running_turn: null }, 'idle', true);
     if (request.path.endsWith('/harness/live')) body = cardId === 'parent' && live !== undefined
       ? { turn_id: 'live-parent', items: [{ item_id: 'streaming', text: live.text }] } : { turn_id: null, items: [] };
     if (request.path.endsWith('/planner/input')) body = { card_id: cardId, worker_session_id: `session-${cardId}` };
@@ -285,6 +291,9 @@ async function openEmptySide(field: ReturnType<typeof page.getByRole>) {
 }
 
 async function configureHeldSide(side: ReturnType<typeof page.getByRole>) {
+  await expect.element(side.getByRole('button', { name: 'Approvals: Never', exact: true })).toBeVisible();
+  await side.getByRole('button', { name: 'Approvals: Never', exact: true }).click();
+  await page.getByRole('menuitem', { name: /^Full access/ }).click();
   await side.getByRole('combobox', { name: 'Message', exact: true }).fill('Original unsent side words');
   await side.getByRole('button', { name: /^Model:/ }).click();
   await page.getByRole('menuitem', { name: /^Probe Model/ }).click();
@@ -339,7 +348,7 @@ it.each([false, true])('preserves complete held Today side through presentation 
   await expect.poll(() => fixture.requests.filter(request => request.method === 'POST' && request.path.endsWith('/conversations')).length).toBe(1);
   const post = fixture.requests.find(request => request.method === 'POST' && request.path.endsWith('/conversations'))!;
   expect(post.headers?.['Idempotency-Key']).toBe(key);
-  expect(post.body).toEqual({ text: 'Original unsent side words', provider: 'codex', model: 'probe-model', reasoning_effort: 'high',
+  expect(post.body).toEqual({ text: 'Original unsent side words', provider: 'codex', permission_mode: 'full', model: 'probe-model', reasoning_effort: 'high',
     side: { source_card_id: 'daily-planner', context: 'Assistant: Working on [Side evidence](mailto:side@example.test).' } });
 });
 
@@ -378,7 +387,7 @@ it.each([false, true].flatMap(explicit => ['hidden', 'returned', 'retry'].map(se
       await expect.poll(() => boundary.posts.length).toBe(1);
       const original = structuredClone(boundary.posts[0]);
       expect(original.headers?.['Idempotency-Key']).toBeTruthy();
-      expect(original.body).toEqual({ text: 'Original unsent side words', provider: 'codex', model: 'probe-model', reasoning_effort: 'high',
+      expect(original.body).toEqual({ text: 'Original unsent side words', provider: 'codex', permission_mode: 'full', model: 'probe-model', reasoning_effort: 'high',
         side: { source_card_id: 'daily-planner', context: 'Assistant: Working on [Side evidence](mailto:side@example.test).' } });
       const heldSideElement = side.element();
       await page.getByRole('button', { name: 'Terminal', exact: true }).click();
@@ -519,7 +528,7 @@ it.each(['held', 'submitted'].flatMap(state => ['parent', 'draft', 'close', 'tra
         await side.getByRole('combobox', { name: 'Message', exact: true }).click();
         await userEvent.keyboard('{Enter}');
         await expect.poll(() => boundary.posts.length).toBe(1);
-        expect(boundary.posts[0].body).toEqual({ text: 'Original unsent side words', provider: 'codex',
+        expect(boundary.posts[0].body).toEqual({ text: 'Original unsent side words', provider: 'codex', permission_mode: 'never',
           side: { source_card_id: 'daily-planner', context: 'Assistant: Updated source after first snapshot. Working on [Side evidence](mailto:side@example.test).' } });
         boundary.release();
       } else {
@@ -554,3 +563,22 @@ async function selectTodayParent(title: string) {
   await page.viewport(1440, 900);
   await expect.element(page.getByRole('region', { name: 'Today Assistant', exact: true }).getByRole('combobox', { name: 'Message', exact: true })).toHaveFocus();
 }
+
+
+it('reads and updates an existing Assistant independently of its side conversation', async () => {
+  await page.viewport(1512, 950);
+  const { requests } = setup();
+  await page.getByRole('button', { name: 'Conversation Main discussion' }).click();
+  const main = page.getByRole('complementary', { name: 'Main discussion' });
+  await main.getByRole('button', { name: 'Approvals: Full access' }).click();
+  await page.getByRole('menuitem', { name: /^Ask me/ }).click();
+  await expect.element(main.getByRole('button', { name: 'Approvals: Ask me' })).toBeVisible();
+  await main.getByRole('combobox', { name: 'Message' }).fill('/side Independent permissions');
+  await main.getByRole('combobox', { name: 'Message' }).click();
+  await userEvent.keyboard('{Enter}');
+  await expect.poll(() => requests.some(request => request.method === 'POST' && request.path.endsWith('/conversations'))).toBe(true);
+  const sent = requests.find(request => request.method === 'POST' && request.path.endsWith('/conversations'))!;
+  expect(sent.body).toMatchObject({ permission_mode: 'never' });
+  await expect.element(main.getByRole('button', { name: 'Approvals: Ask me' })).toBeVisible();
+  expect(requests.filter(request => request.method === 'PUT' && request.path.endsWith('/planner/permission-mode')).map(request => request.path)).toEqual(['/api/cards/parent/planner/permission-mode']);
+});

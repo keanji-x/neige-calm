@@ -112,6 +112,7 @@ impl Fixture {
             model: None,
             reasoning_effort: None,
             planner_provider: self.provider.clone(),
+            permission_mode: None,
         }
     }
 
@@ -690,6 +691,7 @@ async fn old_key_replays_historical(provider: AgentProvider) {
         creator: None,
         creation_message: None,
         planner_provider: provider,
+        permission_source: crate::planner_permission_mode::CreationSource::Independent,
         model: None,
         reasoning_effort: None,
         folder_claim: super::super::super::FolderClaim::Skip,

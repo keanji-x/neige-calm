@@ -20,12 +20,10 @@ fn the_watch_message_names_the_task_attempt_and_silence_and_carries_the_rules() 
         "Anything else, or you are unsure: do not type.",
         "Call `neige_terminal_read` by this `attempt_id` to read the worker's screen.",
         "calling `neige_worker_report` exactly once",
-        "Never call `neige_user_ask`: only the Planner asks the owner.",
+        "For this watch, report `needs_owner` instead of asking the owner.",
     ] {
         assert!(text.contains(rule), "missing: {rule}");
     }
-    // A Codex Assistant has no tool search; its tools come straight from `tools/list` (#2533).
-    assert!(!text.contains("tool search"), "{text}");
     assert!(
         text.chars().count() < crate::routes::planner_cards::MAX_PLANNER_INPUT_CHARS,
         "the watch message must fit a planner input"

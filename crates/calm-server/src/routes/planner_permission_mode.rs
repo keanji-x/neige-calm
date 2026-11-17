@@ -1,7 +1,6 @@
-//! `PUT /api/cards/{id}/planner/permission-mode` — edits a Planner card's permission
-//! mode (#2348); Planner switching inherits it transactionally. A person's choice: an agent,
-//! the Planner itself included, is refused, so a Planner cannot raise its own permissions.
-//! Takes effect from the Planner's next turn.
+//! `PUT /api/cards/{id}/planner/permission-mode` edits a bound Planner or Assistant's
+//! approval choice. Only the person may write it; agents cannot raise their own mode.
+//! New issuance uses the stored choice; running turns and frozen retries retain theirs.
 
 use axum::extract::State;
 pub use calm_types::harness::SetPlannerPermissionModeResponse;
@@ -9,7 +8,7 @@ use serde::Deserialize;
 use utoipa::ToSchema;
 
 use crate::actor::Actor;
-use crate::auth::Principal;
+use crate::auth::HumanInputSource;
 use crate::db::sqlite::planner_permission_mode_set_tx;
 use crate::db::write_with_event_typed;
 use crate::error::{CalmError, ErrorBody, Result};
@@ -17,17 +16,12 @@ use crate::event::Event;
 use crate::extract::{Json, JsonBody, Path};
 use crate::planner_permission_mode::{PlannerPermissionMode, card_has_permission_mode};
 use crate::routes::cards::card_scope;
-use crate::routes::track_report_blocks::require_rest_user_actor_for;
 use crate::state::RouteState;
-
-const ACTOR_SUBJECT: &str = "planner permission mode";
-const ACTOR_REDIRECT: &str = "What a Planner may do without asking is its person's choice; agents, \
-     the Planner itself included, have no write path to it.";
 
 #[derive(Debug, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SetPlannerPermissionModeBody {
-    /// The mode the Planner's next turns run with.
+    /// The mode newly issued conversation turns run with.
     pub permission_mode: PlannerPermissionMode,
 }
 
@@ -35,12 +29,12 @@ pub struct SetPlannerPermissionModeBody {
     put,
     path = "/api/cards/{id}/planner/permission-mode",
     tag = "cards",
-    params(("id" = String, Path, description = "Planner card id")),
+    params(("id" = String, Path, description = "Planner or Assistant card id")),
     request_body = SetPlannerPermissionModeBody,
     responses(
-        (status = 200, description = "Mode stored; the Planner's next turn runs with it", body = SetPlannerPermissionModeResponse),
+        (status = 200, description = "Mode stored for newly issued conversation turns", body = SetPlannerPermissionModeResponse),
         (status = 401, description = "Unauthenticated", body = ErrorBody),
-        (status = 403, description = "Not `X-Calm-Actor: user`, or the card is not a Planner card", body = ErrorBody),
+        (status = 403, description = "Not `X-Calm-Actor: user`, or the card is not a bound Planner or Assistant card", body = ErrorBody),
         (status = 404, description = "Card not found", body = ErrorBody),
         (status = 422, description = "`permission_mode` is missing or not a mode, or an unknown key is present", body = ErrorBody),
         (status = 500, description = "Internal error", body = ErrorBody),
@@ -48,13 +42,14 @@ pub struct SetPlannerPermissionModeBody {
 )]
 pub(crate) async fn set_planner_permission_mode(
     State(s): State<RouteState>,
-    _principal: Principal,
+    source: HumanInputSource,
+    share: Option<axum::Extension<crate::share_access::scope::ShareAccessScope>>,
     actor: Actor,
     Path(id): Path<String>,
     JsonBody(body): JsonBody<SetPlannerPermissionModeBody>,
 ) -> Result<Json<SetPlannerPermissionModeResponse>> {
     // The actor check runs first, so an agent probing card ids learns nothing from the status.
-    require_rest_user_actor_for(&actor, ACTOR_SUBJECT, ACTOR_REDIRECT)?;
+    crate::planner_permission_mode::require_explicit_selection(&actor, &source, share.is_some())?;
 
     let card = s
         .repo
@@ -65,9 +60,9 @@ pub(crate) async fn set_planner_permission_mode(
         .write
         .verify_role(&card.id)
         .ok_or_else(|| CalmError::NotFound(format!("card {id}")))?;
-    let not_a_planner = format!("card {id} is not a Planner card");
+    let ineligible = format!("card {id} is not a bound Planner or Assistant conversation");
     if !card_has_permission_mode(&card, role) {
-        return Err(CalmError::Forbidden(not_a_planner));
+        return Err(CalmError::Forbidden(ineligible));
     }
 
     let mode = body.permission_mode;
@@ -84,12 +79,15 @@ pub(crate) async fn set_planner_permission_mode(
             let card_id = card_id.to_string();
             move |tx| {
                 Box::pin(async move {
-                    // Judged again on the row this transaction writes.
+                    // Judge the persisted role and card in the same writer transaction.
+                    let role = crate::db::sqlite::card_execution_shape_tx(tx, &card_id)
+                        .await?
+                        .role;
                     let card = planner_permission_mode_set_tx(tx, &card_id, mode, |stored| {
                         if card_has_permission_mode(stored, role) {
                             Ok(())
                         } else {
-                            Err(calm_truth::TruthError::Forbidden(not_a_planner))
+                            Err(calm_truth::TruthError::Forbidden(ineligible))
                         }
                     })
                     .await?;

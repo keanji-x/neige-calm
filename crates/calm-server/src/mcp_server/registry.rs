@@ -127,7 +127,7 @@ impl ToolCallIdentity {
 /// [`ToolDescriptor::roles`], and dispatch on every manifest plugin tool. The real boundary is
 /// `role_gate::enforce_role` inside every eventized write. Both answer `-32403` (§5).
 pub fn require_role_any(identity: &ToolCallIdentity, allowed: &[CardRole]) -> Result<(), RpcError> {
-    if allowed.contains(&identity.role) {
+    if identity.role.permits(allowed) {
         return Ok(());
     }
     Err(RpcError::forbidden(format!(
@@ -483,7 +483,7 @@ impl ToolRegistry {
             .filter(|entry| {
                 roles
                     .iter()
-                    .any(|role| entry.descriptor.listed_for.contains(role))
+                    .any(|role| role.permits(entry.descriptor.listed_for))
             })
             .map(|entry| entry.descriptor.clone())
             .collect()
@@ -683,7 +683,7 @@ mod tests {
     }
 
     #[test]
-    fn track_history_drill_ins_are_listed_only_for_assistant() {
+    fn history_and_admin_tools_are_hidden_from_the_default_catalog() {
         let mut registry = ToolRegistry::new();
         crate::mcp_server::tools::register_default_tools(&mut registry);
         let hidden = [
@@ -708,8 +708,7 @@ mod tests {
                     .map(|descriptor| descriptor.name)
                     .collect::<Vec<_>>();
                 assert!(
-                    names.iter().any(|visible| visible == name)
-                        == (role == CardRole::Assistant && !name.starts_with("neige_admin_")),
+                    !names.iter().any(|visible| visible == name),
                     "{name} listing for {role:?}: {names:?}"
                 );
             }

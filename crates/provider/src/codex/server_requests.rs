@@ -28,13 +28,45 @@ enum ServerRequestId {
 /// The connection's reply queue. Queuing never waits: a full queue closes the socket.
 #[derive(Clone)]
 struct Replies {
-    queue: mpsc::Sender<Value>,
+    queue: mpsc::Sender<Reply>,
     transport: Arc<TransportAbort>,
+    native: Option<NativeReply>,
 }
 
+#[derive(Clone)]
+struct NativeReply {
+    routes: Arc<ApprovalRoutes>,
+    thread: String,
+    owner: u64,
+    live: Arc<std::sync::atomic::AtomicBool>,
+}
+impl NativeReply {
+    fn is_live(&self, affirmative: bool) -> bool {
+        // Resolution revokes execution authority, but the original route still
+        // owns decline cleanup. A replacement route fences every old reply.
+        (!affirmative || self.live.load(std::sync::atomic::Ordering::SeqCst))
+            && self.routes.owns(&self.thread, self.owner)
+    }
+}
+struct Reply {
+    frame: Value,
+    affirmative: bool,
+    native: Option<NativeReply>,
+}
 impl Replies {
-    fn send(&self, reply: Value) -> bool {
-        if self.queue.try_send(reply).is_err() {
+    fn send(&self, frame: Value) -> bool {
+        self.send_native(frame, false)
+    }
+    fn send_native(&self, frame: Value, affirmative: bool) -> bool {
+        if self
+            .queue
+            .try_send(Reply {
+                frame,
+                affirmative,
+                native: self.native.clone(),
+            })
+            .is_err()
+        {
             self.transport
                 .close("server reply queue full or closed; pending outcomes unknown".into());
             return false;
@@ -42,10 +74,9 @@ impl Replies {
         true
     }
 }
-
 impl approvals::ReplyPort for Replies {
-    fn reply(&self, frame: Value) {
-        self.send(frame);
+    fn reply(&self, frame: Value, affirmative: bool) {
+        self.send_native(frame, affirmative);
     }
 }
 
@@ -72,16 +103,27 @@ impl Dispatch {
         transport: Arc<TransportAbort>,
         routes: Arc<ApprovalRoutes>,
     ) -> Self {
-        let (queue, mut rx) = mpsc::channel::<Value>(REPLY_LIMIT);
+        let (queue, mut rx) = mpsc::channel::<Reply>(REPLY_LIMIT);
         let mut tasks = JoinSet::new();
         let writer_transport = transport.clone();
         tasks.spawn(async move {
-            while let Some(reply) = rx.recv().await {
+            while let Some(Reply {
+                frame,
+                affirmative,
+                native,
+            }) = rx.recv().await
+            {
                 let sent = tokio::time::timeout(WRITE_TIMEOUT, async {
                     let mut writer = sink.lock().await;
+                    if native
+                        .as_ref()
+                        .is_some_and(|native| !native.is_live(affirmative))
+                    {
+                        return Ok::<_, Error>(());
+                    }
                     let mut sending = writer_transport.sending()?;
                     writer
-                        .send(Message::Text(reply.to_string()))
+                        .send(Message::Text(frame.to_string()))
                         .await
                         .map_err(|error| {
                             writer_transport
@@ -101,7 +143,11 @@ impl Dispatch {
         });
         Self {
             tasks,
-            replies: Replies { queue, transport },
+            replies: Replies {
+                queue,
+                transport,
+                native: None,
+            },
             routes,
             handed: HandedRequests::new(),
         }
@@ -116,13 +162,31 @@ impl Dispatch {
         let id = &frame["id"];
         let method = frame["method"].as_str().unwrap_or_default();
         if let Some(request) = ApprovalRequest::parse(method, &frame["params"])
-            && let Some(sender) = self.routes.sender(&request.thread_id)
+            && let Some((sender, owner, live)) = self
+                .routes
+                .sender(&request.thread_id, request.turn_id.as_deref())
         {
-            let responder = ApprovalResponder::new(self.replies.clone(), id.clone(), request.kind);
-            self.handed.open(sender, id, &request, Box::new(responder));
+            let mut port = self.replies.clone();
+            port.native = Some(NativeReply {
+                routes: self.routes.clone(),
+                thread: request.thread_id.clone(),
+                owner,
+                live: live.clone(),
+            });
+            let responder = ApprovalResponder::new(port, id.clone(), request.kind);
+            self.handed
+                .open(sender, id, &request, Box::new(responder), live);
             return true;
         }
         self.refuse(id.clone(), -32601, "unsupported server request")
+    }
+
+    pub(super) fn turn_ended(&self, params: &Value) {
+        if let (Some(thread), Some(turn)) =
+            (params["threadId"].as_str(), params["turn"]["id"].as_str())
+        {
+            self.routes.revoke_turn(thread, turn);
+        }
     }
 
     /// `serverRequest/resolved`: codex settled one of its requests.

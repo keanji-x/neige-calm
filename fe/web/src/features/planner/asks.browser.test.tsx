@@ -24,7 +24,7 @@ for (const options of [["合并", "暂不合并"], []]) {
     await page.viewport(800, 600);
     render(
       <PlannerAskDrawer
-        asks={[{ askId: 1, questions: [{ title: TITLE, options }], delivery: 'wake' }]}
+        asks={[{ askId: 1, cardId: 'planner', sessionId: 'session', questions: [{ title: TITLE, options }], delivery: 'wake' }]}
         onAnswer={vi.fn<AnswerAsk>()}
       />,
     );
@@ -38,7 +38,7 @@ it('scopes softened handle icon tokens to the drawer chrome while keeping ask co
   await page.viewport(800, 600);
   render(
     <PlannerAskDrawer
-      asks={[{ askId: 1, questions: [{ title: 'Approve?', options: ['Yes', 'No'] }], delivery: 'wake' }]}
+      asks={[{ askId: 1, cardId: 'planner', sessionId: 'session', questions: [{ title: 'Approve?', options: ['Yes', 'No'] }], delivery: 'wake' }]}
       onAnswer={vi.fn<AnswerAsk>()}
     />,
   );

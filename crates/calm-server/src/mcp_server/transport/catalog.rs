@@ -123,10 +123,16 @@ impl SessionCatalog {
     ) -> Result<Self, RpcError> {
         let scope = plugin_scope_for_track(ctx, identity.track_id.as_deref()).await;
         let mut served = registry.descriptors();
-        extend_plugin_tool_descriptors_for_role(ctx, &mut served, identity.role, &scope).await;
+        extend_plugin_tool_descriptors_for_role(
+            ctx,
+            &mut served,
+            identity.role.capability_role(),
+            &scope,
+        )
+        .await;
         let (callable, role_refused): (Vec<_>, Vec<_>) = served
             .into_iter()
-            .partition(|descriptor| descriptor.roles.contains(&identity.role));
+            .partition(|descriptor| identity.role.permits(descriptor.roles));
         Ok(Self {
             role: identity.role,
             lists_track_reads: crate::harness::backend::PlannerBackend::metadata(
@@ -150,7 +156,7 @@ impl SessionCatalog {
         self.callable
             .iter()
             .filter(|descriptor| {
-                descriptor.listed_for.contains(&self.role)
+                self.role.permits(descriptor.listed_for)
                     || (self.lists_track_reads
                         && matches!(
                             descriptor.name.as_str(),

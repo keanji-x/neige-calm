@@ -74,6 +74,7 @@ async fn create(s: &RouteState, area: &str, source: preparation::NamedSource) ->
         creator: None,
         creation_message: None,
         planner_provider: AgentProvider::Codex,
+        permission_source: crate::planner_permission_mode::CreationSource::Independent,
         model: None,
         reasoning_effort: None,
         folder_claim: FolderClaim::Skip,

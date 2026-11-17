@@ -5,8 +5,7 @@ use super::Inner;
 use crate::harness::issuance::IssuanceRefusal;
 use crate::planner_permission_mode::{self, PlannerPermissionMode};
 
-/// A Planner conversation runs under its card's stored mode; every other conversation (PlainChat,
-/// Assistant) never asks. A Planner whose stored mode cannot be read is not issued, as one whose
+/// A bound Planner or Assistant runs under its card's stored mode; PlainChat never asks. A conversation whose stored mode cannot be read is not issued, as one whose
 /// model selection cannot be read is not: neither `ask` nor `never` is assumed for it.
 pub(super) async fn resolve(inner: &Inner) -> Result<PlannerPermissionMode, IssuanceRefusal> {
     let card_id = inner.card_id.as_str();

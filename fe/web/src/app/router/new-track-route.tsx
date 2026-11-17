@@ -1,3 +1,4 @@
+import { useShareScope } from '../shell/public.tsx';
 import { Banner } from '@astryxdesign/core/Banner';
 import { useQuery } from '@tanstack/react-query';
 import { useCallback, useEffect, useRef } from 'react';
@@ -10,7 +11,7 @@ import { selectedReadyTemplateId } from '../../../../core/domain/mentions.ts';
 import type { TrackTemplate } from '../../../../core/domain/track.ts';
 import { readErrorText } from '../../../../core/domain/read-failure.ts';
 import { isBlankForKernel, TRACK_CREATE_FAILURES, TRACK_CREATE_TEXT, trackCreateWorkspaceError, type NewTrackBodyWithoutFirstMessage } from '../../../../core/domain/track.ts';
-import { ModelPill, PlannerRolePill } from '../../features/chat/thread/model-pill.tsx';
+import { ModelPill, PermissionModePill, PlannerRolePill } from '../../features/chat/thread/model-pill.tsx';
 import { useMentionTrigger } from '../../features/chat/thread/mention-trigger.tsx';
 import { NewTrackForm, type NewTrackDraft, type NewTrackFormState } from '../../features/area/new-track/public.tsx';
 import { useCompactViewport } from '../../ui/viewport/public.ts';
@@ -49,6 +50,7 @@ function NewTrackEditor({ transport, unauthorized, workspace, session, store }: 
   store: ReturnType<typeof useNewTrackSession>['store'];
 }) {
   const compactViewport = useCompactViewport();
+  const shareAccess = useShareScope();
   const areaId = session.area.id;
   /* Availability has one cache owner; the managed response supplies only static creation capability.
      The server admits each submitted shape and renders any refusal through the existing error flow. */
@@ -94,6 +96,7 @@ function NewTrackEditor({ transport, unauthorized, workspace, session, store }: 
       ...(templateId === undefined ? {} : { template_id: templateId }),
       area_id: areaId,
       planner_provider: current.provider,
+      ...(shareAccess === null ? { permission_mode: current.permissionMode } : {}),
       theme: readHostThemeRgb(),
       ...(current.model.model === null ? {} : { model: current.model.model }),
       ...(current.model.reasoning_effort === null ? {} : { reasoning_effort: current.model.reasoning_effort }),
@@ -186,6 +189,7 @@ function NewTrackEditor({ transport, unauthorized, workspace, session, store }: 
         onChange={(model, provider) => { store.update(areaId, { provider, model }); }}
         isDisabled={configurationLocked}
       />
+      {shareAccess === null && <PermissionModePill mode={session.permissionMode} creating compactLabel={compactViewport} onChange={(permissionMode) => { store.update(areaId, { permissionMode }); }} isDisabled={configurationLocked} />}
       <PlannerRolePill value={session.role} onChange={(role) => { store.update(areaId, { role }); }}
         isDisabled={configurationLocked} />
     </>}

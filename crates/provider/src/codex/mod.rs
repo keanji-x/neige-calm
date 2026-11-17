@@ -115,6 +115,7 @@ type WsSink = Arc<Mutex<futures_util::stream::SplitSink<WebSocketStream<UnixStre
 
 /// An async client for one card's `codex app-server` over WebSocket-over-UDS; `&self` methods may run concurrently, but there is a single handle.
 pub struct CodexAppServer {
+    approval_routes: Arc<ApprovalRoutes>,
     sink: WsSink,
     transport: Arc<TransportAbort>,
     pending: Pending,
@@ -297,9 +298,10 @@ impl CodexAppServer {
             ),
             sink.clone(),
             transport.clone(),
-            routes,
+            routes.clone(),
         ));
         let client = Self {
+            approval_routes: routes,
             sink,
             transport: transport.clone(),
             pending,
@@ -410,12 +412,13 @@ impl CodexAppServer {
             ),
             sink.clone(),
             transport.clone(),
-            routes,
+            routes.clone(),
         ));
 
         tracing::debug!(sock = %sock_path.display(), "codex app-server: connected");
 
         let client = Self {
+            approval_routes: routes,
             sink,
             transport: transport.clone(),
             pending,
@@ -737,6 +740,9 @@ async fn reader_loop(
 
         if let Some(method) = obj.get("method").and_then(Value::as_str) {
             let params = obj.get("params").cloned().unwrap_or(Value::Null);
+            if method == "turn/completed" {
+                requests.turn_ended(&params);
+            }
             if method == "serverRequest/resolved" {
                 requests.resolved(&params);
             }

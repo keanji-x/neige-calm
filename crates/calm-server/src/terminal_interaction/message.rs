@@ -215,7 +215,7 @@ impl TerminalInteraction {
         }
         .ok_or_else(|| MessageInvalid("message action accepts only type/text".into()))?;
         validate_message_text(text)?;
-        if identity.role != CardRole::Planner {
+        if identity.role.capability_role() != CardRole::Planner {
             return Err(refused(
                 "assistant_no_message",
                 "action \"message\" is the Planner's; its header names the Planner".into(),

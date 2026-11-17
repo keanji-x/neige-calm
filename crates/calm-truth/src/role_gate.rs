@@ -121,11 +121,6 @@ pub enum RoleViolation {
     #[error("worker card {card} is out of scope {scope}")]
     WorkerOutOfScope { card: CardId, scope: String },
 
-    /// An `Assistant`-roled card wrote outside the two card scopes it owns
-    /// (itself, and its home track's report card).
-    #[error("assistant card {card} is out of scope {scope}")]
-    AssistantOutOfScope { card: CardId, scope: String },
-
     #[error(
         "AI worker actor references card {card} that the role cache does not know — \
          card was likely deleted or never minted; denying by default"
@@ -173,6 +168,16 @@ pub fn enforce_role(
         return Err(RoleViolation::UnknownCard { card: card.clone() });
     }
 
+    // A live managed session keeps its real event actor, and uses the same
+    // capability verdict as Planner after its identity has been resolved.
+    let capability_actor;
+    let actor = if let ActorId::AiManagedCard(card) = actor {
+        capability_actor = ActorId::AiPlanner(card.clone());
+        &capability_actor
+    } else {
+        actor
+    };
+
     // (2) `TrackUpdated` is planner-only; User/Kernel keep unrestricted authority.
     if matches!(event, Event::TrackUpdated(_)) {
         match actor {
@@ -181,7 +186,7 @@ pub fn enforce_role(
                 // Plugins are unrestricted here.
             }
             ActorId::AiPlanner(card_id) => {
-                let role = cache.get(card_id);
+                let role = cache.get(card_id).map(CardRole::capability_role);
                 if role != Some(CardRole::Planner) {
                     return Err(RoleViolation::NotPlannerForTrack {
                         actor: format!("AiPlanner({card_id})"),
@@ -232,7 +237,7 @@ pub fn enforce_role(
             ActorId::User | ActorId::Kernel | ActorId::KernelDispatcher => {}
             ActorId::Plugin(_) => {}
             ActorId::AiPlanner(card_id) => {
-                let role = cache.get(card_id);
+                let role = cache.get(card_id).map(CardRole::capability_role);
                 if role != Some(CardRole::Planner) {
                     return Err(RoleViolation::NotPlannerForDispatch {
                         actor: format!("AiPlanner({card_id})"),
@@ -464,7 +469,7 @@ pub fn enforce_role(
     // (2.12) Only the planner may ask the user (#2209): a native provider question is written as
     // the Planner too, so there is no Kernel exception.
     if matches!(event, Event::AskRequested { .. }) {
-        let is_planner = matches!(actor, ActorId::AiPlanner(card_id) if cache.get(card_id) == Some(CardRole::Planner));
+        let is_planner = matches!(actor, ActorId::AiPlanner(card_id) if cache.get(card_id).map(CardRole::capability_role) == Some(CardRole::Planner));
         if !is_planner {
             return Err(RoleViolation::NotPlannerForAsk {
                 actor: actor.to_string(),
@@ -483,7 +488,7 @@ pub fn enforce_role(
     // provider request is gone. No Kernel exception; that the writer is the ask's own live session
     // is checked by the writing transaction.
     if matches!(event, Event::AskWithdrawn { .. }) {
-        let is_planner = matches!(actor, ActorId::AiPlanner(card_id) if cache.get(card_id) == Some(CardRole::Planner));
+        let is_planner = matches!(actor, ActorId::AiPlanner(card_id) if cache.get(card_id).map(CardRole::capability_role) == Some(CardRole::Planner));
         if !is_planner {
             return Err(RoleViolation::NotPlannerForAskWithdrawn {
                 actor: actor.to_string(),
@@ -495,7 +500,7 @@ pub fn enforce_role(
     // a failed gate. No Kernel exception; that the attempt belongs to the writer's Track is checked
     // by the writing transaction.
     if matches!(event, Event::TaskRegateRequested { .. }) {
-        let is_planner = matches!(actor, ActorId::AiPlanner(card_id) if cache.get(card_id) == Some(CardRole::Planner));
+        let is_planner = matches!(actor, ActorId::AiPlanner(card_id) if cache.get(card_id).map(CardRole::capability_role) == Some(CardRole::Planner));
         if !is_planner {
             return Err(RoleViolation::NotPlannerForTaskRegate {
                 actor: actor.to_string(),
@@ -602,10 +607,10 @@ pub fn enforce_role(
             Some(CardRole::ReportCard) => {
                 enforce_card_self_scope(card_id, scope, cache, track_area_cache)?;
             }
-            // Assistant cards are the Worker self-scope rule loosened by exactly one
-            // card: their home track's report card.
             Some(CardRole::Assistant) => {
-                enforce_assistant_scope(card_id, scope, cache, track_area_cache)?;
+                return Err(RoleViolation::UnknownCard {
+                    card: card_id.clone(),
+                });
             }
         }
     }
@@ -630,30 +635,6 @@ fn enforce_card_self_scope(
         track_area_cache,
         &|target, _home| target == card_id,
         &|card, scope| RoleViolation::WorkerOutOfScope { card, scope },
-    )
-}
-
-/// [`enforce_card_self_scope`] loosened by exactly one card: an `Assistant`
-/// may also write into its home track's report card scope. Every non-`Card`
-/// scope is refused, so an assistant can neither close the track nor
-/// dispatch a task.
-fn enforce_assistant_scope(
-    card_id: &CardId,
-    scope: &EventScope,
-    cache: &CardRoleCache,
-    track_area_cache: &TrackAreaCache,
-) -> Result<(), RoleViolation> {
-    enforce_card_scope(
-        card_id,
-        scope,
-        cache,
-        track_area_cache,
-        &|target, home_track| {
-            target == card_id
-                || (cache.get(target) == Some(CardRole::ReportCard)
-                    && cache.track_of(target).as_ref() == Some(home_track))
-        },
-        &|card, scope| RoleViolation::AssistantOutOfScope { card, scope },
     )
 }
 
@@ -1818,6 +1799,14 @@ mod tests {
         cache.insert(assistant.clone(), CardRole::Assistant, TrackId::from("w"));
         cache.insert(worker.clone(), CardRole::Worker, TrackId::from("w"));
         let event = ask_requested();
+        enforce_role(
+            &ActorId::AiManagedCard(assistant.clone()),
+            &event,
+            &track_scope("w", "c"),
+            &cache,
+            &wcc,
+        )
+        .unwrap();
 
         let res = enforce_role(
             &ActorId::AiPlanner(planner.clone()),
@@ -1833,10 +1822,6 @@ mod tests {
             (ActorId::KernelDispatcher, "KernelDispatcher"),
             (ActorId::User, "User"),
             (ActorId::Plugin("p".into()), "Plugin(p)"),
-            (
-                ActorId::AiPlanner(assistant.clone()),
-                "AiPlanner(assistant)",
-            ),
             (ActorId::AiPlanner(worker.clone()), "AiPlanner(worker)"),
             (ActorId::AiCodex(worker.clone()), "AiCodex(worker)"),
             (ActorId::AiClaude(worker.clone()), "AiClaude(worker)"),
@@ -1883,10 +1868,6 @@ mod tests {
             (ActorId::KernelDispatcher, "KernelDispatcher"),
             (ActorId::User, "User"),
             (ActorId::Plugin("p".into()), "Plugin(p)"),
-            (
-                ActorId::AiPlanner(assistant.clone()),
-                "AiPlanner(assistant)",
-            ),
             (ActorId::AiPlanner(worker.clone()), "AiPlanner(worker)"),
             (ActorId::AiCodex(worker.clone()), "AiCodex(worker)"),
             (ActorId::AiClaude(worker.clone()), "AiClaude(worker)"),
@@ -1936,10 +1917,6 @@ mod tests {
             (ActorId::KernelDispatcher, "KernelDispatcher"),
             (ActorId::User, "User"),
             (ActorId::Plugin("p".into()), "Plugin(p)"),
-            (
-                ActorId::AiPlanner(assistant.clone()),
-                "AiPlanner(assistant)",
-            ),
             (ActorId::AiPlanner(worker.clone()), "AiPlanner(worker)"),
             (ActorId::AiCodex(worker.clone()), "AiCodex(worker)"),
             (ActorId::AiClaude(worker.clone()), "AiClaude(worker)"),

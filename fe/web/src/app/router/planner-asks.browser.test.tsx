@@ -24,7 +24,7 @@ const TRACK = { workspace: { isolation: 'none' as const, kind: 'attached' as con
 const PLANNER = { id: 'planner', track_id: TRACK.id, kind: 'codex', title: 'Planner', sort: 1,
   payload: { planner_harness: true }, deletable: false, created_at: 1, updated_at: 2 };
 const ASK = {
-  source: 'ask', key: 'ask:7', text: 'Which branch should I release from? / Anything to tell the reviewers?', at_ms: 5, ask_id: 7,
+  source: 'ask', key: 'ask:7', text: 'Which branch should I release from? / Anything to tell the reviewers?', at_ms: 5, ask_id: 7, card_id: 'planner', session_id: 'session',
   questions: [
     { title: 'Which branch should I release from?', options: ['main', 'release/2.0', 'A new branch from the last tag'] },
     { title: 'Anything to tell the reviewers?', options: [] },
@@ -62,7 +62,7 @@ function setup(theme: 'light' | 'dark', ask: Omit<typeof ASK, 'questions'> & { q
     if (request.path === '/api/settings') body = {};
     if (request.path === `/api/tracks/${TRACK.id}`) body = { track: currentTrack, planner_revision: 0, can_reopen: currentTrack.closed_at !== null, can_admin: false, can_close: currentTrack.closed_at === null, cards: [PLANNER],
       overlays: [{ id: 'activity', plugin_id: 'kernel', entity_kind: 'track', entity_id: TRACK.id, kind: 'activity', updated_at: 5,
-        payload: { schemaVersion: 4, working: false, attention: 'input', activity_at_ms: 5, items: [reopen ? { ...ask, action: { kind: 'reopen_track', closed_at: 42 }, questions: [{ title: 'Continue this closed track?', options: ['Reopen and continue', 'Keep closed'] }] } : ask], cards: [] } }] };
+        payload: { schemaVersion: 5, working: false, attention: 'input', activity_at_ms: 5, items: [reopen ? { ...ask, action: { kind: 'reopen_track', closed_at: 42 }, questions: [{ title: 'Continue this closed track?', options: ['Reopen and continue', 'Keep closed'] }] } : ask], cards: [] } }] };
     if (request.path.includes('/planner/run?contract=conversation_v1')) body = historicalConversationRun({ card_id: PLANNER.id, worker_session_id: 'session', phase: 'idle',
       model: null, reasoning_effort: null, permission_mode: 'never', blocked_reason: null, manual_compact_supported: true, recovery: null, compact_outcome: null, context_usage_invalidated: false, running_turn: null, attachments_supported: true }, 'idle', true);
     if (request.path.endsWith('/harness/live')) body = { turn_id: null, items: [] };
@@ -93,7 +93,7 @@ it.each([
   await page.viewport(width, width < 600 ? 844 : 800);
   const { requests } = setup(theme);
   await page.getByRole('button', { name: /Conversation Planner/ }).click();
-  const ask = page.getByRole('group', { name: 'The Planner asks' });
+  const ask = page.getByRole('group', { name: 'Questions' });
   await expect.element(ask).toBeVisible();
   expect((await ask.findElement()).closest('[data-nc-composer]')).not.toBeNull();
   const questionElement = await ask.findElement();
@@ -125,7 +125,7 @@ it.each([1280, 390])('answers custom questions with Enter inside the real conver
   await page.getByRole('button', { name: /Conversation Planner/ }).click();
   const message = page.getByRole('combobox', { name: 'Message' });
   await message.fill('Keep this message draft');
-  const ask = page.getByRole('group', { name: 'The Planner asks' });
+  const ask = page.getByRole('group', { name: 'Questions' });
   await ask.getByRole('button', { name: 'Other…' }).click();
   const branch = ask.getByRole('textbox', { name: 'Which branch should I release from?' });
   await branch.fill('hotfix');
@@ -155,7 +155,7 @@ it('answers with Enter while keeping an image-only message draft unsent', async 
   await userEvent.upload(picker, new File([new Uint8Array([0x89, 0x50, 0x4e, 0x47])], 'shot.png', { type: 'image/png' }));
   const image = page.getByRole('button', { name: 'Remove Image 1', exact: true });
   await expect.element(image).toBeVisible();
-  const ask = page.getByRole('group', { name: 'The Planner asks' });
+  const ask = page.getByRole('group', { name: 'Questions' });
   await ask.getByRole('button', { name: 'Other…' }).click();
   const branch = ask.getByRole('textbox', { name: 'Which branch should I release from?' });
   await branch.fill('hotfix');
@@ -176,7 +176,7 @@ it('keeps attachments in the composer with questions in their own Astryx drawer'
   await page.viewport(1280, 800);
   setup('light');
   await page.getByRole('button', { name: /Conversation Planner/ }).click();
-  const ask = page.getByRole('group', { name: 'The Planner asks' });
+  const ask = page.getByRole('group', { name: 'Questions' });
   await expect.element(ask).toBeVisible();
   const picker = document.querySelector<HTMLInputElement>('[data-nc-attach] input[type="file"]')!;
   await userEvent.upload(picker, new File([new Uint8Array([0x89, 0x50, 0x4e, 0x47])], 'shot.png', { type: 'image/png' }));
@@ -213,7 +213,7 @@ it.each([
   await page.viewport(width, height);
   const { requests } = setup('light', largeAsk(count, long));
   await page.getByRole('button', { name: /Conversation Planner/ }).click();
-  const ask = page.getByRole('group', { name: 'The Planner asks' });
+  const ask = page.getByRole('group', { name: 'Questions' });
   await expect.element(ask).toBeVisible();
   const field = (await page.getByRole('combobox', { name: 'Message' }).findElement()).getBoundingClientRect();
   expect(field.bottom).toBeLessThanOrEqual(window.innerHeight);
@@ -235,7 +235,7 @@ it('retains an unanswered ask and its question across responsive surfaces', asyn
   await page.viewport(1280, 800);
   const { requests } = setup('light');
   await page.getByRole('button', { name: /Conversation Planner/ }).click();
-  const ask = page.getByRole('group', { name: 'The Planner asks' });
+  const ask = page.getByRole('group', { name: 'Questions' });
   await ask.getByRole('button', { name: 'release/2.0' }).click();
   const own = ask.getByRole('textbox', { name: 'Anything to tell the reviewers?' });
   await own.fill('Keep the selected branch and this note.');
@@ -302,7 +302,7 @@ it.each([1280, 390])('shows the complete frozen approval detail at width %i', as
     questions: [{ title: '批准此 KR 的验收标准？', detail, options: ['批准', '不批准'] }],
   });
   await page.getByRole('button', { name: /Conversation Planner/ }).click();
-  const ask = page.getByRole('group', { name: 'The Planner asks' });
+  const ask = page.getByRole('group', { name: 'Questions' });
   const content = await ask.getByLabelText('Question details').findElement();
   expect(content.textContent).toBe(detail);
   expect(content.querySelector('img')).toBeNull();
@@ -322,7 +322,7 @@ it.each([[1280, 0], [390, 0], [1280, 1], [390, 1]] as const)(
       questions: [{ title: '允许此 Track 使用 Calendar？', detail: '可管理本 Track 的日程，定时日程可唤醒此 Track。', options: choices }],
     });
     await page.getByRole('button', { name: /Conversation Planner/ }).click();
-    const ask = page.getByRole('group', { name: 'The Planner asks' });
+    const ask = page.getByRole('group', { name: 'Questions' });
     await expect.element(ask).toBeVisible();
     await expect.element(ask.getByLabelText('Question details')).toHaveTextContent('定时日程可唤醒此 Track');
     await expect.element(ask.getByRole('textbox')).not.toBeInTheDocument();

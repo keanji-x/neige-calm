@@ -1,4 +1,4 @@
-import type { KeepConversationInputRequest, AgentProvider } from '../../../../core/api/generated/wire.ts';
+import type { KeepConversationInputRequest, PlannerPermissionMode, AgentProvider } from '../../../../core/api/generated/wire.ts';
 import type { SideConversation, PendingQueueEntry, PlannerQueueEditOutcome, ModelSelection, Conversation, CreatedConversation, TranscriptEntry } from '../../../../core/domain/conversation.ts';
 import type { SubmittedConversationInput } from '../../../../core/domain/conversation-initial-input.ts';
 import type { RetiredSend, SendOp, ConversationOutboxOp } from '../../../../core/domain/conversation-outbox.ts';
@@ -21,12 +21,13 @@ export type ConversationDraft = Readonly<{
   /** Chosen before sending and locked while delivery is unconfirmed. */
   provider: AgentProvider;
   model: ModelSelection;
+  permissionMode: PlannerPermissionMode;
   /** Identifies the draft to the server; minted once, never once per send. */
   key: string;
   /** The words the drawer is holding after its composer clears on send. */
   text: string | null;
   /** Original dispatched body and client display time; retries preserve this exact fact. */
-  submitted: SubmittedConversationInput | null;
+  submitted: (SubmittedConversationInput & Readonly<{ permissionMode: PlannerPermissionMode | undefined; provider: AgentProvider; model: ModelSelection; side?: SideConversation }>) | null;
   /** The create/recovery chain for this key has not settled yet. */
   creating: boolean;
   error: string | null;

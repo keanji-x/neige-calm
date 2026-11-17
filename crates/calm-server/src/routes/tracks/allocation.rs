@@ -44,6 +44,7 @@ pub(super) async fn allocate_track_structure_tx(
         creator,
         creation_message,
         planner_provider,
+        permission_source,
         model,
         reasoning_effort,
         folder_claim,
@@ -305,6 +306,7 @@ pub(super) async fn allocate_track_structure_tx(
         None,
         planner_provider.clone(),
         init_snapshot.as_ref(),
+        permission_source,
     )?;
     #[cfg(any(test, feature = "fixtures"))]
     let historical = matches!(context, CreationContext::Historical);
@@ -456,6 +458,7 @@ mod managed_tests {
                 creator: None,
                 creation_message: None,
                 planner_provider: AgentProvider::Codex,
+                permission_source: crate::planner_permission_mode::CreationSource::Independent,
                 model: None,
                 reasoning_effort: None,
                 folder_claim: FolderClaim::Skip,

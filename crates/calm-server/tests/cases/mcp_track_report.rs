@@ -296,7 +296,7 @@ async fn boot_with_scope(
             title: None,
             kind: "codex".into(),
             sort: None,
-            payload: json!({"schemaVersion": 1, "harness_profile": "assistant", "assistant_provider":"codex"}),
+            payload: json!({"schemaVersion": 1, "harness_profile": "assistant", "assistant_provider":"codex","permission_mode":"never"}),
         })
         .await
         .unwrap();
@@ -306,7 +306,7 @@ async fn boot_with_scope(
             title: None,
             kind: "codex".into(),
             sort: None,
-            payload: json!({"schemaVersion": 1, "harness_profile": "assistant", "assistant_provider":"codex"}),
+            payload: json!({"schemaVersion": 1, "harness_profile": "assistant", "assistant_provider":"codex","permission_mode":"never"}),
         })
         .await
         .unwrap();

@@ -19,7 +19,7 @@ async fn owner_history_preserves_content_and_redacts_images_in_all_sources() {
             kind: "codex".into(),
             sort: None,
             title: None,
-            payload: json!({"harness_profile":"assistant","assistant_provider":"codex"}),
+            payload: json!({"harness_profile":"assistant","assistant_provider":"codex","permission_mode":"never"}),
         })
         .await
         .unwrap()

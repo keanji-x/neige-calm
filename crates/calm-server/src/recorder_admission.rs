@@ -57,6 +57,7 @@ pub(crate) struct CardDecisionSinkRecorderAdmissionGate {
     principal: Option<Principal>,
     track_id: TrackId,
     card_id: CardId,
+    role: CardRole,
 }
 
 impl CardDecisionSinkRecorderAdmissionGate {
@@ -66,6 +67,7 @@ impl CardDecisionSinkRecorderAdmissionGate {
             principal: identity.to_principal(),
             track_id,
             card_id: identity.card_id.clone().into(),
+            role: identity.role,
         }
     }
 }
@@ -91,7 +93,7 @@ impl RecorderAdmissionGate for CardDecisionSinkRecorderAdmissionGate {
             RecorderAdmissionDecisionKind::PlannerMessage
                 | RecorderAdmissionDecisionKind::ChildTaskReport
         ) {
-            gate.decide_card_write(tx, &self.track_id, &self.card_id, CardRole::Planner)
+            gate.decide_card_write(tx, &self.track_id, &self.card_id, self.role)
                 .await
         } else {
             gate.decide_recorder(tx, &self.track_id).await

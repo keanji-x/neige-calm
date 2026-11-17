@@ -49,10 +49,19 @@ async fn assistant_provider_claude_first_turn_model_prompt_and_restart() {
     assert_eq!(live.contract, WorkerContract::Assistant);
     assert_ne!(runtime.id, root_before);
     let prompt = root.read_fake("instructions").unwrap();
-    assert!(prompt.contains("What you cannot do"), "{prompt}");
-    assert!(!prompt.contains("## Bound Template Input"));
-    assert!(!prompt.contains("Codex may defer"));
-    assert!(prompt.contains("mcp__neige__"));
+    let shared =
+        calm_server::operation::planner_harness_start_adapter::planner_instructions_for_test(
+            stack.repo(),
+            &stack.state.plugin,
+            &track,
+            card,
+        )
+        .await
+        .unwrap();
+    assert!(
+        prompt.starts_with(&shared),
+        "native Claude receives the shared instructions owner"
+    );
     let argv = root.read_fake("argv").unwrap();
     assert!(argv.contains("--model=claude-fable-5-1[1m]"), "{argv}");
     assert!(argv.contains("--effort=high"), "{argv}");
@@ -68,7 +77,8 @@ async fn assistant_provider_claude_first_turn_model_prompt_and_restart() {
             Some(json!({"permission_mode":"full"})),
         )
         .await;
-    assert!(!status.is_success(), "{response}");
+    assert_eq!(status, StatusCode::OK, "{response}");
+    assert_eq!(response["permission_mode"], "full");
     let native = stack.runtime(card).await.session_id;
     wait_assistant_idle(&stack, card).await;
     stack.shutdown().await;
@@ -248,20 +258,34 @@ async fn acp_assistant_first_turn_model_prompt_and_restart() {
         assert!(result.get("result").is_some(), "{result}");
         assert_ne!(result["result"]["isError"], true, "{result}");
     }
-    for result in &mcp[2..] {
-        assert_eq!(result["result"]["isError"], true, "{result}");
-        let error = &result["result"]["structuredContent"];
-        assert_eq!(error["code"], -32403, "{result}");
-        assert!(error["message"].as_str().is_some_and(|s| !s.is_empty()));
-        assert_eq!(result["result"]["content"][0]["type"], "text");
-        let text = result["result"]["content"][0]["text"].as_str().unwrap();
-        assert_eq!(serde_json::from_str::<Value>(text).unwrap(), *error);
+    for result in &mcp[2..4] {
+        assert_eq!(
+            result["result"]["structuredContent"]["code"], -32602,
+            "{result}"
+        );
     }
+    assert_ne!(mcp[4]["result"]["isError"], true, "{}", mcp[4]);
     let prompts = requests(&root, "session/prompt");
     assert_eq!(prompts.len(), 1);
-    let text = prompts[0].to_string();
-    assert!(text.contains("What you cannot do"), "{text}");
-    assert!(!text.contains("Codex may defer"));
+    let shared =
+        calm_server::operation::planner_harness_start_adapter::planner_instructions_for_test(
+            stack.repo(),
+            &stack.state.plugin,
+            &track,
+            card,
+        )
+        .await
+        .unwrap();
+    assert!(
+        prompts[0]["params"]["prompt"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|part| part["text"]
+                .as_str()
+                .is_some_and(|text| text.ends_with(&shared))),
+        "native ACP receives the shared instructions owner"
+    );
     let changes = requests(&root, "session/set_config_option");
     assert!(
         changes
@@ -781,3 +805,6 @@ async fn acp_assistant_archive_survives_cold_boot_and_restores_the_same_native_c
     assert_eq!(requests(&root, "session/prompt").len(), prompts + 1);
     stack.shutdown().await;
 }
+
+#[path = "assistant_native_approvals.rs"]
+mod assistant_native_approvals;

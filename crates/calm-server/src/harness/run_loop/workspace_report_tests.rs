@@ -37,10 +37,7 @@ async fn managed_report_context_refreshes_historical_resumed_turns() {
         ] {
             assert!(text.contains(name), "{role:?}: missing {name}");
         }
-        assert_eq!(
-            text.contains("guide/operations.md"),
-            role == CardRole::Planner
-        );
+        assert!(text.contains("guide/operations.md"));
         assert!(text.find("neige_ls").unwrap() < text.find("Read other Areas' reports").unwrap());
         assert_eq!(
             fx.projected_segments().await,

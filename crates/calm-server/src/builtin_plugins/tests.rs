@@ -152,7 +152,7 @@ async fn builtin_native_calls_require_bound_dev_and_live_component() {
     }
     let track = fx.track(Some(ID)).await;
     let identity = fx.identity(&track);
-    for role in [CardRole::Assistant, CardRole::Worker] {
+    for role in [CardRole::Worker] {
         let mut caller = identity.clone();
         caller.role = role;
         for name in NATIVE {
@@ -179,8 +179,8 @@ async fn builtin_native_calls_require_bound_dev_and_live_component() {
             .err()
             .unwrap();
         assert_eq!(
-            denied.code, -32601,
-            "disabled hints must not widen Assistant permissions"
+            denied.code, -32503,
+            "Assistant receives the shared Planner availability diagnostic"
         );
     }
 }
@@ -526,7 +526,7 @@ async fn native_tools_refuse_exactly_the_roles_they_do_not_declare() {
                 });
                 assert_eq!(
                     refused,
-                    !descriptor.roles.contains(&role),
+                    !role.permits(descriptor.roles),
                     "{} declares {:?}; {role:?}: {error:?}",
                     descriptor.name,
                     descriptor.roles

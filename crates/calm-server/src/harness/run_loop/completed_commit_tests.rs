@@ -90,7 +90,7 @@ impl Fixture {
                     kind: "codex".into(),
                     sort: None,
                     payload: match role {
-                        CardRole::Assistant => json!({"harness_profile":"assistant","assistant_provider":"codex"}),
+                        CardRole::Assistant => json!({"harness_profile":"assistant","assistant_provider":"codex","permission_mode":"never"}),
                         CardRole::Worker => json!({"harness_profile":"plain_chat"}),
                         _ => json!({"schemaVersion":1,"planner_harness":true,"planner_provider":"codex","permission_mode":"never"}),
                     },

@@ -88,6 +88,7 @@ pub(super) struct CreateRequestShape {
     pub isolation: super::CreateIsolation,
     pub admin: bool,
     pub planner_provider: crate::session_projection_repo::AgentProvider,
+    pub permission_mode: Option<crate::planner_permission_mode::PlannerPermissionMode>,
     pub model: Option<String>,
     pub reasoning_effort: Option<String>,
     pub title: String,
@@ -317,6 +318,9 @@ fn create_request_digest(shape: &CreateRequestShape) -> Result<String> {
     // digest, and any other provider can never match one.
     if shape.planner_provider != crate::session_projection_repo::AgentProvider::Codex {
         payload["planner_provider"] = serde_json::to_value(&shape.planner_provider)?;
+    }
+    if let Some(mode) = shape.permission_mode {
+        payload["permission_mode"] = serde_json::to_value(mode)?;
     }
     stable_payload_hash(&payload)
 }

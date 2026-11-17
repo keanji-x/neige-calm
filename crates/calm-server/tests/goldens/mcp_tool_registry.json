@@ -79,7 +79,7 @@
   },
   {
     "name": "neige_cat",
-    "description_sha256": "fe9c5c90199564896bd501cd24e5af205a262f502fda2884808303478af4836a",
+    "description_sha256": "e2b0abf0709613b9fbc21069fdb59cbc2e7bbb7e7e4c5bcd79cc9105ec10d165",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -625,7 +625,7 @@
   },
   {
     "name": "neige_report_commit",
-    "description_sha256": "8c75e61ac8fd971d6a76e9ea7b42fb7d5306e5cee47ecbc05fda37e57bd170b6",
+    "description_sha256": "00bac9be5b2e89f9918bcbca137bfa4463d66dacf3ab7f5b0483b4e61a4bb4f9",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -772,7 +772,7 @@
   },
   {
     "name": "neige_report_read",
-    "description_sha256": "e1c8902a1df3db3df42f213fbc16ec44be5b5074472ce6f830edc2d5690a6c13",
+    "description_sha256": "4ef8928ed6c468fa9bd78d921b2e9ffb95a60d3a573e4b8054fd6ea03d0722b4",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -874,7 +874,7 @@
   },
   {
     "name": "neige_report_write",
-    "description_sha256": "dcd536f431ebd7c4a0d3d6c1f84372ad988270333a457d6e6cc2e3582e34d914",
+    "description_sha256": "2c8b202a257aabbe3eb3c2474e11f44b114263c5a5592a72c85bf88208f0bfd8",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -912,7 +912,7 @@
   },
   {
     "name": "neige_source_capture",
-    "description_sha256": "b45079506b7e500d128604e963db407119b32d8ef894511155ca86621dcb80a2",
+    "description_sha256": "b258ec665ddb2e4e005c7c6e774e38a713ac117d3c4f424aed3bb1cadc2c4142",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -1179,7 +1179,7 @@
   },
   {
     "name": "neige_task_ls",
-    "description_sha256": "0af774168c4ea18f682eb26e9b44b33c16d76511de27c6926594a44a7c6f81f2",
+    "description_sha256": "496d38840e1087c5cb5756a6eb798395ba7da872e88bdef66cc575ff40c09100",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -1370,17 +1370,15 @@
       "readOnlyHint": false
     },
     "roles": [
-      "planner",
-      "assistant"
+      "planner"
     ],
     "listed_for": [
-      "planner",
-      "assistant"
+      "planner"
     ]
   },
   {
     "name": "neige_terminal_input",
-    "description_sha256": "ada1ffffc30bf5a2b9c4103a1786889eb0c2cb28a4365e546159f839c0fccd3e",
+    "description_sha256": "2a144367f26b18a6fea23a5cc1c7d3404f9a71967fa977518f79dc3129137bb4",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -1550,12 +1548,10 @@
       "readOnlyHint": false
     },
     "roles": [
-      "planner",
-      "assistant"
+      "planner"
     ],
     "listed_for": [
-      "planner",
-      "assistant"
+      "planner"
     ]
   },
   {
@@ -1655,7 +1651,7 @@
   },
   {
     "name": "neige_terminal_read",
-    "description_sha256": "f342ccdc26b00e69946c725788ca1e94a8103feb5448f07a77ba2ecb4b109106",
+    "description_sha256": "4f42522f2c46c8add3b6e511f4af9182202ddd0349fb4727a0f43d9fcae38873",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -1733,12 +1729,10 @@
       "readOnlyHint": true
     },
     "roles": [
-      "planner",
-      "assistant"
+      "planner"
     ],
     "listed_for": [
-      "planner",
-      "assistant"
+      "planner"
     ]
   },
   {
@@ -1763,17 +1757,15 @@
       "readOnlyHint": true
     },
     "roles": [
-      "planner",
-      "assistant"
+      "planner"
     ],
     "listed_for": [
-      "planner",
-      "assistant"
+      "planner"
     ]
   },
   {
     "name": "neige_track_add",
-    "description_sha256": "44f32d195f403e83a693eb7a142736aa8565b47d3c01cdd068890ad843889b20",
+    "description_sha256": "11686b324b61585cb3ba9e90c83cce143079e45f420e6cad4a4d80a479b119c5",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -1903,9 +1895,7 @@
       "worker",
       "assistant"
     ],
-    "listed_for": [
-      "assistant"
-    ]
+    "listed_for": []
   },
   {
     "name": "neige_track_log",
@@ -1934,9 +1924,7 @@
       "worker",
       "assistant"
     ],
-    "listed_for": [
-      "assistant"
-    ]
+    "listed_for": []
   },
   {
     "name": "neige_track_rename",
@@ -2029,9 +2017,7 @@
       "worker",
       "assistant"
     ],
-    "listed_for": [
-      "assistant"
-    ]
+    "listed_for": []
   },
   {
     "name": "neige_track_status",
@@ -2140,10 +2126,10 @@
       "readOnlyHint": false
     },
     "roles": [
-      "assistant"
+      "planner"
     ],
     "listed_for": [
-      "assistant"
+      "planner"
     ]
   },
   {

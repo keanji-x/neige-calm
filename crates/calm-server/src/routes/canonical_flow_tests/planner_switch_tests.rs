@@ -12,6 +12,7 @@ use calm_truth::session_repo::SessionRepo;
 mod claude;
 mod http;
 mod overlaps;
+mod permissions;
 #[cfg(test)]
 mod report_knowledge_tests;
 
@@ -380,7 +381,7 @@ async fn planner_switch_pair_commit_root_history_and_next_send() {
     for stale_mode in [false, true] {
         let mut p = Pair::new().await;
         let target = p.fixture.repo.card_get(&p.cards[1]).await.unwrap().unwrap();
-        assert!(target.payload.get("permission_mode").is_none());
+        assert_eq!(target.payload["permission_mode"], "never");
         if stale_mode {
             (p.fixture.repo.db()).writer().execute(sqlx::query(
                 "UPDATE cards SET payload=json_set(payload,'$.permission_mode','full') WHERE id=?1",
@@ -446,8 +447,11 @@ async fn planner_switch_pair_commit_root_history_and_next_send() {
             assert_eq!((&a.0, &a.2), (&b.0, &b.2));
             let mut old: Value = serde_json::from_str(&a.1).unwrap();
             let mut new: Value = serde_json::from_str(&b.1).unwrap();
-            if a.0 == p.cards[1] {
-                assert_eq!(new["permission_mode"], json!("ask"));
+            if a.0 == p.cards[0] || a.0 == p.cards[1] {
+                assert_eq!(
+                    new["permission_mode"],
+                    if a.0 == p.cards[0] { "never" } else { "ask" }
+                );
                 old.as_object_mut().unwrap().remove("permission_mode");
                 new.as_object_mut().unwrap().remove("permission_mode");
             }

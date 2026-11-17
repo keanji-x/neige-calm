@@ -191,3 +191,17 @@ it.each([1280, 390])('OpenCode models can be selected before creating a track (%
   expect(creates[0]?.body).not.toHaveProperty('reasoning_effort');
   expect(document.documentElement.scrollWidth).toBe(width);
 });
+
+
+it.each(['never', 'ask', 'full'] as const)('selects %s before first Track submission and locks it with the request', async (mode) => {
+  const { creates } = mount(CLAUDE_CATALOG);
+  const trigger = page.getByRole('button', { name: 'Approvals: Never' });
+  await trigger.click();
+  await expect.element(page.getByRole('note')).toHaveTextContent('Applies from the first turn.');
+  await page.getByRole('menuitem', { name: new RegExp(`^${mode === 'never' ? 'Never' : mode === 'ask' ? 'Ask me' : 'Full access'}`) }).click();
+  await page.getByRole('combobox', { name: 'What this track should do' }).fill('First turn permissions');
+  await page.getByRole('button', { name: 'Create track' }).click();
+  await expect.poll(() => creates.length).toBe(1);
+  expect(creates[0]?.body).toMatchObject({ permission_mode: mode, first_message: 'First turn permissions' });
+  await expect.element(page.getByRole('button', { name: /^Approvals:/ })).toBeDisabled();
+});

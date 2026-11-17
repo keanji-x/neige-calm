@@ -333,7 +333,7 @@ it.each([false, true])('consumes only the admitted first-message text after capa
     await waitFor(() => expect(view.capabilitiesHeld()).toBe(1));
     await act(async () => { view.release(); await Promise.resolve(); });
     await waitFor(() => expect(field().getAttribute('contenteditable')).toBe('true'));
-    expect(view.requests.filter(request => request.method === 'POST').map(request => request.body)).toEqual([{ text: RECOVERY_TEXT, provider: 'codex' }]);
+    expect(view.requests.filter(request => request.method === 'POST').map(request => request.body)).toEqual([{ text: RECOVERY_TEXT, provider: 'codex', permission_mode: 'never' }]);
     await page.getByRole('button', { name: 'Close conversation', exact: true }).click();
     await expect.element(page.getByRole('button', { name: 'Close conversation', exact: true })).not.toBeInTheDocument();
     await page.getByRole('button', { name: 'New conversation', exact: true }).click();
@@ -363,7 +363,7 @@ it('retains locally refused first-message words when recovery capture fails', as
     await page.getByRole('button', { name: 'Try again', exact: true }).click();
     await waitFor(() => expect(field().getAttribute('contenteditable')).toBe('true'));
     expect(document.activeElement).toBe(field());
-    expect(view.requests.filter(request => request.method === 'POST' && request.path.endsWith('/conversations')).map(request => request.body)).toEqual([{ text: RECOVERY_TEXT, provider: 'codex' }]);
+    expect(view.requests.filter(request => request.method === 'POST' && request.path.endsWith('/conversations')).map(request => request.body)).toEqual([{ text: RECOVERY_TEXT, provider: 'codex', permission_mode: 'never' }]);
     await page.getByRole('button', { name: 'Close conversation', exact: true }).click();
     await expect.element(page.getByRole('button', { name: 'Close conversation', exact: true })).not.toBeInTheDocument();
     await page.getByRole('button', { name: 'New conversation', exact: true }).click();

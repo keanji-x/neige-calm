@@ -70,7 +70,7 @@ impl AcpPlannerSession {
             .get()
             .ok_or_else(|| before("ACP harness is not installed"))?;
         let row = shared
-            .current_owner(thread, Some(permission))
+            .current_owner(thread)
             .await
             .map_err(|e| CompactFailure::Before(e.into()))?;
         let registration = params
@@ -189,7 +189,7 @@ impl AcpPlannerSession {
                 .expect("admitted process")
                 .capabilities = capabilities.capabilities;
             let process = guard.process.as_mut().expect("ACP maintenance process");
-            let owner = shared.admission(thread, Some(permission), Some(&native), None);
+            let owner = shared.admission(thread, Some(&native), None);
             let combined = admission.combined(&owner);
             let mcp = [params.mcp_server(server.clone(), &token)];
             let (_, configuration) = setup::attach(
@@ -288,7 +288,7 @@ impl AcpPlannerSession {
             DriverSlot::maintenance(shared, driver, target.clone(), turn.clone(), native.clone())
                 .with_execution(execution_id),
         );
-        let owner = shared.admission(thread, Some(permission), Some(&native), Some(&turn));
+        let owner = shared.admission(thread, Some(&native), Some(&turn));
         let combined = admission.combined(&owner);
         let result = match wire {
             CompactionWire::StandardPrompt | CompactionWire::CommandPrompt => {
@@ -357,7 +357,7 @@ impl AcpPlannerSession {
         if !self.owns_maintenance(target) {
             return Ok(Some(MaintenanceObservation::Unconfirmed));
         }
-        let row = self.shared.current_owner(&target.thread_id, None).await;
+        let row = self.shared.current_owner(&target.thread_id).await;
         let native = row.ok().and_then(|row| row.agent_session_id);
         Ok(Some(
             execution_end::observe_maintenance(&self.shared, target, native.as_deref()).await,

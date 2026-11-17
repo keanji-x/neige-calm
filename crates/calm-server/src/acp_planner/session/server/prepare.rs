@@ -2,7 +2,6 @@
 use super::*;
 use crate::harness::native_admission::NativePromptAdmission;
 
-#[allow(clippy::too_many_arguments)]
 pub(super) async fn prepare(
     owned: &mut Option<Server>,
     shared: &Arc<Shared>,
@@ -10,7 +9,6 @@ pub(super) async fn prepare(
     original_native: Option<String>,
     thread: &str,
     selection: &provider::TurnModelSelection,
-    permission: PlannerPermissionMode,
     source: &NativePromptAdmission<'_>,
 ) -> std::result::Result<(String, UsageTracker), StartFailure> {
     let params = &shared.params;
@@ -58,7 +56,7 @@ pub(super) async fn prepare(
             "Shared ACP server is waiting for active sessions before retirement",
         ));
     }
-    let owner = shared.admission(thread, Some(permission), original_native.as_deref(), None);
+    let owner = shared.admission(thread, original_native.as_deref(), None);
     let admission = source.combined(&owner);
     let mut usage = UsageTracker::new(registration.profile.usage);
     let (native, mut configuration) = if let Some(binding) =
@@ -234,7 +232,7 @@ pub(super) async fn prepare(
         (native, configuration)
     };
     {
-        let owner = shared.admission(thread, Some(permission), Some(&native), None);
+        let owner = shared.admission(thread, Some(&native), None);
         let admission = source.combined(&owner);
         let mut configuration_guard =
             AttachmentGuard(Some(server.process.connection.client.clone()));

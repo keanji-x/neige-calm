@@ -77,7 +77,7 @@ async fn recover_phase2(profile: calm_server::harness::profile::HarnessProfile, 
 let mut mint = write_session.begin_immediate().await.unwrap();
         let card = card_create_with_id_tx(&mut mint,new_id(),NewCard {
             track_id:track.id.clone(),title:None,kind:"codex".into(),sort:None,
-            payload:if assistant {json!({"schemaVersion":1,"harness_profile":"assistant","assistant_provider":"codex"})}
+            payload:if assistant {json!({"schemaVersion":1,"harness_profile":"assistant","assistant_provider":"codex","permission_mode":"never"})}
                 else {json!({"schemaVersion":1,"planner_harness":true,"planner_provider":"codex"})},
         },role,false,repo.card_role_cache()).await.unwrap();
         mint.commit().await.unwrap();

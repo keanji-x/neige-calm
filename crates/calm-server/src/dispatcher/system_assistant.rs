@@ -387,10 +387,28 @@ impl SystemAssistantIssuer {
         let mut ids = vec![];
         if !existing {
             self.qualify_namespace_tx(tx, &track).await?;
-            let allocated = sqlite::card_create_with_id_tx(tx, derived.card_id.clone(), crate::model::NewCard {
-                    track_id: track.clone(), kind: "codex".into(), sort: None, title: None,
-                    payload: serde_json::json!({"schemaVersion":1,"harness_profile":"assistant","assistant_provider":"codex"}),
-                }, CardRole::Assistant, false, &roles).await?;
+            let mut assistant_payload = serde_json::json!({"schemaVersion":1,"harness_profile":"assistant","assistant_provider":"codex"});
+            crate::planner_permission_mode::mint_at_creation(
+                assistant_payload.as_object_mut().expect("object"),
+                crate::planner_permission_mode::assistant_creation(None),
+                &crate::session_projection_repo::AgentProvider::Codex,
+                &state.acp_planner,
+            );
+            let allocated = sqlite::card_create_with_id_tx(
+                tx,
+                derived.card_id.clone(),
+                crate::model::NewCard {
+                    track_id: track.clone(),
+                    kind: "codex".into(),
+                    sort: None,
+                    title: None,
+                    payload: assistant_payload,
+                },
+                CardRole::Assistant,
+                false,
+                &roles,
+            )
+            .await?;
             let floor = calm_truth::db::sqlite::event_inputs::event_creation_floor_tx(tx).await?;
             sqlite::session_start_runtime_tx(
                 tx,

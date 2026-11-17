@@ -294,7 +294,7 @@ async fn accepted_foreign_target_uses_the_prefix_writer_snapshot() {
         let foreign = crate::db::sqlite::card_create_with_id_tx(
             &mut tx, crate::model::new_id(), crate::model::NewCard {
                 track_id: track.id.clone(), kind: "codex".into(), sort: None, title: None,
-                payload: json!({"schemaVersion":1,"harness_profile":"assistant","assistant_provider":"codex"}),
+                payload: json!({"schemaVersion":1,"harness_profile":"assistant","assistant_provider":"codex","permission_mode":"never"}),
             }, crate::model::CardRole::Assistant, false, state.write().role_cache(),
         ).await.unwrap();
         let floor = calm_truth::db::sqlite::event_inputs::event_creation_floor_tx(&mut tx)

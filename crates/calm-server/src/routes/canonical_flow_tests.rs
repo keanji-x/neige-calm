@@ -58,6 +58,7 @@ mod child_bootstrap_tests;
 mod child_journal_tests;
 mod claude_creation_tests;
 mod control_tests;
+mod conversation_permission_tests;
 mod dispatcher_inputs_tests;
 mod dispatcher_report_edit_tests;
 mod g4_system_creation_tests;

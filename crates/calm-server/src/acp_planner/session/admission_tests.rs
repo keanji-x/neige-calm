@@ -97,10 +97,7 @@ async fn final_live_fence(parked: bool) {
         "session/cancel",
     ] {
         let (session, _repo, thread) = fixture().await;
-        let admission =
-            session
-                .shared
-                .admission(&thread, Some(PlannerPermissionMode::Never), None, None);
+        let admission = session.shared.admission(&thread, None, None);
         admission.check_local().await.unwrap();
         let (input, _input_peer) = tokio::io::duplex(4096);
         let (output, mut peer) = tokio::io::duplex(4096);

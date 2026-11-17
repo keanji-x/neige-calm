@@ -1365,7 +1365,23 @@ impl Inner {
             }
             return;
         }
-        let Some(planner_card_id) = self.resolve_planner_card(&track_id).await else {
+        let answer_target = if let Event::AskAnswered { ask_id, .. } = event {
+            match crate::ask::wake_target(self.repo.as_ref(), &track_id, *ask_id).await {
+                Ok(target) => target,
+                Err(error) => {
+                    tracing::warn!(%error, "ask source unavailable; retaining replay");
+                    return;
+                }
+            }
+        } else {
+            None
+        };
+        let target = if matches!(event, Event::AskAnswered { .. }) {
+            answer_target.as_ref().map(|target| target.card.clone())
+        } else {
+            self.resolve_planner_card(&track_id).await
+        };
+        let Some(planner_card_id) = target else {
             return;
         };
 
@@ -1466,6 +1482,12 @@ impl Inner {
             return;
         };
         let target_session = harness.worker_session_id().to_owned();
+        if answer_target
+            .as_ref()
+            .is_some_and(|target| !target.is_for(&planner_card_id, &target_session))
+        {
+            return;
+        }
         let observation = match crate::report_read_ledger::delta::attach(
             self.repo.as_ref(),
             &target_session,
@@ -1499,6 +1521,7 @@ impl Inner {
         let preceding = match crate::harness::catch_up::observations_since(
             self.repo.as_ref(),
             &track_id,
+            &planner_card_id,
             &target_session,
             cursor,
             Some(envelope_id - 1),

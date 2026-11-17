@@ -199,7 +199,7 @@ pub(crate) async fn disabled_plugin_error(
     identity: &crate::mcp_server::ToolCallIdentity,
     manifest: &crate::plugin_host::Manifest,
 ) -> Option<crate::mcp_server::framing::RpcError> {
-    if identity.role != crate::model::CardRole::Planner {
+    if identity.role.capability_role() != crate::model::CardRole::Planner {
         return None;
     }
     let track_id = identity.track_id.as_deref()?;

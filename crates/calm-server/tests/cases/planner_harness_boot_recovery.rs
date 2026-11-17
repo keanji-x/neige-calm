@@ -1821,7 +1821,7 @@ async fn assistant_provider_boot_recovery_registers_the_assistant_without_replay
             new_id(),
             mk(
                 track.id.clone(),
-                json!({"schemaVersion": 1, "harness_profile": "assistant", "assistant_provider":"codex"}),
+                json!({"schemaVersion": 1, "harness_profile": "assistant", "assistant_provider":"codex","permission_mode":"never"}),
             ),
             CardRole::Assistant,
             false,

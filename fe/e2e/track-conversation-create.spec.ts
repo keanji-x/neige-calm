@@ -75,7 +75,7 @@ test('starts a conversation from a track page and sends the first message to tha
   expect(posts).toHaveLength(1);
   const post = posts[0];
   expect(new URL(post.url()).pathname).toBe(`/api/tracks/${track.id}/conversations`);
-  expect(post.postDataJSON()).toEqual({ provider: 'codex', text: message });
+  expect(post.postDataJSON()).toEqual({ provider: 'codex', text: message, permission_mode: 'never' });
   // Without this header the kernel 400s, and a second attempt would mint a second conversation.
   expect(await post.headerValue('idempotency-key')).toMatch(/[0-9a-f-]{36}/);
 

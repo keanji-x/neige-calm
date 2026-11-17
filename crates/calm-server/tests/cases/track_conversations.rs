@@ -592,6 +592,7 @@ async fn a_planner_card_id_the_adapter_did_not_derive_is_refused() {
                     title: None,
                     sort: None,
                     idempotency_key: key,
+                    permission_mode: None,
                     model: None,
                     reasoning_effort: None,
                     side: None,
@@ -1313,3 +1314,38 @@ mod initial_receipt;
 
 #[path = "track_conversation_titles.rs"]
 mod titles;
+
+#[tokio::test]
+async fn assistant_explicit_permission_creation_and_independent_update() {
+    let b = boot().await;
+    let track = b.create_track("Assistant permissions").await;
+    for mode in ["never", "ask", "full"] {
+        let request = Request::builder()
+            .method("POST")
+            .uri(format!("/api/tracks/{track}/conversations"))
+            .header("content-type", "application/json")
+            .header("x-calm-actor", "user")
+            .header("idempotency-key", format!("permissions-{mode}"))
+            .body(Body::from(
+                json!({"text":"hello", "provider":"codex", "permission_mode":mode}).to_string(),
+            ))
+            .unwrap();
+        let response = b.app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let body: Value =
+            serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        let id = body["id"].as_str().unwrap();
+        let saved: String = sqlx::query_scalar(
+            "SELECT json_extract(payload,'$.permission_mode') FROM cards WHERE id=?1",
+        )
+        .bind(id)
+        .fetch_one(b.repo.pool())
+        .await
+        .unwrap();
+        assert_eq!(saved, mode);
+    }
+}
+
+#[path = "track_conversations_permissions.rs"]
+mod permissions;

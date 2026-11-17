@@ -45,7 +45,7 @@ impl AcpPlannerSession {
         if shared.state.lock().expect("ACP state").closed || params.seals.is_sealed(thread) {
             return Err(refused("ACP conversation is closed or sealed"));
         }
-        let row = shared.current_owner(thread, Some(permission)).await?;
+        let row = shared.current_owner(thread).await?;
         match &input {
             InputContract::Historical(_) => {
                 crate::conversation_inputs::require_historical_storage(
@@ -265,8 +265,7 @@ impl AcpPlannerSession {
         .await;
         let process = guard.process.as_mut().expect("spawned process");
         let original_native = row.agent_session_id.clone();
-        let owner_admission =
-            shared.admission(thread, Some(permission), original_native.as_deref(), None);
+        let owner_admission = shared.admission(thread, original_native.as_deref(), None);
         let admission = input.admission(&owner_admission);
         let mut usage = provider::acp::usage::UsageTracker::new(registration.profile.usage);
         let prepared = async {
@@ -282,8 +281,7 @@ impl AcpPlannerSession {
             )
             .await?;
             {
-                let owner_admission =
-                    shared.admission(thread, Some(permission), Some(&native), None);
+                let owner_admission = shared.admission(thread, Some(&native), None);
                 let admission = input.admission(&owner_admission);
                 shared
                     .configure(

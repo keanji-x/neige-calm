@@ -116,7 +116,17 @@ impl Fixture {
         )
         .await;
 
+        let assistant_session = seed_worker_session(
+            &repo,
+            &home_track,
+            "session-assistant-vector-0001",
+            WorkerSessionState::Running,
+            Some(assistant.clone()),
+            WorkerContract::Assistant,
+        )
+        .await;
         let subst = vec![
+            ("$ASSISTANT_SESSION", assistant_session.to_string()),
             // Longest keys first: `$OTHER_TRACK_REPORT_CARD` would otherwise be eaten by `$OTHER_TRACK`.
             (
                 "$OTHER_TRACK_REPORT_CARD",
@@ -204,6 +214,8 @@ async fn seed_card(
             sort: None,
             payload: if role == CardRole::Planner {
                 json!({"planner_provider":"codex"})
+            } else if role == CardRole::Assistant {
+                json!({"harness_profile":"assistant","assistant_provider":"codex"})
             } else {
                 json!({})
             },
@@ -239,6 +251,9 @@ async fn seed_worker_session(
             }
             WorkerContract::Executor => {
                 calm_server::session_projection_repo::WorkerSessionKind::CodexCard
+            }
+            WorkerContract::Assistant => {
+                calm_server::session_projection_repo::WorkerSessionKind::ManagedAssistant
             }
             _ => panic!("unexpected vector contract"),
         };

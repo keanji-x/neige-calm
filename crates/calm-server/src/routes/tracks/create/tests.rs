@@ -14,6 +14,7 @@ fn cross_area_authorization_is_part_of_idempotent_create_identity() {
         ),
         admin: false,
         planner_provider: AgentProvider::Codex,
+        permission_mode: None,
         model: None,
         reasoning_effort: None,
         title: "shared cwd".into(),

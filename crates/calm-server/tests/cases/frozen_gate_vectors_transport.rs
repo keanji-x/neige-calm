@@ -17,7 +17,6 @@ use calm_server::mcp_server::registry::{ToolCallIdentity, ToolHandler, ToolHandl
 use calm_server::mcp_server::{McpServer, ToolRegistry, build_default_registry};
 use calm_server::model::{CardRole, NewArea, NewCard, NewTrack, now_ms};
 use calm_server::plugin_host::mcp::RpcError;
-use calm_server::role_gate::enforce_role;
 use calm_server::session_projection_repo::{
     AgentProvider, ThreadAttribution, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
 };
@@ -28,6 +27,7 @@ use calm_truth::db::sqlite::{
     session_supersede_and_start_tx,
 };
 use calm_truth::decision_gate::PrincipalDecisionGate;
+use calm_truth::decision_gate::enforce_role_resolving_session_from_tx;
 use calm_types::worker::{
     LivenessTag, Principal, SessionMode, WorkerContract, WorkerProviderKind, WorkerSession,
     WorkerSessionId,
@@ -584,8 +584,6 @@ enum GateExpectation {
 
 struct PrincipalFixture {
     repo: Arc<SqlxRepo>,
-    cache: CardRoleCache,
-    wcc: TrackAreaCache,
     home_track: TrackId,
     subst: Vec<(&'static str, String)>,
 }
@@ -741,8 +739,6 @@ impl PrincipalFixture {
 
         Self {
             repo,
-            cache,
-            wcc,
             home_track,
             subst,
         }
@@ -938,7 +934,10 @@ async fn run_principal_delta_vector(
                     ));
                 }
 
-                let role_res = enforce_role(&actor, &event, &scope, &fx.cache, &fx.wcc);
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                let role_res =
+                    enforce_role_resolving_session_from_tx(&mut *tx, &actor, &event, &scope).await;
+                tx.rollback().await.unwrap();
                 let role = if role_res.is_ok() {
                     GateExpectation::Allow
                 } else {

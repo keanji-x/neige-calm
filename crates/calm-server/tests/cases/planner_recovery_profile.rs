@@ -16,7 +16,7 @@ async fn assert_cold_profile(role: CardRole, marker: &str, expects_mcp: bool) {
         .bind(role.as_db_str())
         .bind(
             if role == CardRole::Assistant {
-                json!({"schemaVersion":1,"harness_profile":marker,"assistant_provider":"codex"})
+                json!({"schemaVersion":1,"harness_profile":marker,"assistant_provider":"codex","permission_mode":"never"})
             } else {
                 json!({"schemaVersion":1,"harness_profile":marker})
             }

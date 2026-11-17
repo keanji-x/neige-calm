@@ -233,7 +233,7 @@ pub(crate) async fn set_from_planner(
         move |tx| {
             Box::pin(async move {
                 let live = track_get_tx(tx, &id).await?;
-                if identity.role != CardRole::Planner
+                if identity.role.capability_role() != CardRole::Planner
                     || !identity.session_is_active(tx, live.id.as_str()).await?
                 {
                     return Err(CalmError::Forbidden(

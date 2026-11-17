@@ -9,7 +9,6 @@ use serde_json::{Value, json};
 
 use crate::error::CalmError;
 use crate::track_report::ReportDocOp;
-use crate::track_report::task_changes::{TaskBlockChange, task_block_changes};
 use crate::track_report_doc::ReportDoc;
 
 fn bad(message: impl Into<String>) -> CalmError {
@@ -36,10 +35,10 @@ fn is_tombstone(block: &ReportBlock) -> bool {
 /// `"spec"`; `validate_declared_by` accepts only `"spec" | "user"`, so returning `"planner"` would reject every new task block.
 fn author_name(author: EditAuthor) -> Option<&'static str> {
     match author {
-        EditAuthor::Planner => Some("spec"),
+        EditAuthor::Planner | EditAuthor::Assistant => Some("spec"),
         EditAuthor::User => Some("user"),
         // `None` = may not author task declaration blocks.
-        EditAuthor::Kernel | EditAuthor::Plugin | EditAuthor::Assistant => None,
+        EditAuthor::Kernel | EditAuthor::Plugin => None,
     }
 }
 
@@ -84,34 +83,6 @@ pub(crate) fn normalize_report_op(
         if_doc_rev: None,
         position: None,
     })
-}
-
-/// An assistant's write must leave the task declarations exactly as it found them: no task block is
-/// added, changed or removed, tombstones included (order and `rev` are not compared).
-fn guard_assistant_leaves_task_blocks_alone(
-    before: &[ReportBlock],
-    after: &[ReportBlock],
-) -> Result<(), CalmError> {
-    let Some(change) = task_block_changes(before, after).into_iter().next() else {
-        return Ok(());
-    };
-    Err(bad(match change {
-        TaskBlockChange::Added(block) => format!(
-            "an assistant may not create task block {}; task declarations \
-             are the planner's and the user's to write",
-            block.id
-        ),
-        TaskBlockChange::Changed(block) => format!(
-            "an assistant may not modify task block {}; its declaration \
-             must survive the write byte-for-byte",
-            block.id
-        ),
-        TaskBlockChange::Removed(block) => format!(
-            "an assistant may not delete task block {}; only the declaring \
-             author may retire a task",
-            block.id
-        ),
-    }))
 }
 
 /// `deleted_by_id` are the blocks the op's delete steps named by id; naming one is the one way a
@@ -239,10 +210,6 @@ pub(crate) fn guard_task_declarations(
             }
         }
     }
-    // Runs last: the shared provenance checks above give the more specific message where they apply.
-    if author == EditAuthor::Assistant {
-        guard_assistant_leaves_task_blocks_alone(before, after)?;
-    }
     crate::track_report_gate_guard::check_changed_task_gates(before, after)?;
     Ok(())
 }
@@ -359,87 +326,21 @@ mod tests {
         );
     }
 
-    /// Self-attributed to `"assistant"`: the only shape that distinguishes fail-closed `None` from an alias.
     #[test]
-    fn assistant_may_not_create_task_blocks() {
-        let self_attributed = block("b_task", live("assistant"));
-        let error = guard_task_declarations(
-            &[],
-            std::slice::from_ref(&self_attributed),
-            EditAuthor::Assistant,
-            &[],
-        )
-        .expect_err("Assistant must not be able to declare a task block");
-        let CalmError::BadRequest(message) = &error else {
-            panic!("expected a 400, got {error:?}");
-        };
-        assert!(
-            message.contains("may not create task blocks"),
-            "the refusal must be the author_name fail-closed one, not an \
-             attribution mismatch; got: {message}"
-        );
-
+    fn assistant_shares_planner_task_declaration_rules() {
+        let task = block("b_task", live("spec"));
+        guard_task_declarations(&[], std::slice::from_ref(&task), EditAuthor::Assistant, &[])
+            .unwrap();
+        let mut rewritten = task.clone();
+        rewritten.payload["goal"] = json!("new goal");
         guard_task_declarations(
-            &[],
-            std::slice::from_ref(&block("b_task", live("spec"))),
-            EditAuthor::Planner,
-            &[],
-        )
-        .expect("Planner may still declare its own task block");
-    }
-
-    #[test]
-    fn assistant_may_not_touch_a_planner_declared_task_but_may_leave_it_alone() {
-        let planner = block("b_task", live("spec"));
-        let user = block("b_user_task", live("user"));
-
-        let mut rewritten = planner.clone();
-        rewritten.payload["goal"] = json!("assistant rewrite");
-        let error = guard_task_declarations(
-            std::slice::from_ref(&planner),
+            std::slice::from_ref(&task),
             &[rewritten],
             EditAuthor::Assistant,
             &[],
         )
-        .expect_err("an assistant may not rewrite a planner-declared task");
-        let CalmError::BadRequest(message) = &error else {
-            panic!("expected a 400, got {error:?}");
-        };
-        assert!(
-            message.contains("may not modify task block"),
-            "the refusal must be P2's, not an incidental attribution \
-             mismatch: {message}"
-        );
-
-        let error = guard_task_declarations(
-            std::slice::from_ref(&planner),
-            &[],
-            EditAuthor::Assistant,
-            &["b_task"],
-        )
-        .expect_err("an assistant may not use the block-level delete exemption");
-        let CalmError::BadRequest(message) = &error else {
-            panic!("expected a 400, got {error:?}");
-        };
-        assert!(message.contains("may not delete task block"), "{message}");
-        guard_task_declarations(
-            std::slice::from_ref(&planner),
-            &[],
-            EditAuthor::Planner,
-            &["b_task"],
-        )
-        .expect("the block-level delete exemption still works for the planner");
-
-        guard_task_declarations(
-            &[planner.clone(), user.clone()],
-            &[user, planner],
-            EditAuthor::Assistant,
-            &[],
-        )
-        .expect(
-            "task blocks that survive the write unchanged — in any order — \
-             must not make the whole write fail",
-        );
+        .unwrap();
+        guard_task_declarations(&[task], &[], EditAuthor::Assistant, &["b_task"]).unwrap();
     }
 
     #[test]
@@ -455,11 +356,7 @@ mod tests {
             guard_task_declarations(&[], std::slice::from_ref(&user), EditAuthor::Planner, &[])
                 .is_err()
         );
-        for author in [
-            EditAuthor::Kernel,
-            EditAuthor::Plugin,
-            EditAuthor::Assistant,
-        ] {
+        for author in [EditAuthor::Kernel, EditAuthor::Plugin] {
             assert!(
                 guard_task_declarations(&[], std::slice::from_ref(&planner), author, &[]).is_err()
             );
@@ -508,12 +405,7 @@ mod tests {
             )
             .is_err()
         );
-        for author in [
-            EditAuthor::Planner,
-            EditAuthor::Kernel,
-            EditAuthor::Plugin,
-            EditAuthor::Assistant,
-        ] {
+        for author in [EditAuthor::Planner, EditAuthor::Kernel, EditAuthor::Plugin] {
             assert!(
                 guard_task_declarations(std::slice::from_ref(&user), &[], author, &[]).is_err()
             );
@@ -744,7 +636,6 @@ mod tests {
             EditAuthor::Planner,
             EditAuthor::Kernel,
             EditAuthor::Plugin,
-            EditAuthor::Assistant,
         ] {
             let (mut doc, _, _) = doc_with_task("spec");
             let operation = ReportDocOp::Replace {
@@ -785,8 +676,12 @@ mod tests {
 
     #[test]
     fn block_level_delete_of_an_own_task_remains_allowed_for_every_author() {
-        // `Assistant` is deliberately absent: its block-level delete right is a separate decision, not inherited from this list.
-        for author in [EditAuthor::Planner, EditAuthor::Kernel, EditAuthor::Plugin] {
+        for author in [
+            EditAuthor::Planner,
+            EditAuthor::Assistant,
+            EditAuthor::Kernel,
+            EditAuthor::Plugin,
+        ] {
             let (mut doc, task, _) = doc_with_task("spec");
             apply_report_op(
                 &mut doc,

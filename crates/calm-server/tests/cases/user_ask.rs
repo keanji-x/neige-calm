@@ -437,6 +437,8 @@ async fn user_ask_writes_one_planner_ask_and_lights_one_item() {
             text: "Merge PR #7 (head abc)? / Which region?".into(),
             at_ms: items[0].at_ms(),
             ask_id,
+            card_id: boot.planner_card_id.to_string(),
+            session_id: Some(PLANNER_SESSION_ID.into()),
             questions,
             delivery: AskDelivery::Wake,
         }]

@@ -81,16 +81,11 @@ pub(crate) fn card_mcp_thread_start_config(
             "set": set,
         },
     });
-    // Delegated only for the terminal tools' roles, each for the writes it may call (#2492: an
-    // Assistant drives existing workers but opens no card); the kernel remains the live
-    // role/Track/session/control authority.
-    let tools = match role {
-        CardRole::Planner => serde_json::json!({
+    // Delegate the shared conversation tool contract; the kernel remains the
+    // live identity, Track and control authority.
+    let tools = match role.capability_role() {
+        CardRole::Planner | CardRole::Assistant => serde_json::json!({
             "neige_terminal_open":{"approval_mode":"approve"},
-            "neige_terminal_control":{"approval_mode":"approve"},
-            "neige_terminal_input":{"approval_mode":"approve"}
-        }),
-        CardRole::Assistant => serde_json::json!({
             "neige_terminal_control":{"approval_mode":"approve"},
             "neige_terminal_input":{"approval_mode":"approve"}
         }),
@@ -244,17 +239,10 @@ mod tests {
                 "/k/bin:/usr/bin",
             );
             match role {
-                CardRole::Planner => assert_eq!(
+                CardRole::Planner | CardRole::Assistant => assert_eq!(
                     cfg["mcp_servers"],
                     serde_json::json!({"neige":{"tools":{
                         "neige_terminal_open":{"approval_mode":"approve"},
-                        "neige_terminal_control":{"approval_mode":"approve"},
-                        "neige_terminal_input":{"approval_mode":"approve"}
-                    }}})
-                ),
-                CardRole::Assistant => assert_eq!(
-                    cfg["mcp_servers"],
-                    serde_json::json!({"neige":{"tools":{
                         "neige_terminal_control":{"approval_mode":"approve"},
                         "neige_terminal_input":{"approval_mode":"approve"}
                     }}})
@@ -306,7 +294,7 @@ mod tests {
                 .collect();
             let writes: std::collections::BTreeSet<_> = terminal
                 .iter()
-                .filter(|d| d.roles.contains(&role))
+                .filter(|d| role.permits(d.roles))
                 .filter(|d| {
                     !matches!(
                         d.name.as_str(),

@@ -20,6 +20,7 @@ async fn held(
     let (_client, mut peer) = connect(&state.shared_codex_appserver).await;
     let mut body = json!({"area_id":area["id"],"title":"","planner_provider":"codex","theme":{"fg":[255,255,255],"bg":[0,0,0]},"first_message":FIRST_BODY});
     if frozen {
+        body["permission_mode"] = json!("full");
         body["model"] = json!("retry-model");
         body["reasoning_effort"] = json!("high");
     }
@@ -374,4 +375,104 @@ async fn canonical_retry_http_reopen_requires_live_repeat_source() {
 #[tokio::test]
 async fn canonical_retry_http_system_repeat_preserves_provenance() {
     super::super::dispatcher_inputs_tests::retry_system_via_http().await;
+}
+
+#[tokio::test]
+async fn conversation_permission_retry_keeps_frozen_mode() {
+    use super::super::conversation_permission_tests::{assert_wire, finish, next_turn, set_mode};
+    let fixture = Fixture::new().await;
+    let (state, app, cookie) = fixture.application().await;
+    let (_, card, worker, before, mut peer) = held(&fixture, &state, &app, &cookie, true).await;
+    set_mode(&app, &cookie, &card, "never").await;
+    let (status, body) = response(
+        &app,
+        &cookie,
+        &format!("/api/cards/{card}/conversation/input/retry"),
+        "retry",
+        args(&worker, &before),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    state
+        .harness
+        .get(&worker)
+        .unwrap()
+        .resume_issuance_for_test();
+    let call = next_turn(&mut peer).await;
+    assert_wire(&call, "full");
+    finish(
+        &fixture,
+        &state,
+        &mut peer,
+        &call,
+        &card,
+        "frozen-retry-permission",
+    )
+    .await;
+    fixture.shutdown_process(&state).await;
+}
+
+#[tokio::test]
+async fn conversation_permission_resume_keeps_frozen_mode() {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter("warn,calm_server=debug")
+        .try_init();
+    use super::super::conversation_permission_tests::{
+        assert_wire, cold_next_turn, finish, set_mode,
+    };
+    let mut fixture = Fixture::new().await;
+    let (state, app, cookie, auth) = fixture.application_with_auth(false).await;
+    let (_, card, worker, before, mut peer) = held(&fixture, &state, &app, &cookie, true).await;
+    let uri = format!("/api/cards/{card}/conversation/input/retry");
+    let original = args(&worker, &before);
+    let (status, body) = response(&app, &cookie, &uri, "retry", original.clone()).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let pause = crate::test_seams::PausePoint::default();
+    crate::test_seams::install_pause_for_test("conversation-retry-claimed", &worker, pause.clone());
+    state
+        .harness
+        .get(&worker)
+        .unwrap()
+        .resume_issuance_for_test();
+    // A settled native predecessor lets the real retry claim commit.
+    let settled = request(&mut peer).await;
+    assert_eq!(settled["method"], "thread/read");
+    send(&mut peer,json!({"id":settled["id"],"result":{"thread":{"id":THREAD,"status":{"type":"idle"},"turns":[]}}})).await;
+    tokio::time::timeout(Duration::from_secs(5), pause.entered.notified())
+        .await
+        .unwrap();
+    set_mode(&app, &cookie, &card, "never").await;
+    // Loss of the live Human source refuses dispatch before any successor crossing.
+    auth.sessions
+        .remove(cookie.split_once('=').unwrap().1)
+        .unwrap();
+    pause.release.notify_one();
+    let handle = state.harness.remove(&worker).unwrap();
+    handle.shutdown().await.unwrap();
+    let (_, checkpoint) = super::super::assistant_canonical::carrier(&fixture, &card).await;
+    assert_eq!(checkpoint.canonical_inputs.attempts.len(), 1);
+    assert_eq!(checkpoint.header.phase, HarnessPhaseTag::IssuingTurn);
+    fixture.shutdown_process(&state).await;
+    peer.close(None).await.unwrap();
+    drop(handle);
+    drop(app);
+    drop(state);
+    fixture.repo = Arc::new(SqlxRepo::open(&fixture.url).await.unwrap());
+    let (restored, new_app, new_cookie) = fixture.application().await;
+    let (client, mut peer) = connect(&restored.shared_codex_appserver).await;
+    let (status, replayed) = response(&new_app, &new_cookie, &uri, "retry", original).await;
+    assert_eq!((status, replayed), (StatusCode::OK, body));
+    let call = cold_next_turn(&mut peer).await;
+    assert_wire(&call, "full");
+    finish(
+        &fixture,
+        &restored,
+        &mut peer,
+        &call,
+        &card,
+        "frozen-resume-permission",
+    )
+    .await;
+    drop(client);
+    fixture.shutdown_process(&restored).await;
 }

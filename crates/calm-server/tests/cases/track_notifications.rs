@@ -221,6 +221,8 @@ async fn open_ask_is_one_item_with_its_questions() {
             text: "Merge PR #1811 now? / Which region?".into(),
             at_ms: at,
             ask_id: id,
+            card_id: p.card.clone(),
+            session_id: Some(p.ws.clone()),
             questions: vec![
                 AskQuestion {
                     detail: None,

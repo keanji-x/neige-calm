@@ -32,7 +32,7 @@ pub const ASSISTANT_PROVIDER_PAYLOAD_KEY: &str = "assistant_provider";
 pub const SIDE_SOURCE_CARD_PAYLOAD_KEY: &str = "side_source_card_id";
 /// Frozen opening material; the first canonical render plan consumes this context.
 pub const ASSISTANT_OPENING_CONTEXT_PAYLOAD_KEY: &str = "assistant_opening_context";
-/// A Planner card's `PlannerPermissionMode` (#2348): minted `"never"` at creation and changed only
+/// A Planner or Assistant card's `PlannerPermissionMode`: initialized at creation and changed only
 /// by its own writer, `planner_permission_mode_set_tx`, which the User-only route calls.
 pub const PLANNER_PERMISSION_MODE_PAYLOAD_KEY: &str = "permission_mode";
 
@@ -130,7 +130,7 @@ pub use calm_types::plugin::KERNEL_OVERLAY_PLUGIN_ID;
 /// `schemaVersion` for `Overlay.payload` when `kind == "file-viewer-nav"`.
 pub const OVERLAY_FILE_VIEWER_NAV_SCHEMA_VERSION: u32 = 1;
 /// `schemaVersion` for `Overlay.payload` when `kind == "activity"`.
-pub const OVERLAY_ACTIVITY_SCHEMA_VERSION: u32 = 4;
+pub const OVERLAY_ACTIVITY_SCHEMA_VERSION: u32 = 5;
 
 #[derive(Clone, Copy)]
 pub struct OverlayKindEntry {
@@ -270,7 +270,37 @@ fn validate_activity_overlay_payload(payload: &Value) -> Result<()> {
     #[serde(deny_unknown_fields)]
     struct Question {
         title: String,
+        detail: Option<String>,
         options: Vec<String>,
+    }
+
+    // The registry stays closed even though the event type is forward-readable.
+    #[derive(Deserialize)]
+    #[allow(dead_code)]
+    #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+    enum AskActionShape {
+        ObjectiveApprovalV2 {
+            objective: String,
+            standard_hash: String,
+        },
+        ObjectiveApproval {
+            objective: String,
+            standard_hash: String,
+        },
+        ReopenTrack {
+            closed_at: i64,
+        },
+        GrantAdmin {},
+        TrackPluginAccess {
+            plugin_id: String,
+            enabled: bool,
+            manifest_sha256: String,
+            expected_revision: i64,
+        },
+        ForgeAction {
+            idempotency_key: String,
+            payload_hash: String,
+        },
     }
 
     #[derive(Deserialize)]
@@ -291,8 +321,12 @@ fn validate_activity_overlay_payload(payload: &Value) -> Result<()> {
             text: String,
             at_ms: i64,
             ask_id: i64,
+            card_id: String,
+            #[serde(deserialize_with = "present")]
+            session_id: Option<String>,
             questions: Vec<Question>,
             delivery: Delivery,
+            action: Option<AskActionShape>,
         },
         PlannerTurnTimeout {
             key: String,
@@ -897,7 +931,7 @@ mod tests {
             "items": [
                 { "source": "ask", "key": "ask:28475",
                   "text": "Merge PR #7? / Which branch?", "at_ms": 1789460968837_i64,
-                  "ask_id": 28475,
+                  "ask_id": 28475, "card_id": "card-owner", "session_id": "session-owner",
                   "questions": [
                       { "title": "Merge PR #7?", "options": ["Merge", "Hold"] },
                       { "title": "Which branch?", "options": [] }

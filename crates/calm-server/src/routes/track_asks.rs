@@ -1,6 +1,6 @@
 //! `POST /api/tracks/{id}/asks/{ask_id}/answer` (#2209, #2348): the user answers one ask. The
 //! answer is `ask.answered`, the only record that a question was answered. A `wake` ask's answer
-//! wakes the Planner; a `hold` ask's answer goes to the provider request its Planner's running
+//! wakes the Planner; a `hold` ask's answer goes to the provider request its conversation's running
 //! turn is paused on, through the harness's held-request table.
 
 use axum::{Router, extract::State, http::StatusCode, routing::post};
@@ -51,6 +51,8 @@ pub struct AnswerAskRequest {
 pub(crate) async fn answer_ask(
     State(s): State<RouteState>,
     actor: Actor,
+    source: crate::auth::HumanInputSource,
+    share: Option<axum::Extension<crate::share_access::scope::ShareAccessScope>>,
     Path((id, ask_id)): Path<(String, i64)>,
     JsonBody(body): JsonBody<AnswerAskRequest>,
 ) -> Result<StatusCode> {
@@ -60,9 +62,17 @@ pub(crate) async fn answer_ask(
         "Only the user answers a question.",
     )?;
     let track = TrackId::from(id);
-    tokio::spawn(answer(s, track, ask_id, body.answers))
-        .await
-        .map_err(|error| CalmError::Internal(format!("ask answer task failed: {error}")))??;
+    tokio::spawn(answer(
+        s,
+        actor,
+        source,
+        share.is_some(),
+        track,
+        ask_id,
+        body.answers,
+    ))
+    .await
+    .map_err(|error| CalmError::Internal(format!("ask answer task failed: {error}")))??;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -70,8 +80,19 @@ pub(crate) async fn answer_ask(
 /// must hold the request before anything is stored (409 otherwise); after the commit the entry is
 /// taken out of the table and answered at once. Whoever takes an entry answers it: when the
 /// request went away between the two steps, the stored answer has no effect.
-async fn answer(s: RouteState, track: TrackId, ask_id: i64, answers: Vec<AskAnswer>) -> Result<()> {
+async fn answer(
+    s: RouteState,
+    actor: Actor,
+    source: crate::auth::HumanInputSource,
+    share_scope: bool,
+    track: TrackId,
+    ask_id: i64,
+    answers: Vec<AskAnswer>,
+) -> Result<()> {
     let ask = crate::ask::stored_ask(s.repo.as_ref(), &track, ask_id).await?;
+    if ask.delivery == AskDelivery::Hold {
+        require_native_answer(&actor, &source, share_scope)?;
+    }
     // A tagged answer can reopen the track; order that lifecycle write with sleep.
     let _lifecycle = if matches!(
         ask.action,
@@ -107,6 +128,9 @@ async fn answer(s: RouteState, track: TrackId, ask_id: i64, answers: Vec<AskAnsw
         let track = track.clone();
         move |tx| {
             Box::pin(async move {
+                if ask.delivery == AskDelivery::Hold {
+                    require_native_answer(&actor, &source, share_scope)?;
+                }
                 let (scope, events) =
                     crate::ask::ask_answered_tx(tx, &track, ask_id, answers).await?;
                 Ok((
@@ -131,4 +155,13 @@ async fn answer(s: RouteState, track: TrackId, ask_id: i64, answers: Vec<AskAnsw
         }
     }
     Ok(())
+}
+
+/// Native replies decide host execution authority for every option, including Deny.
+fn require_native_answer(
+    actor: &Actor,
+    source: &crate::auth::HumanInputSource,
+    share_scope: bool,
+) -> Result<()> {
+    crate::planner_permission_mode::require_explicit_selection(actor, source, share_scope)
 }

@@ -131,21 +131,6 @@ impl ToolDiscovery {
             })
             .collect()
     }
-
-    pub(crate) fn render_assistant(self, template: &str) -> String {
-        let tools = match self {
-            Self::DeferredSearch => return template.to_owned(),
-            Self::DirectMcp => {
-                "## Report tools\n\nNeige report tools are already in your tool list as `mcp__neige__<name>`; call them directly.\n\n"
-            }
-            Self::SessionToolList | Self::SessionToolListWithTrackReads => {
-                "## Report tools\n\nUse the Neige MCP report tools in the tool list supplied by this session. Tool listing is not a grant; only Assistant tools are authorized.\n\n"
-            }
-        };
-        template
-            .replace("{assistant_tool_discovery}", tools)
-            .replace(include_str!("../../prompts/tool-discovery.md"), "")
-    }
 }
 
 #[cfg(test)]

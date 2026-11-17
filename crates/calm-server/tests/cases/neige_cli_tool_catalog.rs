@@ -65,7 +65,7 @@ fn kernel_tools_callable_by(role: CardRole) -> Vec<String> {
         .descriptors()
         .into_iter()
         .filter(|tool| calm_server::builtin_plugins::owner(&tool.name).is_none())
-        .filter(|tool| tool.roles.contains(&role))
+        .filter(|tool| role.permits(tool.roles))
         .map(|tool| tool.name)
         .collect();
     names.sort();
@@ -173,9 +173,9 @@ async fn cli_tool_lookup_matches_scoped_mcp_listing_and_rejects_stale_sessions()
         want["kind"] = Value::Null;
         assert_eq!(serde_json::from_str::<Value>(&stdout).unwrap(), want);
 
-        // `neige_admin_vacuum` is the Planner's; any other role is told whose it is.
+        // Both managed conversation roles share this hidden Planner capability.
         let (stdout, error, exit) = describe(&boot, "neige_admin_vacuum").await;
-        if role == CardRole::Planner {
+        if matches!(role, CardRole::Planner | CardRole::Assistant) {
             assert_eq!((error, exit), (Value::Null, 0));
             let vacuum: Value = serde_json::from_str(&stdout).unwrap();
             assert_eq!(
@@ -239,9 +239,8 @@ async fn non_admin_planner_catalog_keeps_track_add_unlisted() {
     assert_eq!(described["listed"], false);
 }
 
-/// #2289: the owner's report. An Assistant may call `neige_report_read`, an MCP-only tool, so its
-/// catalog lists and describes it; a tool whose declared `roles` exclude the Assistant is absent
-/// from the listing and described as another role's.
+/// Both managed conversations list and describe the same capabilities. Worker-only
+/// tools remain absent and refuse lookup; unknown names retain the catalog error.
 #[tokio::test]
 async fn an_assistant_catalog_is_what_it_may_call() {
     let boot = boot_with_role(CardRole::Assistant).await;
@@ -260,11 +259,19 @@ async fn an_assistant_catalog_is_what_it_may_call() {
     let refused: Vec<String> = build_default_registry()
         .descriptors()
         .into_iter()
-        .filter(|tool| !tool.roles.contains(&CardRole::Assistant))
+        .filter(|tool| !tool.roles.contains(&CardRole::Planner))
         .map(|tool| tool.name)
         .collect();
-    assert!(refused.iter().any(|name| name == "neige_admin_gc"));
-    assert!(refused.iter().any(|name| name == "neige_track_close"));
+    assert!(refused.iter().any(|name| name == "neige_task_gate"));
+    let planner = boot_with_role(CardRole::Planner).await;
+    assert_eq!(rows, all_rows(&planner).await);
+    for name in ["neige_admin_gc", "neige_track_close"] {
+        assert!(row(&rows, name).is_some(), "{name} is shared");
+        let (stdout, error, exit) = describe(&boot, name).await;
+        assert_eq!((error, exit), (Value::Null, 0));
+        let declaration: Value = serde_json::from_str(&stdout).unwrap();
+        assert_eq!(declaration["name"], name);
+    }
     for name in &refused {
         assert!(row(&rows, name).is_none(), "{name} is not the Assistant's");
     }
@@ -287,20 +294,17 @@ async fn an_assistant_catalog_is_what_it_may_call() {
         )
     );
 
-    let (stdout, error, exit) = describe(&boot, "neige_admin_gc").await;
+    let (stdout, error, exit) = describe(&boot, "neige_task_gate").await;
     assert_eq!((stdout.as_str(), exit), ("", 4));
     assert_eq!(
-        error,
-        json!({
-            "message": "`neige_admin_gc` is for roles [Planner]; this session is Assistant",
-            "detail": {"kind": "role", "roles": ["Planner"], "role": "Assistant"},
-        })
+        error["detail"],
+        json!({"kind": "role", "roles": ["Worker"], "role": "Assistant"})
     );
-    let (_, stderr, exit) = cli(&boot, &["tool", "describe", "--name", "neige_admin_gc"]).await;
+    let (_, stderr, exit) = cli(&boot, &["tool", "describe", "--name", "neige_task_gate"]).await;
     assert_eq!(
         (stderr.as_str(), exit),
         (
-            "neige: `neige_admin_gc` is for roles [Planner]; this session is Assistant\n",
+            "neige: `neige_task_gate` is for roles [Worker]; this session is Assistant\n",
             4
         )
     );

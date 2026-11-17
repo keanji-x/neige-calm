@@ -110,12 +110,7 @@ fn compact() -> Value {
 #[tokio::test]
 async fn compact_origination_fence_refuses_every_non_planner_author() {
     let f = fixture().await;
-    for author in [
-        EditAuthor::User,
-        EditAuthor::Assistant,
-        EditAuthor::Plugin,
-        EditAuthor::Kernel,
-    ] {
+    for author in [EditAuthor::User, EditAuthor::Plugin, EditAuthor::Kernel] {
         let error = f.upsert(author, None, compact()).await.unwrap_err();
         assert!(
             matches!(error, CalmError::Forbidden(_)),
@@ -151,12 +146,7 @@ async fn compact_origination_fence_refuses_kind_conversion() {
         .find(|block| block.kind == "task")
         .unwrap()
         .id;
-    for author in [
-        EditAuthor::User,
-        EditAuthor::Assistant,
-        EditAuthor::Plugin,
-        EditAuthor::Kernel,
-    ] {
+    for author in [EditAuthor::User, EditAuthor::Plugin, EditAuthor::Kernel] {
         let error = f
             .upsert(author, Some(id.clone()), compact())
             .await
@@ -166,7 +156,7 @@ async fn compact_origination_fence_refuses_kind_conversion() {
             "{author:?}: {error:?}"
         );
     }
-    f.upsert(EditAuthor::Planner, Some(id), compact())
+    f.upsert(EditAuthor::Assistant, Some(id), compact())
         .await
         .unwrap();
 }

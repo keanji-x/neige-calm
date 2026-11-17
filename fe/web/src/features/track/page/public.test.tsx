@@ -187,9 +187,9 @@ describe('TrackPage header', () => {
     const row = within(notice).getByRole('listitem');
     expect(row.getAttribute('data-nc-notification-state')).toBe('ask');
     /* Meta line (the label and, in its slot, the row's action; the time), then the body; no text buttons. */
-    expect(row.textContent).toBe('Needs your answerAnswer in Planner3mMerge PR #1811 now, or hold it?');
+    expect(row.textContent).toBe('Needs your answerAnswer in conversation3mMerge PR #1811 now, or hold it?');
     expect(within(row).getAllByRole('button').map((button) => button.getAttribute('aria-label')))
-      .toEqual(['Answer the Planner: Merge PR #1811 now, or hold it?']);
+      .toEqual(['Answer question: Merge PR #1811 now, or hold it?']);
     expect(screen.queryByText('Needs input')).toBeNull();
     await userEvent.click(screen.getByRole('button', { name: 'Collapse notifications' }));
     expect(notice.getAttribute('data-nc-notification-mode')).toBe('compact');
@@ -197,7 +197,7 @@ describe('TrackPage header', () => {
     expect(notice.textContent).toContain('1');
     await userEvent.click(screen.getByRole('button', { name: 'Open 1 notification' }));
     expect(notice.getAttribute('data-nc-notification-mode')).toBe('expanded');
-    await userEvent.click(screen.getByRole('button', { name: 'Answer the Planner: Merge PR #1811 now, or hold it?' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Answer question: Merge PR #1811 now, or hold it?' }));
     expect(onReply).toHaveBeenCalledOnce();
   });
 
@@ -244,7 +244,7 @@ describe('TrackPage header', () => {
     expect(within(ask).getByRole('button', {
       name: 'Dismiss: Needs your answer: Merge PR #1811 now? hold it for the release ship it today Run deploy.sh after; s…',
     }).title).toBe('Dismiss');
-    expect(within(ask).getByRole('button', { name: /^Answer the Planner: Merge PR #1811 now\? hold it/ })).toBeTruthy();
+    expect(within(ask).getByRole('button', { name: /^Answer question: Merge PR #1811 now\? hold it/ })).toBeTruthy();
     expect(onDismiss).toHaveBeenCalledWith('planner_down:9');
   });
 
@@ -264,9 +264,9 @@ describe('TrackPage header', () => {
     expect(approval.getAttribute('data-nc-notification-state')).toBe('approval');
     expect(within(approval).getByText('Waiting for your approval')).toBeTruthy();
     expect(within(approval).getAllByRole('button').map((button) => button.getAttribute('aria-label')))
-      .toEqual(['Answer the Planner: Run cargo test (cwd /work)?']);
+      .toEqual(['Answer question: Run cargo test (cwd /work)?']);
     expect(within(ask).getByRole('button', { name: 'Dismiss: Needs your answer: Merge now?' })).toBeTruthy();
-    await userEvent.click(within(approval).getByRole('button', { name: 'Answer the Planner: Run cargo test (cwd /work)?' }));
+    await userEvent.click(within(approval).getByRole('button', { name: 'Answer question: Run cargo test (cwd /work)?' }));
     expect(onReply).toHaveBeenCalledOnce();
   });
 
@@ -279,7 +279,7 @@ describe('TrackPage header', () => {
       onReply: vi.fn(),
       onDismiss: vi.fn(() => Promise.resolve()),
     });
-    expect(screen.getByRole('button', { name: 'Answer the Planner: Ship now? See the PR.' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Answer question: Ship now? See the PR.' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Dismiss: Needs your answer: Ship now? See the PR.' })).toBeTruthy();
   });
 

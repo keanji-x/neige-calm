@@ -382,12 +382,10 @@ async fn serve_conn(
         .map_err(|e| format!("ws accept: {e}"))?;
     let (mut write, mut read) = ws.split();
 
-    let thread_id = "fake-thread-0001";
-    let turn_id = "fake-turn-0001";
+    let mut thread_id = String::new();
+    let mut turn_id = String::new();
+    let mut pending_approvals = std::collections::HashMap::new();
     let mut replies = 0_u32;
-    let mut approvals = 0_u32;
-    // Requests codex already settled: an answer to one is ignored, as codex ignores it.
-    let mut resolved = std::collections::HashSet::new();
     let mut resumed_threads = std::collections::HashSet::new();
 
     while let Some(msg) = read.next().await {
@@ -420,9 +418,9 @@ async fn serve_conn(
                 && request_id.starts_with("approval-")
             {
                 reads.record_line("approval-answers", &req.to_string());
-                if !resolved.insert(request_id.to_owned()) {
+                let Some((thread_id, turn_id)) = pending_approvals.remove(request_id) else {
                     continue;
-                }
+                };
                 send_notification(
                     &mut write,
                     "serverRequest/resolved",
@@ -518,6 +516,14 @@ async fn serve_conn(
                         continue;
                     }
                 }
+                thread_id = if method == "thread/resume" {
+                    req.pointer("/params/threadId")
+                        .and_then(Value::as_str)
+                        .ok_or("thread/resume requires threadId")?
+                        .to_owned()
+                } else {
+                    wire::next_id(&reads.sock, "thread")?
+                };
                 // `FAKE_CODEX_THREAD_START_MODEL` names the resolved model; `FAKE_CODEX_THREAD_START_OMIT_MODEL` answers without one.
                 let mut result = json!({ "thread": { "id": thread_id } });
                 if !env_flag("FAKE_CODEX_THREAD_START_OMIT_MODEL") {
@@ -549,6 +555,8 @@ async fn serve_conn(
                     send_error(&mut write, &id, -32000, message).await?;
                     continue;
                 }
+                thread_id = requested.to_owned();
+                turn_id = wire::next_id(&reads.sock, "turn")?;
                 // Script a native turn failure verbatim (a `TurnError` object): Codex accepts the
                 // turn, then reports it on `error` and a failed `turn/completed`, as 0.159.2 does
                 // for a refresh token it cannot use (#2512). No failure policy lives here.
@@ -602,16 +610,17 @@ async fn serve_conn(
                     .await?;
                 }
                 if let Some(script) = ApprovalScript::from_turn_start(&req) {
-                    approvals += 1;
-                    let request_id = format!("approval-{approvals:04}");
+                    let request_id = wire::next_id(&reads.sock, "approval")?;
+                    pending_approvals
+                        .insert(request_id.clone(), (thread_id.clone(), turn_id.clone()));
+                    let request = script.request(&request_id, &thread_id, &turn_id);
+                    reads.record_line("approval-requests", &request.to_string());
                     write
-                        .send(Message::Text(
-                            script.request(&request_id, thread_id, turn_id).to_string(),
-                        ))
+                        .send(Message::Text(request.to_string()))
                         .await
                         .map_err(|e| format!("send approval request: {e}"))?;
                     if script.resolve_at_once {
-                        resolved.insert(request_id.clone());
+                        pending_approvals.remove(&request_id);
                         send_notification(
                             &mut write,
                             "serverRequest/resolved",
@@ -623,7 +632,7 @@ async fn serve_conn(
                     replies += 1;
                     let item_id = format!("fake-reply-{replies:04}");
                     script
-                        .stream(&mut write, thread_id, turn_id, &item_id)
+                        .stream(&mut write, &thread_id, &turn_id, &item_id)
                         .await?;
                 } else if let Some(delay) = control.turn_completion_delay() {
                     tokio::time::sleep(delay).await;
@@ -636,6 +645,14 @@ async fn serve_conn(
                 }
             }
             "turn/interrupt" => {
+                let thread_id = req
+                    .pointer("/params/threadId")
+                    .and_then(Value::as_str)
+                    .unwrap_or(&thread_id);
+                let turn_id = req
+                    .pointer("/params/turnId")
+                    .and_then(Value::as_str)
+                    .unwrap_or(&turn_id);
                 if let Ok(path) = std::env::var("FAKE_CODEX_INTERRUPT_MARKER") {
                     let _ = std::fs::write(path, "1");
                 }

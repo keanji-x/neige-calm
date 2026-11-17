@@ -468,7 +468,7 @@ async fn an_empty_day_is_briefed_as_empty_and_still_opens_the_conversation() {
 /// Asserted on `developer_instructions` at `thread/start`, the only place the two identities are
 /// distinguishable, by equality against the production renderer rather than by a keyword.
 #[tokio::test]
-async fn the_launchpad_assistant_starts_under_the_launchpad_identity_and_others_do_not() {
+async fn launchpad_and_ordinary_assistants_share_the_conversation_instructions() {
     let b = boot().await;
     let ordinary = b.user_track("ordinary").await;
     let launchpad = b.ensure_launchpad().await;
@@ -500,31 +500,30 @@ async fn the_launchpad_assistant_starts_under_the_launchpad_identity_and_others_
         .filter_map(|(developer_instructions, _, _)| developer_instructions)
         .collect();
 
-    let launchpad_prompt =
-        calm_server::planner_card::render_launchpad_assistant_prompt_for_test(&launchpad);
-    let ordinary_prompt = calm_server::planner_card::render_assistant_prompt_for_test(&ordinary);
-    assert!(
-        instructions.contains(&launchpad_prompt),
-        "the launchpad assistant must be started under the launchpad identity;          started threads carried: {instructions:#?}"
-    );
-    assert!(
-        instructions.contains(&ordinary_prompt),
-        "an ordinary track's assistant must keep the identity it always had;          started threads carried: {instructions:#?}"
-    );
-    // The launchpad identity must not leak onto the other track. The ASSISTANT start is located by its own
-    // opening line: that track also has a planner thread start in this list.
-    let ordinary_started = instructions
-        .iter()
-        .find(|text| {
-            text.starts_with(&format!(
-                "You are an assistant conversation on track `{ordinary}`"
-            ))
-        })
-        .expect("the ordinary track's assistant thread start");
-    assert!(
-        ordinary_started.contains("you are a guest in a document"),
-        "the guest framing is correct on an ordinary track and must survive:          {ordinary_started}"
-    );
+    for track in [&launchpad, &ordinary] {
+        let cards = b.repo.cards_by_track(track).await.unwrap();
+        let card = cards
+            .iter()
+            .find(|card| card.payload["harness_profile"] == "assistant")
+            .unwrap();
+        let expected =
+            calm_server::operation::planner_harness_start_adapter::planner_instructions_for_test(
+                b.repo.as_ref(),
+                &b.state.plugin,
+                track,
+                card.id.as_str(),
+            )
+            .await
+            .unwrap();
+        assert!(
+            instructions.contains(&expected),
+            "shared instructions missing for {track}"
+        );
+        assert_eq!(
+            b.repo.card_role_get(card.id.as_str()).await.unwrap(),
+            Some(calm_server::model::CardRole::Assistant)
+        );
+    }
 }
 
 /// The workspace here has a launchpad *and* real activity, so a briefing that leaked onto other tracks

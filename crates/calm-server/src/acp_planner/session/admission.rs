@@ -7,7 +7,6 @@ impl Shared {
     pub(super) async fn current_owner(
         &self,
         thread: &str,
-        permission: Option<PlannerPermissionMode>,
     ) -> std::result::Result<WorkerSession, StartFailure> {
         let params = &self.params;
         let row = params
@@ -22,7 +21,7 @@ impl Shared {
         ) {
             return Err(refused("ACP owner identity changed"));
         }
-        let binding = crate::harness::profile::local_binding(
+        crate::harness::profile::local_binding(
             params.repo.as_ref(),
             &row,
             &params.provider,
@@ -32,18 +31,12 @@ impl Shared {
         )
         .await?
         .ok_or_else(|| refused("ACP live owner identity changed"))?;
-        if binding.profile == crate::harness::profile::HarnessProfile::Assistant
-            && permission.is_some_and(|mode| mode != PlannerPermissionMode::Never)
-        {
-            return Err(refused("ACP live owner identity changed"));
-        }
         Ok(row)
     }
 
     pub(super) fn admission<'a>(
         &'a self,
         thread: &'a str,
-        permission: Option<PlannerPermissionMode>,
         native: Option<&'a str>,
         turn: Option<&'a str>,
     ) -> NativePromptAdmission<'a> {
@@ -69,10 +62,7 @@ impl Shared {
             },
             move || {
                 Box::pin(async move {
-                    let row = self
-                        .current_owner(thread, permission)
-                        .await
-                        .map_err(CalmError::from)?;
+                    let row = self.current_owner(thread).await.map_err(CalmError::from)?;
                     if row.agent_session_id.as_deref() != native {
                         return Err(CalmError::Conflict(
                             "ACP native owner changed before write".into(),

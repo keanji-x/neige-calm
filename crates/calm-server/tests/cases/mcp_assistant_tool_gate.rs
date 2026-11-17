@@ -1,7 +1,5 @@
-//! The full role verdict for a `CardRole::Assistant` MCP token. Discovery is not inspected:
-//! `tools/call` routes by name regardless. Kernel denials assert `-32403` and the role message;
-//! compiled components unavailable in this fixture keep the earlier availability refusal. The lists are the reviewed expectation: they must equal the
-//! tools whose declared `roles` admit the Assistant, so a declaration change is a reviewed diff here.
+//! Real Assistant credentials use the shared Planner tool contract while
+//! preserving actual card identity and Report attribution.
 
 #![cfg(unix)]
 
@@ -11,223 +9,44 @@ use calm_server::model::CardRole;
 use serde_json::json;
 use support::mcp::{boot_with_role, connect, handshake, recv_frame, send_frame};
 
-/// Tools an Assistant token may call. Its report writes are anchored by its own `neige_report_read`;
-/// their `lifecycle` field alone is refused.
-const ASSISTANT_ALLOWED_TOOLS: &[&str] = &[
-    "plugin_calendar_ls",
-    "plugin_calendar_add",
-    "plugin_calendar_set",
-    "plugin_calendar_rm",
-    "neige_report_read",
-    "neige_ls",
-    "neige_cat",
-    "neige_track_diff",
-    "neige_track_show",
-    "neige_track_log",
-    "neige_report_describe",
-    "neige_report_commit",
-    "neige_report_write",
-    // #2492: an Assistant (the worker watcher among them) reads and drives its own Track's task
-    // workers under the Planner's checks, and reports what it found to the Planner.
-    "neige_terminal_show",
-    "neige_terminal_read",
-    "neige_terminal_control",
-    "neige_terminal_input",
-    "neige_worker_report",
-];
-
-/// Denied tools whose handler a **Planner** token gets past; also the control list below.
-const ASSISTANT_DENIED_TOOLS_PLANNER_REACHABLE: &[&str] = &[
-    // Cross-track / cross-area report discovery reads.
-    "neige_link_ls",
-    "neige_report_find",
-    // Captured sources are the planner's evidence.
-    "neige_source_capture",
-    "neige_source_ls",
-    // Track state + verdict.
-    "neige_track_status",
-    "neige_task_accept",
-    "neige_task_reject",
-    // Re-running a failed gate is a Planner decision (#2405).
-    "neige_task_regate",
-    // Naming the track is a planner judgement.
-    "neige_track_rename",
-    "neige_track_set",
-    // Publishing the track's verified commit is a Planner action.
-    "plugin_gitforge_publish",
-    // Rerunning failed CI jobs, once the user approves it, is a Planner action (#2617).
-    "plugin_gitforge_gh_run_rerun",
-    // External history is restricted to its bound Planner.
-    "plugin_opencodehistory_source_ls",
-    "plugin_opencodehistory_session_ls",
-    "plugin_opencodehistory_message_ls",
-    "plugin_opencodehistory_message_cat",
-    // Inspection evidence and reminder decisions belong to its configured Planner.
-    "plugin_feishuwatch_status",
-    "plugin_feishuwatch_batch_cat",
-    "plugin_feishuwatch_settle",
-    "plugin_feishuwatch_reminder_set",
-    "plugin_feishuwatch_reminder_rm",
-    // Closing the track is a Planner action; only the user reopens.
-    "neige_track_close",
-    // Closing an objective and freezing its usage is a Planner action.
-    "neige_objective_close",
-    "neige_objective_evaluate",
-    "neige_objective_settle",
-    "neige_objective_ask",
-    // Opening a top-level Track from a recipe is a Planner action.
-    "neige_track_add",
-    "neige_catalog_ls",
-    "neige_catalog_cat",
-    // Extra plugin authorization requests are Planner-only.
-    "neige_access_ask",
-    // Asking the user is a planner action.
-    "neige_user_ask",
-    // Mail between the Tracks of an Area wakes another Planner (#2130).
-    "neige_mail_send",
-    "neige_mail_ls",
-    "neige_mail_cat",
-    // A forge action's recorded outcome is read by the Track's Planner and Workers (#2600).
-    "neige_op_show",
-    // Preview gateway registration is a Planner action.
-    "neige_preview_add",
-    "neige_preview_rm",
-    // Opening a terminal card is the Planner's; the role gate keeps an Assistant's writes to its
-    // own card.
-    "neige_terminal_open",
-    // `neige report tag report.md` (Planner lists and changes, Worker lists; never Assistant).
-    "neige_report_tag",
-    // Planning, review, admin.
-    "neige_task_cancel",
-    "neige_task_ls",
-    "neige_admin_gc",
-    "neige_admin_vacuum",
-];
-
-/// Denied tools a **Worker** token gets past. Keep the shared child outcome tools here so
-/// Worker control coverage stays intact; Planner outcome admission has child-binding tests.
-const ASSISTANT_DENIED_TOOLS_WORKER_REACHABLE: &[&str] = &[
-    "neige_task_done",
-    "neige_task_fail",
-    "neige_task_gate",
-    "neige_message_read",
-];
-
-fn assistant_denied_tools() -> Vec<&'static str> {
-    ASSISTANT_DENIED_TOOLS_PLANNER_REACHABLE
-        .iter()
-        .chain(ASSISTANT_DENIED_TOOLS_WORKER_REACHABLE)
-        .copied()
-        .collect()
-}
-
-/// The two hand-written lists must be a *partition* of the real registry, so
-/// a new tool with no assistant verdict fails here.
-#[test]
-fn assistant_verdict_covers_every_registered_tool() {
-    let registry = calm_server::mcp_server::build_default_registry();
-    let mut registered = registry
-        .descriptors()
-        .into_iter()
-        .map(|descriptor| descriptor.name)
-        .collect::<Vec<_>>();
-    registered.sort();
-
-    let mut adjudicated = ASSISTANT_ALLOWED_TOOLS
-        .iter()
-        .chain(assistant_denied_tools().iter())
-        .map(|name| (*name).to_string())
-        .collect::<Vec<_>>();
-    let adjudicated_len = adjudicated.len();
-    adjudicated.sort();
-    adjudicated.dedup();
-    assert_eq!(
-        adjudicated.len(),
-        adjudicated_len,
-        "a tool is listed twice across the allow/deny lists: {adjudicated:?}"
-    );
-
-    let missing = registered
-        .iter()
-        .filter(|name| !adjudicated.contains(name))
-        .collect::<Vec<_>>();
-    let unknown = adjudicated
-        .iter()
-        .filter(|name| !registered.contains(name))
-        .collect::<Vec<_>>();
-    assert!(
-        missing.is_empty() && unknown.is_empty(),
-        "assistant role verdict must partition the tool registry.\n  \
-         registered but unadjudicated (add to the allow or deny list): {missing:?}\n  \
-         adjudicated but not registered (stale name): {unknown:?}"
-    );
-    assert_eq!(registered, adjudicated);
-}
-
-/// The reviewed allow list is exactly the set of tools whose declared `roles` admit the Assistant;
-/// the registry's gate enforces those declarations (`mcp_tool_role_matrix`).
-#[test]
-fn assistant_verdict_equals_the_declared_roles() {
-    let mut declared = calm_server::mcp_server::build_default_registry()
-        .descriptors()
-        .into_iter()
-        .filter(|descriptor| descriptor.roles.contains(&CardRole::Assistant))
-        .map(|descriptor| descriptor.name)
-        .collect::<Vec<_>>();
-    declared.sort();
-    let mut reviewed = ASSISTANT_ALLOWED_TOOLS
-        .iter()
-        .map(|name| (*name).to_string())
-        .collect::<Vec<_>>();
-    reviewed.sort();
-    assert_eq!(
-        declared, reviewed,
-        "the tools whose declared roles admit the Assistant must equal ASSISTANT_ALLOWED_TOOLS; \
-         review the declaration change and update the list"
-    );
-}
-
+/// Both conversation identities reach the same registered Planner capabilities.
 #[tokio::test]
-async fn assistant_token_cannot_call_denied_tools_by_name() {
-    let boot = boot_with_role(CardRole::Assistant).await;
-    let (mut rd, mut wr) = connect(&boot.socket_path).await;
-    handshake(&mut rd, &mut wr, &boot.raw_token).await;
-
-    for (idx, tool) in assistant_denied_tools().iter().enumerate() {
-        send_frame(
-            &mut wr,
-            json!({
-                "jsonrpc": "2.0",
-                "id": 100 + idx,
-                "method": "tools/call",
-                "params": { "name": tool, "arguments": {} }
-            }),
-        )
-        .await;
-        let resp = recv_frame(&mut rd).await;
-        let error = resp
-            .get("error")
-            .unwrap_or_else(|| panic!("`{tool}` must refuse an assistant caller, got: {resp:#?}"));
-        if calm_server::builtin_plugins::owner(tool).is_some() {
-            assert_eq!(
-                error["code"].as_i64(),
-                Some(-32601),
-                "compiled tools unavailable to this fixture are undiscoverable: {resp:#?}"
-            );
-            continue;
+async fn assistant_token_reuses_planner_tools_without_rewriting_identity() {
+    let registry = calm_server::mcp_server::build_default_registry();
+    let tools: Vec<_> = registry
+        .descriptors()
+        .into_iter()
+        .filter(|d| d.roles.contains(&CardRole::Planner))
+        .map(|d| d.name)
+        .collect();
+    assert!(!tools.is_empty());
+    for role in [CardRole::Assistant, CardRole::Planner] {
+        let boot = boot_with_role(role).await;
+        let (mut rd, mut wr) = connect(&boot.socket_path).await;
+        handshake(&mut rd, &mut wr, &boot.raw_token).await;
+        for (id, name) in tools.iter().enumerate() {
+            send_frame(
+                &mut wr,
+                json!({"jsonrpc":"2.0", "id":id,
+                "method":"tools/call", "params":{"name":name,"arguments":{}}}),
+            )
+            .await;
+            let response = recv_frame(&mut rd).await;
+            if let Some(error) = response.get("error") {
+                assert!(
+                    !error["message"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .contains("tool requires role"),
+                    "{role:?} {name}: {response}"
+                );
+            }
         }
-        let message = error["message"].as_str().unwrap_or_default();
-        // The role refusal (agent-commands.md §5): the registry's gate on the declared roles.
-        let role_refusal = error["code"].as_i64() == Some(-32403)
-            && message.contains("tool requires role in [")
-            && message.contains("got=Assistant");
-        assert!(
-            role_refusal,
-            "`{tool}` must refuse for the *role* reason (not argument parsing); got: {resp:#?}"
+        assert_eq!(
+            boot.repo.card_role_get(&boot.card_id).await.unwrap(),
+            Some(role)
         );
     }
-
-    let _ = (&boot.server, &boot.repo);
 }
 
 /// The field assertions are the point: "not an error" would stay green if the handler returned `{}`.
@@ -265,11 +84,10 @@ async fn assistant_token_can_read_the_report_with_concurrency_tokens() {
         "`doc_rev` must be the CRDT-derived revision — it is what this read \
          anchors a later write to: {payload:#?}"
     );
-    // `taskDiagnostics` is dispatched-task runtime state, the class `neige_task_ls` stays
-    // Planner-only to withhold; it must not leak out the side.
+    // Shared conversation capabilities include the task diagnostics used by Planner tools.
     assert!(
-        payload.get("task_diagnostics").is_none(),
-        "`task_diagnostics` must be withheld from an assistant caller: {payload:#?}"
+        payload.get("task_diagnostics").is_some(),
+        "`task_diagnostics` must be shared with an assistant caller: {payload:#?}"
     );
     let blocks = payload
         .get("blocks")
@@ -307,7 +125,7 @@ async fn assistant_token_can_read_the_report_with_concurrency_tokens() {
     let _ = (&boot.server, &boot.repo);
 }
 
-/// Control: the trim is a *role* decision, not a field that quietly stopped being produced.
+/// Control: the shared diagnostics remain populated for Planner as well.
 #[tokio::test]
 async fn planner_token_still_gets_task_diagnostics_from_the_report_read() {
     let boot = boot_with_role(CardRole::Planner).await;
@@ -340,8 +158,7 @@ async fn planner_token_still_gets_task_diagnostics_from_the_report_read() {
     assert!(
         !diagnostics.is_empty(),
         "the seeded report declares a live task, so the planner-side diagnostics \
-         must be non-empty — otherwise the assistant-side absence assertion \
-         is withholding nothing: {payload:#?}"
+         must be non-empty, matching the shared Assistant read: {payload:#?}"
     );
 
     let _ = (&boot.server, &boot.repo);
@@ -447,56 +264,4 @@ fn tool_result_payload(resp: &serde_json::Value) -> serde_json::Value {
         .unwrap_or_else(|| panic!("tool result has no text content: {resp:#?}"));
     serde_json::from_str(text)
         .unwrap_or_else(|e| panic!("tool result text is not JSON ({e}): {text}"))
-}
-
-/// Control: the refusals must be a *role* decision, not "this wire path refuses everything".
-#[tokio::test]
-async fn planner_token_is_never_refused_for_the_role_reason() {
-    assert_role_reason_absent(
-        CardRole::Planner,
-        ASSISTANT_DENIED_TOOLS_PLANNER_REACHABLE,
-        200,
-    )
-    .await;
-}
-
-/// Same control for Worker completion, gate and message tools.
-#[tokio::test]
-async fn worker_token_is_never_refused_for_the_role_reason() {
-    assert_role_reason_absent(
-        CardRole::Worker,
-        ASSISTANT_DENIED_TOOLS_WORKER_REACHABLE,
-        400,
-    )
-    .await;
-}
-
-async fn assert_role_reason_absent(role: CardRole, tools: &[&str], id_base: usize) {
-    let boot = boot_with_role(role).await;
-    let (mut rd, mut wr) = connect(&boot.socket_path).await;
-    handshake(&mut rd, &mut wr, &boot.raw_token).await;
-
-    for (idx, tool) in tools.iter().enumerate() {
-        send_frame(
-            &mut wr,
-            json!({
-                "jsonrpc": "2.0",
-                "id": id_base + idx,
-                "method": "tools/call",
-                "params": { "name": tool, "arguments": {} }
-            }),
-        )
-        .await;
-        let resp = recv_frame(&mut rd).await;
-        let message = resp
-            .get("error")
-            .and_then(|error| error["message"].as_str())
-            .unwrap_or_default();
-        assert!(
-            !message.contains("tool requires role"),
-            "`{tool}` must not refuse a {role:?} caller on role grounds; got: {message}"
-        );
-    }
-
-    let _ = (&boot.server, &boot.repo);
 }

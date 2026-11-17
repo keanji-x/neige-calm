@@ -18,13 +18,13 @@ const TRACK = { workspace: { isolation: 'none' as const, kind: 'attached' as con
 const PLANNER = { id: 'planner-1', track_id: 'w1', kind: 'codex', title: 'Planner chat', sort: 1, payload: { planner_harness: true }, deletable: false, created_at: 1, updated_at: 2 };
 const ASSISTANT = { id: 'assistant-1', trackId: 'w1', title: 'Side chat', kind: 'track-assistant', provider: 'codex', state: 'idle', updatedAt: 2, archivedAt: null, lastTurnCompletedAt: null };
 const ASK = {
-  source: 'ask', key: 'ask:41', text: 'Which branch? / Notes?', at_ms: 5, ask_id: 41,
+  source: 'ask', key: 'ask:41', text: 'Which branch? / Notes?', at_ms: 5, ask_id: 41, card_id: PLANNER.id, session_id: 'runtime',
   questions: [{ title: 'Which branch?', options: ['main', 'release'] }, { title: 'Notes?', options: [] }],
   delivery: 'wake',
 };
 const activity = (items: readonly unknown[]) => ({
   id: 'activity-w1', plugin_id: 'kernel', entity_kind: 'track', entity_id: TRACK.id, kind: 'activity',
-  payload: { schemaVersion: 4, working: false, attention: items.length > 0 ? 'input' : 'none', activity_at_ms: 5, items, cards: [] },
+  payload: { schemaVersion: 5, working: false, attention: items.length > 0 ? 'input' : 'none', activity_at_ms: 5, items, cards: [] },
   updated_at: 5,
 });
 const unauthorized = createUnauthorizedChannel({ enqueue: (task) => task() });
@@ -90,7 +90,7 @@ async function open(name: string) {
 it('answers the open ask from the Planner composer and hides it before the overlay catches up', async () => {
   const { requests } = setup();
   const drawer = await open('Planner chat');
-  const ask = await within(drawer).findByRole('group', { name: 'The Planner asks' });
+  const ask = await within(drawer).findByRole('group', { name: 'Questions' });
   fireEvent.click(within(ask).getByRole('button', { name: 'release' }));
   fireEvent.change(await within(ask).findByRole('textbox', { name: 'Notes?' }), { target: { value: 'Tag it 2.0' } });
   fireEvent.click(within(ask).getByRole('button', { name: 'Answer' }));
@@ -99,7 +99,7 @@ it('answers the open ask from the Planner composer and hides it before the overl
   expect(answer?.method).toBe('POST');
   expect(answer?.path).toBe('/api/tracks/w1/asks/41/answer');
   expect(answer?.body).toEqual({ answers: [{ option: 1 }, { text: 'Tag it 2.0' }] });
-  await waitFor(() => expect(within(drawer).queryByRole('group', { name: 'The Planner asks' })).toBeNull());
+  await waitFor(() => expect(within(drawer).queryByRole('group', { name: 'Questions' })).toBeNull());
   /* The composer itself stays. */
   expect(within(drawer).getByRole('combobox', { name: 'Message' })).toBeTruthy();
 });
@@ -108,14 +108,14 @@ it('asks nothing in a conversation that is not the Planner’s', async () => {
   setup();
   const drawer = await open('Side chat');
   await within(drawer).findByRole('combobox', { name: 'Message' });
-  expect(within(drawer).queryByRole('group', { name: 'The Planner asks' })).toBeNull();
+  expect(within(drawer).queryByRole('group', { name: 'Questions' })).toBeNull();
 });
 
 
 it('reopens by clicking the canonical choice in the existing Planner drawer and refreshes authoritative lifecycle detail', async () => {
   const { requests } = setup({ reopen: true });
   const drawer = await open('Planner chat');
-  const ask = await within(drawer).findByRole('group', { name: 'The Planner asks' });
+  const ask = await within(drawer).findByRole('group', { name: 'Questions' });
   expect(screen.queryByRole('button', { name: /^Dismiss:/ })).toBeNull();
   expect(within(ask).queryByRole('textbox', { name: 'Continue this closed track?' })).toBeNull();
   fireEvent.click(within(ask).getByRole('button', { name: 'Reopen and continue' }));
@@ -127,7 +127,7 @@ it('reopens by clicking the canonical choice in the existing Planner drawer and 
 it('keeps the canonical choices after a stale lifecycle refusal instead of locally settling the ask', async () => {
   setup({ reopen: true, refusal: true });
   const drawer = await open('Planner chat');
-  const ask = await within(drawer).findByRole('group', { name: 'The Planner asks' });
+  const ask = await within(drawer).findByRole('group', { name: 'Questions' });
   fireEvent.click(within(ask).getByRole('button', { name: 'Reopen and continue' }));
   expect((await within(drawer).findByRole('alert')).textContent).toContain('closure changed');
   expect(within(drawer).getByRole('button', { name: 'Keep closed' })).toBeTruthy();

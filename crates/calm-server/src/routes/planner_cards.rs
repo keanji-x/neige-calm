@@ -182,9 +182,9 @@ pub struct GetPlannerRunResponse {
     pub model: Option<String>,
     /// The chosen reasoning effort, or `null` for the default. Same source as `model`.
     pub reasoning_effort: Option<String>,
-    /// The Planner's permission mode, read off the card like `model`; set with
+    /// The bound Planner or Assistant permission mode, read off the card like `model`; set with
     /// `PUT /api/cards/{id}/planner/permission-mode`. `null` exactly when the card is not a
-    /// Planner (a PlainChat or Assistant conversation has no permission mode). A stored value that
+    /// bound Planner or Assistant (PlainChat has no permission mode). A stored value that
     /// cannot be read is reported as `never`.
     #[schema(required = true, nullable = true)]
     pub permission_mode: Option<PlannerPermissionMode>,

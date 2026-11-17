@@ -374,9 +374,10 @@ async fn whitespace_only_existing_title_still_counts_as_unnamed() {
 }
 
 /// The message is checked because a malformed-arguments rejection carries the same `-32602` code.
+/// An Assistant shares the Planner capability, so it is not a refused role here.
 #[tokio::test]
 async fn non_planner_roles_are_forbidden() {
-    for role in [CardRole::Worker, CardRole::Assistant, CardRole::ReportCard] {
+    for role in [CardRole::Worker, CardRole::ReportCard] {
         let boot = boot_unnamed().await;
         let identity = identity_for(&boot, &boot.other_card_id, role, "other-session");
         let err = call_tool(
@@ -395,6 +396,72 @@ async fn non_planner_roles_are_forbidden() {
         );
         assert_eq!(track_title(&boot).await, "", "role={role:?}");
     }
+}
+
+#[tokio::test]
+async fn assistant_names_its_track_with_real_session_and_preserves_the_root() {
+    let boot = crate::mcp_track_report::boot().await;
+    let db = boot.repo.sqlite_db().unwrap();
+    db.writer()
+        .execute(sqlx::query("UPDATE tracks SET title='' WHERE id=?1").bind(boot.track_id.as_str()))
+        .await
+        .unwrap();
+    let root_before: Option<String> =
+        sqlx::query_scalar("SELECT root_session_id FROM tracks WHERE id=?1")
+            .bind(boot.track_id.as_str())
+            .fetch_one(db.read_pool())
+            .await
+            .unwrap();
+    assert!(root_before.is_some());
+    let identity = crate::mcp_track_report::assistant_identity(&boot);
+    let actor = identity.to_actor_id();
+    let out = crate::mcp_track_report::call_tool(
+        &boot,
+        TOOL_TRACK_RENAME,
+        identity,
+        json!({"title":"Assistant names the shared Track"}),
+    )
+    .await
+    .expect("live Assistant shares the Planner naming capability");
+    assert_eq!(
+        out,
+        json!({"ok":true,"title":"Assistant names the shared Track"})
+    );
+    assert_eq!(
+        boot.repo
+            .track_get(boot.track_id.as_str())
+            .await
+            .unwrap()
+            .unwrap()
+            .title,
+        "Assistant names the shared Track"
+    );
+    let root_after: Option<String> =
+        sqlx::query_scalar("SELECT root_session_id FROM tracks WHERE id=?1")
+            .bind(boot.track_id.as_str())
+            .fetch_one(db.read_pool())
+            .await
+            .unwrap();
+    assert_eq!(root_after, root_before);
+    assert_eq!(
+        boot.repo
+            .card_role_get(boot.assistant_card_id.as_str())
+            .await
+            .unwrap(),
+        Some(CardRole::Assistant)
+    );
+    let actors: Vec<String> = sqlx::query_scalar(
+        "SELECT actor FROM events WHERE kind='track.updated' AND scope_track=?1",
+    )
+    .bind(boot.track_id.as_str())
+    .fetch_all(db.read_pool())
+    .await
+    .unwrap();
+    let actors: Vec<ActorId> = actors
+        .iter()
+        .map(|value| serde_json::from_str(value).unwrap())
+        .collect();
+    assert!(actors.contains(&actor));
 }
 
 /// The per-area chat track's name is kernel-owned.

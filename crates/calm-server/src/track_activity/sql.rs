@@ -32,12 +32,16 @@ pub const N3_PLANNER_TRANSCRIPT_SQL: &str = "SELECT id, created_at_ms, \
         AND COALESCE(json_extract(params, '$.status'), '') <> 'interrupted' \
       ORDER BY created_at_ms DESC, id DESC LIMIT 1";
 
-/// N1 — every open `ask.requested` of the track by [`crate::ask::ASK_OPEN_SQL`]; one answer
-/// answers all of an ask's questions. The two later close rules of a `wake` ask (a user message,
-/// a dismissal) are the fold's.
+/// N1 — all open questions, with provenance from their actual source actor.
+/// A historical direct-card actor has no original session; never infer the current Planner.
 pub const N1_OPEN_ASKS_SQL: &str = concat!(
-    "SELECT r.id, r.at, r.payload FROM events r \
-      WHERE r.scope_track = ?1 AND r.kind = 'ask.requested' AND ",
+    "SELECT r.id, r.at, r.payload, r.actor, ws.card_id AS session_card_id, \
+       EXISTS(SELECT 1 FROM events u WHERE u.id>r.id AND u.kind='harness.user_message.enqueued' \
+          AND json_extract(u.actor,'$.kind')='User' AND u.scope_card= \
+          CASE WHEN json_extract(r.actor,'$.kind') IN ('AiPlannerSession','AiManagedSession') \
+               THEN ws.card_id ELSE json_extract(r.actor,'$.id') END) AS replied \
+     FROM events r LEFT JOIN worker_sessions ws ON ws.id=json_extract(r.actor,'$.id') AND ws.track_id=r.scope_track \
+     WHERE r.scope_track=?1 AND r.kind='ask.requested' AND ",
     crate::ask::ask_open_sql!(),
     " ORDER BY r.id"
 );
@@ -267,6 +271,20 @@ pub(crate) async fn notification_rows(
         .await?
     {
         let ask_id: i64 = r.get("id");
+        let Ok(actor) = serde_json::from_str::<crate::ids::ActorId>(r.get("actor")) else {
+            tracing::warn!(
+                ask_id,
+                "question has no readable source identity; item dropped"
+            );
+            continue;
+        };
+        let Some(target) = crate::ask::source_target(
+            &actor,
+            r.get::<Option<String>, _>("session_card_id")
+                .map(Into::into),
+        ) else {
+            continue;
+        };
         let decoded = serde_json::from_str::<serde_json::Value>(r.get("payload"))
             .ok()
             .and_then(|payload| Event::from_kind_and_payload("ask.requested", payload).ok());
@@ -279,6 +297,9 @@ pub(crate) async fn notification_rows(
             }) => asks.push(OpenAsk {
                 action,
                 ask_id,
+                card_id: target.card.to_string(),
+                session_id: target.session.map(|id| id.to_string()),
+                replied: r.get("replied"),
                 at_ms: r.get("at"),
                 questions,
                 delivery,
@@ -311,13 +332,6 @@ pub(crate) async fn notification_rows(
             ..NotificationRows::default()
         });
     };
-    // N2 — U: the newest message the USER sent to the Planner card (an AI-header send and a send to
-    // an assistant card are not replies).
-    let user_sent = "SELECT MAX(at) FROM events \
-         WHERE kind = 'harness.user_message.enqueued' AND scope_card = ?1 \
-           AND json_extract(actor, '$.kind') = 'User'";
-    let user_sent_at = max_ms(pool, user_sent, &planner_card).await?;
-
     let last_turn = sqlx::query(N3_PLANNER_TRANSCRIPT_SQL)
         .bind(&planner_card)
         .fetch_optional(pool)
@@ -341,7 +355,6 @@ pub(crate) async fn notification_rows(
             .collect();
     Ok(NotificationRows {
         asks,
-        user_sent_at,
         timeouts,
         last_turn,
         dismissed,

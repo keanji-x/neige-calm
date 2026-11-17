@@ -67,18 +67,10 @@ async fn cold_resume_selects_terminal_policy_from_current_card_role() {
                         .unwrap();
                     let tools = request.pointer("/params/config/mcp_servers/neige/tools");
                     match role {
-                        CardRole::Planner => assert_eq!(
+                        CardRole::Planner | CardRole::Assistant => assert_eq!(
                             tools,
                             Some(&json!({
                                 "neige_terminal_open":{"approval_mode":"approve"},
-                                "neige_terminal_control":{"approval_mode":"approve"},
-                                "neige_terminal_input":{"approval_mode":"approve"}
-                            }))
-                        ),
-                        // #2492: an Assistant drives existing workers but opens no card.
-                        CardRole::Assistant => assert_eq!(
-                            tools,
-                            Some(&json!({
                                 "neige_terminal_control":{"approval_mode":"approve"},
                                 "neige_terminal_input":{"approval_mode":"approve"}
                             }))
@@ -109,6 +101,7 @@ async fn cold_resume_selects_terminal_policy_from_current_card_role() {
                 assert_eq!(
                     resumed.pointer("/params/config/mcp_servers/neige/tools"),
                     Some(&json!({
+                        "neige_terminal_open":{"approval_mode":"approve"},
                         "neige_terminal_control":{"approval_mode":"approve"},
                         "neige_terminal_input":{"approval_mode":"approve"}
                     }))

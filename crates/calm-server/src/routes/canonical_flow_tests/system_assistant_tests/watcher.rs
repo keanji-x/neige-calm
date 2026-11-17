@@ -613,7 +613,7 @@ async fn foreign_boot_scope_and_historical_namespace_refuse_live_episode() {
                         kind: "codex".into(),
                         title: None,
                         sort: None,
-                        payload: json!({"harness_profile":"assistant","assistant_provider":"codex"}),
+                        payload: json!({"harness_profile":"assistant","assistant_provider":"codex","permission_mode":"never"}),
                     },
                     crate::model::CardRole::Assistant,
                     false,

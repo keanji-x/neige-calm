@@ -25,7 +25,7 @@ const PLANNER = { id: 'planner', track_id: TRACK.id, kind: 'codex', title: 'Plan
   payload: { planner_harness: true }, deletable: false, created_at: 1, updated_at: 2 };
 const HOLD_TITLE = 'Run `cargo test -p calm-server` (cwd /work/neige)?';
 const HOLD = {
-  source: 'ask', key: 'ask:12', text: HOLD_TITLE, at_ms: 5, ask_id: 12,
+  source: 'ask', key: 'ask:12', text: HOLD_TITLE, at_ms: 5, ask_id: 12, card_id: 'planner', session_id: 'session',
   questions: [{ title: HOLD_TITLE, options: ['Allow', 'Allow for this session', 'Deny'] }],
   delivery: 'hold',
 };
@@ -35,6 +35,7 @@ type Options = Readonly<{
   theme?: 'light' | 'dark';
   mode?: Mode;
   asks?: readonly unknown[];
+  conversations?: readonly unknown[];
   /** The answer to `PUT /planner/permission-mode`; by default it stores the mode asked for. */
   putMode?: (body: { permission_mode: Mode }) => ApiTransportResponse;
   /** The answer to the hold ask's answer route. */
@@ -45,7 +46,7 @@ const answered = (status: number, body: unknown): ApiTransportResponse => ({
   status, statusText: status === 200 ? 'OK' : status === 204 ? 'No Content' : 'Error', body,
 });
 
-function setup({ theme = 'light', mode = 'never', asks = [], putMode, answer }: Options = {}) {
+function setup({ theme = 'light', mode = 'never', asks = [], conversations = [], putMode, answer }: Options = {}) {
   const requests: ApiRequest[] = [];
   let stored: Mode = mode;
   const transport: ApiTransportPort = { async send(request) {
@@ -55,10 +56,11 @@ function setup({ theme = 'light', mode = 'never', asks = [], putMode, answer }: 
     if (request.path === '/api/areas') body = [{ id: 'area', name: 'Work', color: '#123456', sort: 1, kind: 'user', created_at: 1, updated_at: 1 }];
     if (request.path === '/api/areas/area/tracks') body = [TRACK];
     if (request.path === '/api/settings') body = {};
+    if (request.path === `/api/tracks/${TRACK.id}/conversations`) body = conversations;
     if (request.path === `/api/tracks/${TRACK.id}`) body = { track: TRACK, planner_revision: 0, can_reopen: false, can_admin: false, can_close: true, cards: [PLANNER],
       overlays: [{ id: 'activity', plugin_id: 'kernel', entity_kind: 'track', entity_id: TRACK.id, kind: 'activity', updated_at: 5,
-        payload: { schemaVersion: 4, working: false, attention: asks.length > 0 ? 'input' : 'none', activity_at_ms: 5, items: asks, cards: [] } }] };
-    if (request.path.includes('/planner/run?contract=conversation_v1')) body = historicalConversationRun({ card_id: PLANNER.id, worker_session_id: 'session',
+        payload: { schemaVersion: 5, working: false, attention: asks.length > 0 ? 'input' : 'none', activity_at_ms: 5, items: asks, cards: [] } }] };
+    if (request.path.includes('/planner/run?contract=conversation_v1')) body = historicalConversationRun({ card_id: conversationCardId(request.path), worker_session_id: conversationCardId(request.path) === PLANNER.id ? 'session' : 'assistant-session',
       phase: asks.length > 0 ? 'turn_running' : 'idle', model: null, reasoning_effort: null, permission_mode: stored,
       blocked_reason: null, manual_compact_supported: true, recovery: null, compact_outcome: null, context_usage_invalidated: false, running_turn: asks.length > 0 ? { turn_id: 'turn-1', elapsed_ms: 42_000 } : null, attachments_supported: true }, 'idle', true);
     if (request.path.endsWith('/harness/live')) body = { turn_id: null, items: [] };
@@ -72,7 +74,7 @@ function setup({ theme = 'light', mode = 'never', asks = [], putMode, answer }: 
       if (response.status === 200) stored = sent.permission_mode;
       return response;
     }
-    if (request.path === `/api/tracks/${TRACK.id}/asks/12/answer`) return answer?.() ?? answered(204, undefined);
+    if (request.path.startsWith(`/api/tracks/${TRACK.id}/asks/`) && request.path.endsWith('/answer')) return answer?.() ?? answered(204, undefined);
     return { status: 200, statusText: 'OK', body };
   } };
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -239,7 +241,7 @@ it.each(['light', 'dark'] as const)('keeps borderless split-tone ink legible in 
     const full = menu.getByRole('menuitem', { name: /^Full access/ });
     const item = await full.findElement();
     const title = await full.getByText('Full access', { exact: true }).findElement();
-    const description = await full.getByText("No sandbox; never asks. Runs with your account's access.", { exact: true }).findElement();
+    const description = await full.getByText("Allows actions without asking you, within the provider’s limits. Actions may use your account’s access.", { exact: true }).findElement();
     expect(item.getAttribute('data-variant')).toBe('destructive');
     const checkMenu = (state: string) => {
       for (const text of [title, description]) {
@@ -296,7 +298,7 @@ it.each([
   const bounds = (await menu.findElement()).getBoundingClientRect();
   expect(bounds.left).toBeGreaterThanOrEqual(0);
   expect(bounds.right).toBeLessThanOrEqual(window.innerWidth);
-  await expect.element(menu.getByRole('note')).toHaveTextContent('Applies from the next turn.');
+  await expect.element(menu.getByRole('note')).toHaveTextContent('Applies to newly issued turns. Running turns and frozen retries keep their original setting.');
   await menu.getByRole('menuitem', { name: /^Ask me/ }).click();
 
   await expect.poll(() => modeWrites(requests).length).toBe(1);
@@ -319,9 +321,9 @@ it.each([
   const items = (await Promise.all(menu.getByRole('menuitem').all().map((item) => item.findElement())))
     .map((item) => item.textContent);
   expect(items).toEqual([
-    expect.stringMatching(/^Never.*Sandbox only; never asks\./),
-    expect.stringMatching(/^Ask me.*Pauses the turn to ask you\./),
-    expect.stringMatching(/^Full access.*No sandbox; never asks\. Runs with your account's access\./),
+    expect.stringMatching(/^Never.*Never asks you for approval\./),
+    expect.stringMatching(/^Ask me.*Asks you when the provider requests approval\./),
+    expect.stringMatching(/^Full access.*Allows actions without asking you, within the provider’s limits\. Actions may use your account’s access\./),
   ]);
   const bounds = (await menu.findElement()).getBoundingClientRect();
   expect(bounds.left).toBeGreaterThanOrEqual(0);
@@ -353,7 +355,7 @@ it.each([
   await expect.element(page.getByRole('button', { name: 'Approvals: Never' })).toBeVisible();
 });
 
-it('shows no approval setting for a conversation that is not a Planner', async () => {
+it('hides approvals when the run declares no setting (PlainChat)', async () => {
   await page.viewport(1280, 800);
   setup({ mode: null });
   await page.getByRole('button', { name: /Conversation Planner/ }).click();
@@ -373,7 +375,7 @@ it.each([
     expect(notice.getByRole('button', { name: /^Dismiss/ }).query()).toBeNull();
   }
   await page.getByRole('button', { name: /Conversation Planner/ }).click();
-  const ask = page.getByRole('group', { name: 'The Planner asks' });
+  const ask = page.getByRole('group', { name: 'Questions' });
   await expect.element(ask).toBeVisible();
   expect((await ask.findElement()).closest('[data-nc-composer]')).not.toBeNull();
   await expect.element(ask.getByText('Turn paused, waiting for your approval')).toBeVisible();
@@ -397,7 +399,7 @@ it('says a request that went away is no longer pending', async () => {
   const { requests } = setup({ mode: 'ask', asks: [HOLD],
     answer: () => answered(409, { code: 'conflict', error: 'ask 12 is no longer open: its paused request is gone' }) });
   await page.getByRole('button', { name: /Conversation Planner/ }).click();
-  const ask = page.getByRole('group', { name: 'The Planner asks' });
+  const ask = page.getByRole('group', { name: 'Questions' });
   await ask.getByRole('button', { name: 'Allow', exact: true }).click();
   await expect.poll(() => answers(requests).length).toBe(1);
   await expect.element(ask.getByText('This request is no longer pending.')).toBeVisible();
@@ -407,12 +409,38 @@ it('says a request that went away is no longer pending', async () => {
 
 it('shows a paused turn\'s request ahead of an older question, since the turn is blocked on it', async () => {
   await page.viewport(1280, 800);
-  const wake = { source: 'ask', key: 'ask:7', text: 'Which branch?', at_ms: 4, ask_id: 7,
+  const wake = { source: 'ask', key: 'ask:7', text: 'Which branch?', at_ms: 4, ask_id: 7, card_id: 'planner', session_id: 'session',
     questions: [{ title: 'Which branch?', options: ['main', 'release'] }], delivery: 'wake' };
   setup({ mode: 'ask', asks: [HOLD, wake] });
   await page.getByRole('button', { name: /Conversation Planner/ }).click();
-  const ask = page.getByRole('group', { name: 'The Planner asks' });
+  const ask = page.getByRole('group', { name: 'Questions' });
   await expect.element(ask.getByText('Turn paused, waiting for your approval')).toBeVisible();
   await expect.element(ask.getByRole('heading', { name: HOLD_TITLE })).toBeVisible();
   await expect.element(page.getByRole('button', { name: '1 more ask' })).toBeVisible();
+});
+
+
+it('routes two conversation approvals to their own drawer and answer', async () => {
+  await page.viewport(1280, 800);
+  const assistant = { id: 'assistant', trackId: TRACK.id, title: 'Approval assistant',
+    kind: 'track-assistant', provider: 'codex', state: 'running', updatedAt: 2,
+    archivedAt: null, lastTurnCompletedAt: null };
+  const other = { ...HOLD, key: 'ask:13', ask_id: 13, card_id: assistant.id,
+    session_id: 'assistant-session', text: 'Assistant approval',
+    questions: [{ title: 'Assistant approval', options: ['Allow', 'Deny'] }] };
+  const { requests } = setup({ mode: 'ask', asks: [HOLD, other], conversations: [assistant] });
+  await page.getByRole('button', { name: 'Answer question: Assistant approval' }).click();
+  const drawer = page.getByRole('group', { name: 'Questions' });
+  await expect.element(drawer.getByRole('heading', { name: 'Assistant approval' })).toBeVisible();
+  expect(drawer.getByRole('heading', { name: HOLD_TITLE }).query()).toBeNull();
+  await drawer.getByRole('button', { name: 'Deny', exact: true }).click();
+  await expect.poll(() => answers(requests).length).toBe(1);
+  expect(answers(requests)[0]?.path).toBe(`/api/tracks/${TRACK.id}/asks/13/answer`);
+  expect(answers(requests)[0]?.body).toEqual({ answers: [{ option: 1 }] });
+  await page.getByRole('button', { name: 'Close conversation', exact: true }).click();
+  await page.getByRole('button', { name: /Conversation Planner/ }).click();
+  await expect.element(drawer.getByRole('heading', { name: HOLD_TITLE })).toBeVisible();
+  await drawer.getByRole('button', { name: 'Allow', exact: true }).click();
+  await expect.poll(() => answers(requests).length).toBe(2);
+  expect(answers(requests)[1]?.path).toBe(`/api/tracks/${TRACK.id}/asks/12/answer`);
 });

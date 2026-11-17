@@ -1,68 +1,65 @@
 [
   {
-    "description": "Assistant may write in its OWN card scope (#1189 enforce_assistant_scope, self-target arm)",
-    "note": "The event kind mirrors 03_worker_scope so the two arms are directly comparable; what the vector pins is the scope decision, not that an assistant is a sensible source of task.completed (it is not dispatched, so the dispatcher's is_worker check drops it).",
-    "actor": { "kind": "AiCodex", "id": "$ASSISTANT_CARD" },
-    "event": { "ev": "task.completed", "data": { "notification": "notify", "idempotency_key": "vec-a-60", "result": null, "artifacts": [], "agent_message": null } },
-    "scope": { "kind": "Card", "id": { "card": "$ASSISTANT_CARD", "track": "$HOME_TRACK", "area": "$HOME_AREA" } },
-    "expected": { "decision": "allow" }
+    "description": "Managed conversation writes its own card with Planner capabilities",
+    "actor": {"kind": "AiManagedSession", "id": "$ASSISTANT_SESSION"},
+    "event": {"ev": "task.completed", "data": {"notification": "notify", "idempotency_key": "vec-a-60", "result": null, "artifacts": [], "agent_message": null}},
+    "scope": {"kind": "Card", "id": {"card": "$ASSISTANT_CARD", "track": "$HOME_TRACK", "area": "$HOME_AREA"}},
+    "expected": {"decision": "allow"}
   },
   {
-    "description": "Assistant may write into its HOME track's report card scope — the one card the Worker self-scope rule is loosened by (#1189)",
-    "actor": { "kind": "AiCodex", "id": "$ASSISTANT_CARD" },
-    "event": { "ev": "track.report_edited", "data": { "track_id": "$HOME_TRACK", "card_id": "$REPORT_CARD", "author": "assistant", "edit_id": "vec-a-61", "summary_before": "", "summary_after": "", "body_before": "", "body_after": "hello" } },
-    "scope": { "kind": "Card", "id": { "card": "$REPORT_CARD", "track": "$HOME_TRACK", "area": "$HOME_AREA" } },
-    "expected": { "decision": "allow" }
+    "description": "Managed conversation writes its Report with real session attribution",
+    "actor": {"kind": "AiManagedSession", "id": "$ASSISTANT_SESSION"},
+    "event": {"ev": "track.report_edited", "data": {"track_id": "$HOME_TRACK", "card_id": "$REPORT_CARD", "author": "assistant", "edit_id": "vec-a-61", "summary_before": "", "summary_after": "", "body_before": "", "body_after": "hello"}},
+    "scope": {"kind": "Card", "id": {"card": "$REPORT_CARD", "track": "$HOME_TRACK", "area": "$HOME_AREA"}},
+    "expected": {"decision": "allow"}
   },
   {
-    "description": "Assistant writing into ANOTHER track's report card is DENIED (the loosening is home-track-scoped)",
-    "note": "scope.track/area deliberately claim the assistant's OWN home track while scope.card points at a foreign track's report card. Filling in $OTHER_TRACK/$OTHER_AREA instead would make the vector pass on the #232 track cross-check alone, i.e. it would stay green even if the target rule stopped requiring the report card to live in the home track.",
-    "actor": { "kind": "AiCodex", "id": "$ASSISTANT_CARD" },
-    "event": { "ev": "track.report_edited", "data": { "track_id": "$OTHER_TRACK", "card_id": "$OTHER_TRACK_REPORT_CARD", "author": "assistant", "edit_id": "vec-a-62", "summary_before": "", "summary_after": "", "body_before": "", "body_after": "cross-track" } },
-    "scope": { "kind": "Card", "id": { "card": "$OTHER_TRACK_REPORT_CARD", "track": "$HOME_TRACK", "area": "$HOME_AREA" } },
-    "expected": { "decision": "deny", "error_contains": "assistant card" }
+    "description": "Managed conversation uses Track scope under the shared Planner verdict",
+    "actor": {"kind": "AiManagedSession", "id": "$ASSISTANT_SESSION"},
+    "event": {"ev": "task.completed", "data": {"notification": "notify", "idempotency_key": "vec-a-63", "result": null, "artifacts": [], "agent_message": null}},
+    "scope": {"kind": "Track", "id": {"track": "$HOME_TRACK", "area": "$HOME_AREA"}},
+    "expected": {"decision": "allow"}
   },
   {
-    "description": "Assistant emitting a Track-scoped event is DENIED — this is what pins 'an assistant cannot advance the lifecycle or dispatch'",
-    "actor": { "kind": "AiCodex", "id": "$ASSISTANT_CARD" },
-    "event": { "ev": "task.completed", "data": { "notification": "notify", "idempotency_key": "vec-a-63", "result": null, "artifacts": [], "agent_message": null } },
-    "scope": { "kind": "Track", "id": { "track": "$HOME_TRACK", "area": "$HOME_AREA" } },
-    "expected": { "decision": "deny", "error_contains": "assistant card" }
+    "description": "Managed conversation uses the shared Planner cross-card verdict",
+    "actor": {"kind": "AiManagedSession", "id": "$ASSISTANT_SESSION"},
+    "event": {"ev": "task.completed", "data": {"notification": "notify", "idempotency_key": "vec-a-66", "result": null, "artifacts": [], "agent_message": null}},
+    "scope": {"kind": "Card", "id": {"card": "$OTHER_CARD", "track": "$HOME_TRACK", "area": "$HOME_AREA"}},
+    "expected": {"decision": "allow"}
   },
   {
-    "description": "Assistant emitting an Area-scoped event is DENIED",
-    "actor": { "kind": "AiCodex", "id": "$ASSISTANT_CARD" },
-    "event": { "ev": "task.completed", "data": { "notification": "notify", "idempotency_key": "vec-a-64", "result": null, "artifacts": [], "agent_message": null } },
-    "scope": { "kind": "Area", "id": { "area": "$HOME_AREA" } },
-    "expected": { "decision": "deny", "error_contains": "assistant card" }
+    "description": "Assistant session cannot impersonate a Planner session actor",
+    "actor": {"kind": "AiPlannerSession", "id": "$ASSISTANT_SESSION"},
+    "event": {"ev": "task.completed", "data": {"notification": "notify", "idempotency_key": "vec-a-60", "result": null, "artifacts": [], "agent_message": null}},
+    "scope": {"kind": "Card", "id": {"card": "$ASSISTANT_CARD", "track": "$HOME_TRACK", "area": "$HOME_AREA"}},
+    "expected": {"decision": "deny", "error_contains": "before session authority resolution"}
   },
   {
-    "description": "Assistant emitting a System-scoped event is DENIED",
-    "actor": { "kind": "AiCodex", "id": "$ASSISTANT_CARD" },
-    "event": { "ev": "task.completed", "data": { "notification": "notify", "idempotency_key": "vec-a-65", "result": null, "artifacts": [], "agent_message": null } },
-    "scope": { "kind": "System" },
-    "expected": { "decision": "deny", "error_contains": "assistant card" }
+    "description": "Assistant session cannot impersonate an executor actor",
+    "actor": {"kind": "AiCodexSession", "id": "$ASSISTANT_SESSION"},
+    "event": {"ev": "task.completed", "data": {"notification": "notify", "idempotency_key": "vec-a-60", "result": null, "artifacts": [], "agent_message": null}},
+    "scope": {"kind": "Card", "id": {"card": "$ASSISTANT_CARD", "track": "$HOME_TRACK", "area": "$HOME_AREA"}},
+    "expected": {"decision": "deny", "error_contains": "before session authority resolution"}
   },
   {
-    "description": "Assistant writing into another WORKER card's scope (same track) is DENIED — only self + home report card are reachable",
-    "actor": { "kind": "AiCodex", "id": "$ASSISTANT_CARD" },
-    "event": { "ev": "task.completed", "data": { "notification": "notify", "idempotency_key": "vec-a-66", "result": null, "artifacts": [], "agent_message": null } },
-    "scope": { "kind": "Card", "id": { "card": "$OTHER_CARD", "track": "$HOME_TRACK", "area": "$HOME_AREA" } },
-    "expected": { "decision": "deny", "error_contains": "assistant card" }
+    "description": "A missing managed session grants no capabilities",
+    "actor": {"kind": "AiManagedSession", "id": "$UNKNOWN_SESSION"},
+    "event": {"ev": "task.completed", "data": {"notification": "notify", "idempotency_key": "vec-a-60", "result": null, "artifacts": [], "agent_message": null}},
+    "scope": {"kind": "Card", "id": {"card": "$ASSISTANT_CARD", "track": "$HOME_TRACK", "area": "$HOME_AREA"}},
+    "expected": {"decision": "deny", "error_contains": "no live worker_sessions row"}
   },
   {
-    "description": "Assistant forging scope.track (own card id, foreign track) is DENIED — the #232 anti-spoof check applies to the Assistant arm too",
-    "actor": { "kind": "AiCodex", "id": "$ASSISTANT_CARD" },
-    "event": { "ev": "task.completed", "data": { "notification": "notify", "idempotency_key": "vec-a-67", "result": null, "artifacts": [], "agent_message": null } },
-    "scope": { "kind": "Card", "id": { "card": "$ASSISTANT_CARD", "track": "$OTHER_TRACK", "area": "$HOME_AREA" } },
-    "expected": { "decision": "deny", "error_contains": "out of scope scope.track mismatch" }
+    "description": "A cardless executor cannot acquire managed conversation authority",
+    "actor": {"kind": "AiManagedSession", "id": "$CARDLESS_SESSION"},
+    "event": {"ev": "task.completed", "data": {"notification": "notify", "idempotency_key": "vec-a-60", "result": null, "artifacts": [], "agent_message": null}},
+    "scope": {"kind": "Card", "id": {"card": "$ASSISTANT_CARD", "track": "$HOME_TRACK", "area": "$HOME_AREA"}},
+    "expected": {"decision": "deny", "error_contains": "no live worker_sessions row"}
   },
   {
-    "description": "Assistant forging scope.area (own card, own home track, foreign area) is DENIED — the #234 anti-spoof check applies to the Assistant arm too",
-    "note": "scope.track deliberately stays $HOME_TRACK so the track cross-check passes and the area check is the only thing left standing. Without this vector the whole Assistant file stays green even if the arm stopped comparing scope.area against the home track's persisted area.",
-    "actor": { "kind": "AiCodex", "id": "$ASSISTANT_CARD" },
-    "event": { "ev": "task.completed", "data": { "notification": "notify", "idempotency_key": "vec-a-68", "result": null, "artifacts": [], "agent_message": null } },
-    "scope": { "kind": "Card", "id": { "card": "$ASSISTANT_CARD", "track": "$HOME_TRACK", "area": "$OTHER_AREA" } },
-    "expected": { "decision": "deny", "error_contains": "out of scope scope.area mismatch" }
+    "description": "A terminal session cannot acquire managed conversation authority",
+    "actor": {"kind": "AiManagedSession", "id": "$TERMINAL_SESSION"},
+    "event": {"ev": "task.completed", "data": {"notification": "notify", "idempotency_key": "vec-a-60", "result": null, "artifacts": [], "agent_message": null}},
+    "scope": {"kind": "Card", "id": {"card": "$ASSISTANT_CARD", "track": "$HOME_TRACK", "area": "$HOME_AREA"}},
+    "expected": {"decision": "deny", "error_contains": "not in an active-authority state"}
   }
 ]

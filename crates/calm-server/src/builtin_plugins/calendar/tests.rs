@@ -130,7 +130,7 @@ impl Fixture {
                 kind: "codex".into(),
                 sort: None,
                 payload: if role == CardRole::Assistant {
-                    json!({"harness_profile":"assistant","assistant_provider":"codex"})
+                    json!({"harness_profile":"assistant","assistant_provider":"codex","permission_mode":"never"})
                 } else {
                     json!({"planner_provider":"codex"})
                 },
@@ -215,9 +215,15 @@ impl Fixture {
             None,
         )
         .with_mcp_context(self.ctx.clone());
-        crate::routes::protected_router()
-            .layer(axum::middleware::from_fn(crate::actor::actor_middleware))
-            .with_state(state)
+        crate::routes::application_router(
+            state,
+            crate::auth::AuthState::new(crate::auth::AuthConfig {
+                username: None,
+                password: None,
+                dev_autologin: true,
+                display_name: "Owner".into(),
+            }),
+        )
     }
 }
 fn human() -> Access {

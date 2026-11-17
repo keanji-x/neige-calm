@@ -444,9 +444,15 @@ async fn objective_approval_legacy_inline_snapshot_reuses_and_authorizes() {
             sqlx::query(concat!(
                 "UPDATE events SET payload=json_remove(json_set(payload,",
                 "'$.action.kind','objective_approval','$.questions[0].title',?), ",
-                "'$.questions[0].detail') WHERE id=?"
+                "'$.questions[0].detail'), actor=? WHERE id=?"
             ))
             .bind(old_title)
+            .bind(
+                serde_json::to_string(&calm_server::ids::ActorId::AiPlanner(
+                    boot.planner_card_id.clone(),
+                ))
+                .unwrap(),
+            )
             .bind(id),
         )
         .await
@@ -524,4 +530,104 @@ async fn objective_approval_missing_or_mismatched_snapshot_cannot_authorize_or_r
         assert!(rows(&boot, "ask.answered").await.is_empty(), "{mode}");
         assert_eq!(rows(&boot, "ask.requested").await.len(), 1, "{mode}");
     }
+}
+
+#[tokio::test]
+async fn objective_approval_real_assistant_reuses_pending_and_completes_user_proof() {
+    let (boot, _) = setup().await;
+    let card = calm_server::model::new_id();
+    let session = calm_server::model::new_id();
+    calm_server::db::write_in_tx_typed(boot.repo.as_ref(), {
+        let card = card.clone();
+        let session = session.clone();
+        let track = boot.track_id.clone();
+        let roles = boot.card_role_cache.clone();
+        move |tx| {
+            Box::pin(async move {
+                calm_server::db::sqlite::card_create_with_id_tx(tx,card.clone(),NewCard {
+                track_id:track,title:None,kind:"codex".into(),sort:None,
+                payload:json!({"harness_profile":"assistant","assistant_provider":"codex","permission_mode":"never"}),
+            },CardRole::Assistant,true,&roles).await?;
+                session_start_runtime_tx(
+                    tx,
+                    calm_server::session_projection_repo::WorkerSessionInit::managed_assistant(
+                        session,
+                        card,
+                        AgentProvider::Codex,
+                        WorkerSessionState::Idle,
+                        None,
+                        json!({}),
+                        1,
+                    ),
+                )
+                .await?;
+                Ok(())
+            })
+        }
+    })
+    .await
+    .unwrap();
+    let identity = ToolCallIdentity {
+        card_id: card.clone(),
+        role: CardRole::Assistant,
+        provider: AgentProvider::Codex,
+        session_id: session.clone(),
+        track_id: Some(boot.track_id.to_string()),
+        area_id: boot.area_id.to_string(),
+        thread_id: "card-bound".into(),
+    };
+    let call = |identity| {
+        let ctx = boot.ctx.clone();
+        let handler = boot.registry.lookup(TOOL).unwrap();
+        async move {
+            handler(ctx, identity, json!({"key":"kr"}))
+                .await
+                .map(calm_server::mcp_server::result::ToolResult::into_structured)
+        }
+    };
+    let first = call(identity.clone()).await.unwrap();
+    assert_eq!(first["status"], "awaiting");
+    let id = first["ask_id"].as_i64().unwrap();
+    assert_eq!(call(identity.clone()).await.unwrap(), first);
+    let asks = boot
+        .repo
+        .events_for_track(boot.track_id.as_str(), &["ask.requested"], None)
+        .await
+        .unwrap();
+    assert_eq!(asks.len(), 1);
+    assert_eq!(
+        asks[0].actor,
+        calm_server::ids::ActorId::AiManagedSession(session.clone().into())
+    );
+    assert!(
+        matches!(&asks[0].scope,calm_server::event::EventScope::Card{card:owner,..} if owner.as_str()==card)
+    );
+    let planner_pending = request(&boot).await;
+    assert_ne!(
+        planner_pending["ask_id"], first["ask_id"],
+        "another conversation needs its own pending question"
+    );
+    assert_eq!(request(&boot).await, planner_pending);
+    assert_eq!(rows(&boot, "ask.requested").await.len(), 2);
+    let mut wrong = identity.clone();
+    wrong.session_id = PLANNER_SESSION_ID.into();
+    assert_eq!(
+        call(wrong).await.unwrap_err().code,
+        -32403,
+        "another real session cannot act as this card"
+    );
+    let mut wrong = identity.clone();
+    wrong.track_id = Some("foreign-track".into());
+    assert_eq!(
+        call(wrong).await.unwrap_err().code,
+        -32403,
+        "cross Track is denied before returning pending"
+    );
+    assert_eq!(
+        answer(&boot, id, json!([{"option":0}])).await.0,
+        StatusCode::NO_CONTENT
+    );
+    assert!(approved(&boot).await);
+    assert_eq!(call(identity).await.unwrap()["status"], "approved");
+    assert_eq!(rows(&boot, "ask.answered").await.len(), 1);
 }

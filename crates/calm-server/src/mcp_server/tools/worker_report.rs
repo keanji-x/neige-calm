@@ -47,8 +47,8 @@ fn descriptor() -> ToolDescriptor {
         }),
         // The kernel writes only a wake for the caller's own Track's Planner.
         annotations: Some(role_gated_write_annotations()),
-        roles: &[CardRole::Assistant],
-        listed_for: &[CardRole::Assistant],
+        roles: &[CardRole::Planner],
+        listed_for: &[CardRole::Planner],
     }
 }
 
@@ -135,6 +135,6 @@ mod tests {
             descriptor.input_schema["properties"]["outcome"]["enum"],
             json!(["trust_accepted", "idle_at_prompt", "needs_owner", "unclear"])
         );
-        assert_eq!(descriptor.roles, &[CardRole::Assistant]);
+        assert_eq!(descriptor.roles, &[CardRole::Planner]);
     }
 }

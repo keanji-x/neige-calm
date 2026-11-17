@@ -1,6 +1,9 @@
-//! Bind human approval to the exact, unanswered Planner ask inside the answer transaction.
+//! Bind human approval to the exact, unanswered conversation ask inside the answer transaction.
 use super::*;
-use calm_types::event::{AskAction, Event as TrackEvent};
+use crate::decision_gate::{
+    PrincipalDecisionGate, WriteTx, enforce_role_resolving_session_from_tx,
+};
+use calm_types::event::{AskAction, AskDelivery, Event as TrackEvent};
 use calm_types::ids::ActorId;
 use sqlx::Row;
 
@@ -35,18 +38,48 @@ pub(super) async fn verify_source_tx(
     .await?
     .ok_or_else(forbidden)?;
     let actor: ActorId = serde_json::from_str(row.try_get("actor")?).map_err(|_| forbidden())?;
-    let ActorId::AiPlanner(card) = actor else {
-        return Err(forbidden());
-    };
-    let planner: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM cards WHERE id=? AND track_id=? AND role='planner')",
-    )
-    .bind(card.as_str())
-    .bind(input.track_id.as_str())
-    .fetch_one(&mut **tx)
-    .await?;
-    if !planner {
-        return Err(forbidden());
+    match &actor {
+        ActorId::AiPlanner(card) => {
+            // Explicit historical card provenance has no original session. Keep it readable;
+            // new asks always retain the real session actor and take the live gate below.
+            let role: Option<String> =
+                sqlx::query_scalar("SELECT role FROM cards WHERE id=? AND track_id=?")
+                    .bind(card.as_str())
+                    .bind(input.track_id.as_str())
+                    .fetch_optional(&mut **tx)
+                    .await?;
+            if !role
+                .and_then(|role| crate::model::CardRole::try_from(role).ok())
+                .is_some_and(|role| role.capability_role() == crate::model::CardRole::Planner)
+            {
+                return Err(forbidden());
+            }
+        }
+        ActorId::AiPlannerSession(session) | ActorId::AiManagedSession(session) => {
+            let source = crate::db::sqlite::event_inputs::event_input_tx(tx, *ask_id)
+                .await?
+                .envelope;
+            let card = source.scope.card_id().ok_or_else(forbidden)?;
+            let role = tx.read_card_role(card).await?.ok_or_else(forbidden)?;
+            if role.capability_role() != crate::model::CardRole::Planner
+                || source.scope.area_id() != tx.read_track_area(&input.track_id).await?.as_ref()
+            {
+                return Err(forbidden());
+            }
+            PrincipalDecisionGate::new(Principal::Agent {
+                session_id: session.clone(),
+                track_id: input.track_id.clone(),
+                area_id: source.scope.area_id().cloned().ok_or_else(forbidden)?,
+            })
+            .decide_card_write(tx, &input.track_id, card, role)
+            .await?
+            .into_result()?;
+            // The shared role gate also binds the actor variant to the real session contract.
+            enforce_role_resolving_session_from_tx(tx, &actor, &source.event, &source.scope)
+                .await
+                .map_err(|_| forbidden())?;
+        }
+        _ => return Err(forbidden()),
     }
     let ask = TrackEvent::from_kind_and_payload(
         "ask.requested",
@@ -56,6 +89,7 @@ pub(super) async fn verify_source_tx(
     match ask {
         TrackEvent::AskRequested {
             track_id,
+            delivery: AskDelivery::Wake,
             action:
                 Some(
                     AskAction::ObjectiveApproval {

@@ -245,12 +245,12 @@ describe('trackActivityFrom: the kernel activity overlay', () => {
     payload, updated_at: 1, ...over,
   });
   const payload = {
-    schemaVersion: 4, working: true, attention: 'failed', activity_at_ms: 1_789_460_968_837,
+    schemaVersion: 5, working: true, attention: 'failed', activity_at_ms: 1_789_460_968_837,
     items: [
       { source: 'planner_down', key: 'planner_down:22825', text: 'unexpected status 403 Forbidden', at_ms: 20 },
-      { source: 'ask', key: 'ask:22801', text: 'Which branch?', at_ms: 10, ask_id: 22801,
+      { source: 'ask', key: 'ask:22801', text: 'Which branch?', at_ms: 10, ask_id: 22801, card_id: 'planner', session_id: 'session',
         questions: [{ title: 'Which branch?', options: [] }], delivery: 'wake' },
-      { source: 'ask', key: 'ask:28475', text: 'Run `cargo test`?', at_ms: 5, ask_id: 28475,
+      { source: 'ask', key: 'ask:28475', text: 'Run `cargo test`?', at_ms: 5, ask_id: 28475, card_id: 'planner', session_id: 'session',
         questions: [{ title: 'Run `cargo test`?', options: ['Allow', 'Deny'] }], delivery: 'hold' },
     ],
     cards: [{ card_id: 'worker-1', state: 'failed' }, { card_id: 'planner', state: 'input' }, { card_id: 'w2', state: 'working' }],
@@ -300,9 +300,9 @@ describe('trackActivityFrom: the kernel activity overlay', () => {
     expect(activity.recentAt).toBe(1_789_460_968_837);
     expect(activity.attentionItems).toEqual([
       { source: 'planner_down', key: 'planner_down:22825', text: 'unexpected status 403 Forbidden', atMs: 20 },
-      { source: 'ask', key: 'ask:22801', text: 'Which branch?', atMs: 10, askId: 22801,
+      { source: 'ask', key: 'ask:22801', text: 'Which branch?', atMs: 10, askId: 22801, cardId: 'planner', sessionId: 'session',
         questions: [{ title: 'Which branch?', options: [] }], delivery: 'wake' },
-      { source: 'ask', key: 'ask:28475', text: 'Run `cargo test`?', atMs: 5, askId: 28475,
+      { source: 'ask', key: 'ask:28475', text: 'Run `cargo test`?', atMs: 5, askId: 28475, cardId: 'planner', sessionId: 'session',
         questions: [{ title: 'Run `cargo test`?', options: ['Allow', 'Deny'] }], delivery: 'hold' },
     ]);
     expect(activity.cards).toEqual({ 'worker-1': 'failed', planner: 'input', w2: 'working' });
@@ -311,14 +311,14 @@ describe('trackActivityFrom: the kernel activity overlay', () => {
 
   it('shows a forge approval ask with its action, and drops an ask whose action it cannot read', () => {
     const action = { kind: 'forge_action', idempotency_key: 'gitforge:t1:p:gh.run.rerun_failed:v1:[]', payload_hash: 'h' };
-    const ask = { source: 'ask', key: 'ask:7', text: 'Re-run?', at_ms: 30, ask_id: 7,
+    const ask = { source: 'ask', key: 'ask:7', text: 'Re-run?', at_ms: 30, ask_id: 7, card_id: 'planner', session_id: 'session',
       questions: [{ title: 'Re-run?', options: ['Approve', 'Decline'] }], delivery: 'wake' };
     const activity = trackActivityFrom('t1', [overlay({ ...payload, items: [
       { ...ask, action },
-      { ...ask, key: 'ask:8', ask_id: 8, action: { kind: 'forge_action', idempotency_key: 'k' } },
+      { ...ask, key: 'ask:8', ask_id: 8, card_id: 'planner', session_id: 'session', action: { kind: 'forge_action', idempotency_key: 'k' } },
     ] })]);
     expect(activity.attentionItems).toEqual([
-      { source: 'ask', key: 'ask:7', text: 'Re-run?', atMs: 30, askId: 7,
+      { source: 'ask', key: 'ask:7', text: 'Re-run?', atMs: 30, askId: 7, cardId: 'planner', sessionId: 'session',
         questions: [{ title: 'Re-run?', options: ['Approve', 'Decline'] }], delivery: 'wake', action },
     ]);
   });
@@ -328,11 +328,11 @@ describe('trackActivityFrom: the kernel activity overlay', () => {
     const question = { title: '批准此 KR 的验收标准？', detail, options: ['批准', '不批准'] };
     const action = { kind: 'objective_approval_v2', objective: 'kr', standard_hash: 'hash' };
     const activity = trackActivityFrom('t1', [overlay({ ...payload, items: [{
-      source: 'ask', key: 'ask:7', text: question.title, at_ms: 10, ask_id: 7,
+      source: 'ask', key: 'ask:7', text: question.title, at_ms: 10, ask_id: 7, card_id: 'planner', session_id: 'session',
       questions: [question], delivery: 'wake', action,
     }] })]);
     expect(activity.attentionItems).toEqual([{
-      source: 'ask', key: 'ask:7', text: question.title, atMs: 10, askId: 7,
+      source: 'ask', key: 'ask:7', text: question.title, atMs: 10, askId: 7, cardId: 'planner', sessionId: 'session',
       questions: [question], delivery: 'wake', action,
     }]);
   });
@@ -349,9 +349,9 @@ describe('trackActivityFrom: the kernel activity overlay', () => {
       items: [
         { source: 'ask', key: 'ask:1' },
         { source: 'ask', key: 'ask:2', text: 'An ask without its questions?', at_ms: 1, ask_id: 2 },
-        { source: 'ask', key: 'ask:3', text: 'An ask without its delivery?', at_ms: 1, ask_id: 3,
+        { source: 'ask', key: 'ask:3', text: 'An ask without its delivery?', at_ms: 1, ask_id: 3, card_id: 'planner', session_id: 'session',
           questions: [{ title: 'An ask without its delivery?', options: [] }] },
-        { source: 'ask', key: 'ask:4', text: 'An ask of no known delivery?', at_ms: 1, ask_id: 4,
+        { source: 'ask', key: 'ask:4', text: 'An ask of no known delivery?', at_ms: 1, ask_id: 4, card_id: 'planner', session_id: 'session',
           questions: [{ title: 'An ask of no known delivery?', options: [] }], delivery: 'later' },
         ...payload.items,
       ],
@@ -363,7 +363,7 @@ describe('trackActivityFrom: the kernel activity overlay', () => {
   });
 
   it('ignores a payload that is not the v4 shape at all', () => {
-    for (const junk of [null, 'working', { schemaVersion: 4, working: true }, { working: 'yes' }]) {
+    for (const junk of [null, 'working', { schemaVersion: 5, working: true }, { working: 'yes' }]) {
       expect(trackActivityFrom('t1', [overlay(junk)])).toEqual({ ...NEUTRAL_ACTIVITY, recentAt: 1 });
     }
   });

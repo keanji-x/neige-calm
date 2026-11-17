@@ -323,3 +323,6 @@ async fn assert_historical_prefix(later: LaterObservation) {
 
     })).await.expect("independent write operation")
 }
+
+#[path = "historical_wake_source.rs"]
+mod source;

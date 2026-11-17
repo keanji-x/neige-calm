@@ -1,4 +1,4 @@
-//! Authoritative Planner card and active historical harness lookup.
+//! Authoritative Planner card and active historical conversation harness lookup.
 use crate::db::Repo;
 use crate::error::Result;
 use crate::ids::{CardId, TrackId};
@@ -31,11 +31,13 @@ pub(crate) async fn historical_session(
         .session_projection_active_for_card(&card.to_string())
         .await?
         .filter(|session| {
-            session.kind == WorkerSessionKind::SharedPlanner
-                && session
-                    .handle_state_json
-                    .as_ref()
-                    .is_some_and(crate::harness::is_harness_snapshot_value)
+            matches!(
+                session.kind,
+                WorkerSessionKind::SharedPlanner | WorkerSessionKind::ManagedAssistant
+            ) && session
+                .handle_state_json
+                .as_ref()
+                .is_some_and(crate::harness::is_harness_snapshot_value)
         });
     Ok(session)
 }

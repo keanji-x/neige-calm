@@ -126,7 +126,12 @@ impl DispatcherInputSource {
         carrier: &CurrentInputCarrier,
     ) -> Result<String> {
         let owner = self.binding.authorize_tx(tx, carrier).await?;
-        if let EventAdmission::Assistant(admission) = &self.binding.admission {
+        if let EventAdmission::Assistant(admission) = &self.binding.admission
+            && matches!(
+                self.binding.event.envelope.event,
+                Event::AssistantInputRequested { .. }
+            )
+        {
             let Event::AssistantInputRequested { subject, .. } = &self.binding.event.envelope.event
             else {
                 return Err(CalmError::Forbidden("targeted source kind changed".into()));
@@ -325,11 +330,6 @@ impl Inner {
             #[cfg(feature = "fixtures")]
             crate::test_seams::pause_point("planner-reconcile-before-push", card.as_str()).await;
             let _guard = self.acquire_push_lock(&track).await;
-            let Some(current) = PlannerAdmission::discover(self.repo.as_ref(), &track).await?
-            else {
-                continue;
-            };
-            let card = current.card;
             if let Err(error) = self.accept_canonical_events(&card, None).await {
                 tracing::warn!(%card, %error, "Dispatcher canonical input remains held");
             }
@@ -503,7 +503,12 @@ impl Inner {
                 continue;
             }
             match admission {
-                EventAdmission::Assistant(_) => {
+                EventAdmission::Assistant(_)
+                    if matches!(
+                        binding.event.envelope.event,
+                        Event::AssistantInputRequested { .. }
+                    ) =>
+                {
                     if let Some(episode) = quiet {
                         conversation::worker_watcher_accept_tx(
                             tx,
@@ -523,7 +528,7 @@ impl Inner {
                     // The atomic owner reloads privately; our carrier is now stale.
                     carrier = conversation::current_input_content_carrier_tx(tx, &card).await?;
                 }
-                EventAdmission::Planner(_) => {
+                EventAdmission::Planner(_) | EventAdmission::Assistant(_) => {
                     let mut observation = input.observation.observation().clone();
                     crate::report_read_ledger::delta::attach_tx(
                         tx,

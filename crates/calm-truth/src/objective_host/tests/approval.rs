@@ -142,3 +142,63 @@ async fn objective_approval_rejects_unbound_sources() {
     ));
     assert_eq!(counts(&repo).await, (0, 0, 0));
 }
+
+#[tokio::test]
+async fn objective_approval_real_session_identity_and_scope_boundaries() {
+    for (actor, card, track, accepted) in [
+        (ActorId::AiManagedSession("a".into()), "a", "t", true),
+        (ActorId::AiPlannerSession("p".into()), "p", "t", true),
+        (ActorId::AiManagedSession("p".into()), "p", "t", false),
+        (ActorId::AiPlannerSession("a".into()), "a", "t", false),
+        (ActorId::AiManagedSession("a".into()), "p", "t", false),
+        (ActorId::AiManagedSession("a".into()), "a", "other", false),
+        (ActorId::AiManagedSession("w".into()), "w", "t", false),
+        (ActorId::AiManagedSession("missing".into()), "a", "t", false),
+    ] {
+        let repo = fixture().await;
+        fixture_react(&repo, scenario()[0].clone(), "define").await;
+        let id = repo
+            .event_append_fixture(
+                actor.clone(),
+                EventScope::Card {
+                    card: card.into(),
+                    track: track.into(),
+                    area: "a".into(),
+                },
+                None,
+                &TrackEvent::AskRequested {
+                    track_id: track.into(),
+                    questions: vec![AskQuestion {
+                        title: "Approve".into(),
+                        detail: None,
+                        options: vec!["批准".into(), "不批准".into()],
+                    }],
+                    delivery: AskDelivery::Wake,
+                    action: Some(action()),
+                    source_item_id: None,
+                },
+            )
+            .await
+            .unwrap();
+        let result = react(repo.db(), input(id)).await;
+        if accepted {
+            assert!(
+                matches!(result.unwrap().reaction(), Reaction::Appended { .. }),
+                "{actor:?}"
+            );
+            assert!(
+                load_state(repo.db(), &"t".into())
+                    .await
+                    .unwrap()
+                    .1
+                    .objectives[&definition().key]
+                    .is_approved()
+            );
+        } else {
+            assert!(
+                matches!(result, Err(TruthError::Forbidden(_))),
+                "{actor:?} {card}/{track}: {result:?}"
+            );
+        }
+    }
+}

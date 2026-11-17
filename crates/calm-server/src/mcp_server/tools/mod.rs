@@ -252,6 +252,9 @@ mod tests {
         // #3651 catch-up: named-path declarations and the template setter together
         // measure 43,235 bytes. Preserve both contracts with the measured aggregate cap.
         // Concise tool descriptions save 11,973 bytes without changing input schemas.
+        // #3695: shared conversations retain the watcher report in the common catalog.
+        // Its declaration adds 439 bytes; dropping the retired task-edit ban saves 30 and
+        // Compact wording preserves the instructions within the existing aggregate cap.
         const SURFACE_MAX_BYTES: usize = 31_262;
         const DESCRIPTION_MAX_BYTES: usize = 2_048;
 

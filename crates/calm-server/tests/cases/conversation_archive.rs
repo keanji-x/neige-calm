@@ -10,7 +10,7 @@ async fn assistant(b: &Boot, track: &str, provider: &str) -> String {
         card_create_with_id_tx(&mut tx, id.clone(), calm_server::model::NewCard {
             track_id: track.to_string().into(), title: Some("Saved discussion".into()),
             kind: "codex".into(), sort: None,
-            payload: json!({"schemaVersion":1,"harness_profile":"assistant","assistant_provider":provider}),
+            payload: json!({"schemaVersion":1,"harness_profile":"assistant","assistant_provider":provider,"permission_mode":"never"}),
         }, CardRole::Assistant, false, &b.card_role_cache).await.unwrap();
         tx.commit().await.unwrap();
         id

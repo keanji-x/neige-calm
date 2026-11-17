@@ -2098,7 +2098,11 @@ async fn concurrent_mark_during_respawn_is_preserved() {
         std::env::remove_var("FAKE_CODEX_INITIALIZE_DELAY_MS");
     }
 
-    assert_eq!(respawn_task.await.unwrap().unwrap(), "fake-thread-0001");
+    let first_thread = respawn_task.await.unwrap().unwrap();
+    assert_eq!(
+        daemon.cached_card_for_thread(&first_thread),
+        Some(card_id.clone())
+    );
     assert!(
         daemon.needs_respawn_on_next_thread_start_for_test(),
         "mark made during respawn must survive the completed respawn"
@@ -2107,23 +2111,28 @@ async fn concurrent_mark_during_respawn_is_preserved() {
     assert_eq!(after_first.restart_count, 1);
     let after_first_pid = after_first.runtime.as_ref().map(|runtime| runtime.pid);
 
+    let second_thread = daemon
+        .thread_start_for_card(
+            &card_id,
+            CardRole::Worker,
+            None,
+            SharedThreadStartParams {
+                cwd: "/tmp".into(),
+                approval_policy: "never".into(),
+                sandbox_mode: "workspace-write".into(),
+                developer_instructions: None,
+                config: ThreadConfig::NoMcp,
+            },
+        )
+        .await
+        .unwrap();
+    assert_ne!(
+        second_thread, first_thread,
+        "a new start after respawn has a fresh identity"
+    );
     assert_eq!(
-        daemon
-            .thread_start_for_card(
-                &card_id,
-                CardRole::Worker,
-                None,
-                SharedThreadStartParams {
-                    cwd: "/tmp".into(),
-                    approval_policy: "never".into(),
-                    sandbox_mode: "workspace-write".into(),
-                    developer_instructions: None,
-                    config: ThreadConfig::NoMcp,
-                },
-            )
-            .await
-            .unwrap(),
-        "fake-thread-0001"
+        daemon.cached_card_for_thread(&second_thread),
+        Some(card_id.clone())
     );
     let after_second = daemon.status_snapshot();
     assert_eq!(after_second.restart_count, 2);

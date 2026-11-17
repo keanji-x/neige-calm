@@ -282,3 +282,201 @@ async fn a_card_that_is_not_a_planner_is_refused() {
         assert_eq!(payload(&boot).await["permission_mode"], json!("never"));
     }
 }
+
+async fn assistant(boot: &Boot, key: &str) -> String {
+    use axum::body::Body;
+    use axum::http::Request;
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+    let response = boot
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!(
+                    "/api/tracks/{}/conversations",
+                    boot.planner_card.track_id
+                ))
+                .header("content-type", "application/json")
+                .header("x-calm-actor", "user")
+                .header("idempotency-key", key)
+                .body(Body::from(
+                    json!({"text":"hello", "provider":"codex"}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = response.status();
+    let body: Value =
+        serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    body["id"].as_str().unwrap().to_owned()
+}
+
+#[tokio::test]
+async fn assistant_agent_actor_cannot_change_the_mode() {
+    let boot = boot_with(idle_snapshot(vec![])).await;
+    let id = assistant(&boot, "assistant-actor").await;
+    for actor in ["ai:codex", "ai:claude", "ai:planner"] {
+        let (status, body) = send_json(
+            boot.app.clone(),
+            "PUT",
+            mode_uri(&id),
+            actor,
+            json!({"permission_mode":"full"}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    }
+    let (status, body) = get(
+        boot.app.clone(),
+        format!("/api/cards/{id}/planner/run?contract=conversation_v1"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["permission_mode"], "never");
+}
+
+#[tokio::test]
+async fn assistant_mode_is_independent_of_the_planner() {
+    let boot = boot_with(idle_snapshot(vec![])).await;
+    assert_eq!(
+        put_mode(&boot, "user", json!({"permission_mode":"full"}))
+            .await
+            .0,
+        StatusCode::OK
+    );
+    let id = assistant(&boot, "assistant-independent").await;
+    let (status, body) = get(
+        boot.app.clone(),
+        format!("/api/cards/{id}/planner/run?contract=conversation_v1"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["permission_mode"], "never");
+    for mode in ["ask", "full", "never"] {
+        let (status, body) = send_json(
+            boot.app.clone(),
+            "PUT",
+            mode_uri(&id),
+            "user",
+            json!({"permission_mode":mode}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let (_, read) = get(
+            boot.app.clone(),
+            format!("/api/cards/{id}/planner/run?contract=conversation_v1"),
+        )
+        .await;
+        assert_eq!(read["permission_mode"], mode);
+        assert_eq!(reported_mode(&boot).await, "full");
+    }
+}
+
+#[tokio::test]
+async fn the_writer_checks_the_persisted_role_even_when_the_cache_is_stale() {
+    let boot = boot_with(idle_snapshot(vec![])).await;
+    boot.repo.db().writer().execute(sqlx::query(
+        "UPDATE cards SET role='worker',payload=json_set(payload,'$.harness_profile','plain_chat') WHERE id=?1",
+    ).bind(boot.planner_card.id.as_str())).await.unwrap();
+    // The cached Planner precheck still passes; the actual row must refuse in the transaction.
+    let (status, body) = put_mode(&boot, "user", json!({"permission_mode":"full"})).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert_eq!(payload(&boot).await["permission_mode"], "never");
+    assert!(boot.event_payloads("card.updated").await.is_empty());
+}
+
+/// Real delegated cookie plus user attribution must never grant execution authority.
+#[tokio::test]
+async fn share_user_cannot_put_conversation_permission_modes() {
+    use axum::{body::Body, http::Request};
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+
+    let boot = boot_with(idle_snapshot(vec![])).await;
+    let assistant = assistant(&boot, "shared-permissions").await;
+    let (status, link) = send_json(
+        boot.app.clone(),
+        "POST",
+        format!("/api/tracks/{}/share-links", boot.planner_card.track_id),
+        "user",
+        json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{link}");
+    let id = link["link"]["delegation"]["id"].as_str().unwrap();
+    let unlocked = boot
+        .app
+        .clone()
+        .oneshot(
+            Request::post(format!("/api/share-links/{id}/unlock"))
+                .header("content-type", "application/json")
+                .body(Body::from(json!({"token":link["token"]}).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(unlocked.status(), StatusCode::OK);
+    let cookie = unlocked.headers()["set-cookie"]
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_owned();
+
+    for card in [assistant.as_str(), boot.planner_card.id.as_str()] {
+        let before: String = sqlx::query_scalar("SELECT payload FROM cards WHERE id=?1")
+            .bind(card)
+            .fetch_one(boot.repo.pool())
+            .await
+            .unwrap();
+        let events = boot.event_payloads("card.updated").await;
+        let turns = boot.daemon.started_turns_for_test().len();
+        let mut observations = Vec::new();
+        for mode in ["never", "ask", "full"] {
+            let response = boot
+                .app
+                .clone()
+                .oneshot(
+                    Request::put(format!("{}?share_link={id}", mode_uri(card)))
+                        .header("cookie", &cookie)
+                        .header("X-Calm-Actor", "user")
+                        .header("content-type", "application/json")
+                        .body(Body::from(json!({"permission_mode":mode}).to_string()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let status = response.status();
+            let body = response.into_body().collect().await.unwrap().to_bytes();
+            observations.push((mode, status, body));
+        }
+        assert!(
+            observations
+                .iter()
+                .all(|(_, status, _)| *status == StatusCode::FORBIDDEN),
+            "card={card} {observations:?}"
+        );
+        let after: String = sqlx::query_scalar("SELECT payload FROM cards WHERE id=?1")
+            .bind(card)
+            .fetch_one(boot.repo.pool())
+            .await
+            .unwrap();
+        assert_eq!(after, before);
+        assert_eq!(boot.event_payloads("card.updated").await, events);
+        assert_eq!(boot.daemon.started_turns_for_test().len(), turns);
+        let (status, body) = send_json(
+            boot.app.clone(),
+            "PUT",
+            mode_uri(card),
+            "user",
+            json!({"permission_mode":"full"}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+    }
+}

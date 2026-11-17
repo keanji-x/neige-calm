@@ -339,6 +339,18 @@ async fn acp_assistant_activation_retains_source_across_busy_track() {
 
 #[tokio::test]
 async fn acp_assistant_side_context_tools_never_and_archived_input() {
+    side_context_tools_and_archived_input("never").await;
+}
+
+#[tokio::test]
+async fn conversation_permission_assistant_acp_full_keeps_mcp_role() {
+    side_context_tools_and_archived_input("full").await;
+}
+
+async fn side_context_tools_and_archived_input(mode: &str) {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter("warn,calm_server=debug")
+        .try_init();
     let mut fixture = Fixture::new().await;
     configure(&mut fixture);
     std::fs::write(fixture.root.path().join("scenario"), "assistant-canonical").unwrap();
@@ -356,11 +368,15 @@ async fn acp_assistant_side_context_tools_never_and_archived_input() {
         &cookie,
         &uri,
         "side",
-        json!({"provider":"opencode","text":FIRST_BODY,
+        json!({"provider":"opencode","text":FIRST_BODY,"permission_mode":mode,
         "side":{"source_card_id":planner,"context":"Frozen ACP side excerpt"}}),
     )
     .await;
     let card = created["id"].as_str().unwrap();
+    super::super::conversation_permission_tests::assert_first_native_admission(
+        &fixture, &app, &cookie, card,
+    )
+    .await;
     let before = wait_idle(&fixture, card, 1).await;
     assert_eq!(created["sourceCardId"], planner);
     let prompt = requests(&fixture)
@@ -377,27 +393,38 @@ async fn acp_assistant_side_context_tools_never_and_archived_input() {
         &std::fs::read(fixture.root.path().join("assistant-mcp-results.json")).unwrap(),
     )
     .unwrap();
-    for allowed in &replies.as_array().unwrap()[..2] {
+    let replies = replies.as_array().unwrap();
+    assert_eq!(replies.len(), 5, "{replies:?}");
+    for reply in replies {
+        assert!(reply.get("error").is_none(), "{reply}");
+    }
+    for allowed in &replies[..2] {
         assert!(
-            allowed.get("error").is_none() && allowed["result"].is_object(),
+            allowed["result"].is_object(),
             "Assistant Report tool must answer successfully: {allowed}"
         );
         assert_ne!(allowed["result"]["isError"], true, "{allowed}");
     }
-    for denied in &replies.as_array().unwrap()[2..] {
-        assert!(
-            denied["error"].is_object() || denied["result"]["isError"] == true,
-            "{denied}"
+    // Planner task and terminal tools pass the shared capability check and reach
+    // their own argument validation.
+    for planner_tool in &replies[2..4] {
+        assert_eq!(
+            planner_tool["result"]["structuredContent"]["code"], -32602,
+            "{planner_tool}"
         );
     }
+    assert_ne!(replies[4]["result"]["isError"], true, "{}", replies[4]);
     let permission: Value = serde_json::from_slice(
         &std::fs::read(fixture.root.path().join("permission-reply.json")).unwrap(),
     )
     .unwrap();
-    assert_eq!(
-        permission["result"]["outcome"],
+    // Resident OpenCode applies Full to this turn's requests through allow_once.
+    let expected = if mode == "full" {
+        json!({"outcome":"selected","optionId":"yes"})
+    } else {
         json!({"outcome":"cancelled"})
-    );
+    };
+    assert_eq!(permission["result"]["outcome"], expected);
     let counts = fixture.counts(card).await;
     let archived = app
         .clone()
@@ -564,6 +591,7 @@ async fn historical_creation_key_replays_original_evidence(provider: AgentProvid
             headers,
             track.clone(),
             NewTrackConversationBody {
+                permission_mode: None,
                 provider: AssistantProviderRequest::Explicit(provider.clone()),
                 side: None,
                 text: FIRST_BODY.into(),

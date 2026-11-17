@@ -4,11 +4,14 @@
 //!
 //! An ask is delivered one of two ways (#2348). A `wake` ask's answer wakes a new Planner turn.
 //! A `hold` ask is a provider request the running turn is paused on: only the harness raises one,
-//! its answer goes back to that request, and its own Planner session withdraws it
+//! its answer goes back to that request, and its own native session withdraws it
 //! (`ask.withdrawn`) once the request is gone. Each writer has its own entry, so the MCP tool's
 //! entry has no way to ask anything but `wake`.
 
 use std::collections::HashSet;
+
+mod owner;
+pub(crate) use owner::{conversation_owner_tx, require_live_ask_tx, source_target};
 
 mod forge_approval;
 mod grant_admin;
@@ -40,7 +43,7 @@ pub const MAX_OPTION_CHARS: usize = 200;
 pub use calm_types::event::clip_ask_title as clip_title;
 
 /// Whether the `ask.requested` row aliased `r` is still open: nothing answered or withdrew it, and
-/// a `hold` ask's Planner session still has live authority. The session clause is a liveness
+/// a `hold` ask's current card/session still has live authority. The session clause is a liveness
 /// filter, not a close: a session that recovers from `failed` shows its asks again until the
 /// harness sweep withdraws them. The state list is
 /// [`calm_types::worker::WorkerSessionState::is_active_authority`]'s. The one spelling of "open"
@@ -53,8 +56,18 @@ macro_rules! ask_open_sql {
              AND json_extract(c.payload, '$.ask_id') = r.id) \
        AND (json_extract(r.payload, '$.delivery') = 'wake' \
             OR EXISTS (SELECT 1 FROM worker_sessions ws \
-                        WHERE json_extract(r.actor, '$.kind') = 'AiPlannerSession' \
-                          AND ws.id = json_extract(r.actor, '$.id') \
+                        JOIN cards owner ON owner.id=ws.card_id \
+                        JOIN tracks home ON home.id=owner.track_id \
+                        WHERE ws.id = json_extract(r.actor, '$.id') \
+                          AND owner.session_id=ws.id AND ws.track_id=r.scope_track \
+                          AND owner.track_id=r.scope_track AND home.area_id=r.scope_area \
+                          AND ((json_extract(r.actor, '$.kind')='AiPlannerSession' \
+                                AND ws.contract='planner' AND owner.role='planner' \
+                                AND ((r.scope_kind='track' AND r.scope_card IS NULL) \
+                                     OR (r.scope_kind='card' AND r.scope_card=owner.id))) \
+                            OR (json_extract(r.actor, '$.kind')='AiManagedSession' \
+                                AND ws.contract='assistant' AND owner.role='assistant' \
+                                AND r.scope_kind='card' AND r.scope_card=owner.id)) \
                           AND ws.state IN ('starting', 'running', 'idle', 'turn_pending')))"
     };
 }
@@ -206,7 +219,8 @@ pub(crate) async fn requested_tx(
     let track_id = card_track_tx(tx, planner_card).await?;
     let track = calm_truth::db::sqlite::track_get_tx(tx, &track_id).await?;
     Ok((
-        EventScope::Track {
+        EventScope::Card {
+            card: planner_card.clone(),
             track: track.id.clone(),
             area: track.area_id,
         },
@@ -233,10 +247,15 @@ pub async fn provider_ask_requested_tx(
     let track_id = card_track_tx(tx, planner_card).await?;
     let asked: bool = sqlx::query_scalar(
         "SELECT EXISTS (SELECT 1 FROM events WHERE scope_track = ?1 AND kind = 'ask.requested' \
-            AND json_extract(payload, '$.source_item_id') = ?2)",
+            AND json_extract(payload, '$.source_item_id') = ?2 AND \
+              (scope_card = ?3 OR (scope_kind='track' AND \
+                ((json_extract(actor,'$.kind')='AiPlanner' AND json_extract(actor,'$.id')=?3) \
+                 OR (json_extract(actor,'$.kind')='AiPlannerSession' AND EXISTS \
+                   (SELECT 1 FROM worker_sessions ws WHERE ws.id=json_extract(events.actor,'$.id') AND ws.card_id=?3))))))",
     )
     .bind(track_id.as_str())
     .bind(&source_item_id)
+    .bind(planner_card.as_str())
     .fetch_one(&mut **tx)
     .await?;
     if asked {
@@ -270,16 +289,19 @@ pub struct StoredAsk {
     pub action: Option<AskAction>,
     pub questions: Vec<AskQuestion>,
     pub delivery: AskDelivery,
-    /// Who raised it; a `hold` ask's is its harness's Planner session.
+    /// Who raised it; a `hold` ask's is its harness's real native session.
     pub actor: ActorId,
 }
 
 impl StoredAsk {
-    /// The Planner session whose harness holds this ask's provider request; `None` for an ask
+    /// The native session whose harness holds this ask's provider request; `None` for an ask
     /// that is not a session's `hold` ask.
     pub fn holding_session(&self) -> Option<&WorkerSessionId> {
         match (&self.delivery, &self.actor) {
-            (AskDelivery::Hold, ActorId::AiPlannerSession(session)) => Some(session),
+            (
+                AskDelivery::Hold,
+                ActorId::AiPlannerSession(session) | ActorId::AiManagedSession(session),
+            ) => Some(session),
             _ => None,
         }
     }
@@ -383,6 +405,14 @@ pub async fn ask_answered_tx(
     let track_row = calm_truth::db::sqlite::track_get_tx(tx, track).await?;
     let ask = stored_ask_tx(tx, track, ask_id).await?;
     let answers = validate_answers(ask_id, &ask.questions, ask.delivery, answers)?;
+    if ask.delivery == AskDelivery::Hold
+        || matches!(
+            ask.actor,
+            ActorId::AiPlannerSession(_) | ActorId::AiManagedSession(_)
+        )
+    {
+        require_live_ask_tx(tx, ask_id).await?;
+    }
     if !is_open_tx(tx, ask_id).await? {
         return Err(CalmError::Conflict(format!(
             "ask {ask_id} is no longer open: it is answered, or its paused request is gone"
@@ -417,7 +447,7 @@ async fn open_hold_asks<'e, E: sqlx::SqliteExecutor<'e>>(
         "SELECT r.id FROM events r \
           WHERE r.scope_track = ?1 AND r.kind = 'ask.requested' \
             AND json_extract(r.payload, '$.delivery') = 'hold' \
-            AND json_extract(r.actor, '$.kind') = 'AiPlannerSession' \
+            AND json_extract(r.actor, '$.kind') IN ('AiPlannerSession','AiManagedSession') \
             AND json_extract(r.actor, '$.id') = ?2 AND ",
         ask_open_sql!(),
         " ORDER BY r.id"
@@ -458,16 +488,13 @@ pub(crate) async fn withdraw_hold_asks_tx(
         return Ok(Vec::new());
     }
     let track_row = calm_truth::db::sqlite::track_get_tx(tx, track).await?;
-    let scope = EventScope::Track {
-        track: track_row.id.clone(),
-        area: track_row.area_id,
-    };
+    let (actor, scope) = conversation_owner_tx(tx, session).await?;
     Ok(open
         .into_iter()
         .filter(|ask_id| !keep.contains(ask_id))
         .map(|ask_id| {
             (
-                ActorId::AiPlannerSession(session.clone()),
+                actor.clone(),
                 scope.clone(),
                 Event::AskWithdrawn {
                     ask_id,
@@ -484,12 +511,45 @@ pub(crate) async fn require_no_open_carrier_asks_tx(
     card: &str,
 ) -> Result<()> {
     let open: bool = sqlx::query_scalar(&format!(
-        concat!("SELECT EXISTS(SELECT 1 FROM events r JOIN cards c ON c.track_id=r.scope_track WHERE c.id=?1 AND ","r.kind='ask.requested' AND (r.scope_card IS NULL OR r.scope_card=c.id) AND ({}))"), ASK_OPEN_SQL))
+        concat!("SELECT EXISTS(SELECT 1 FROM events r JOIN cards c ON c.track_id=r.scope_track WHERE c.id=?1 AND ","r.kind='ask.requested' AND ((json_extract(r.payload,'$.delivery')='wake' AND (r.scope_card IS NULL ",
+            "OR r.scope_card=c.id)) OR (json_extract(r.payload,'$.delivery')='hold' AND EXISTS (SELECT 1 FROM ",
+            "worker_sessions holder WHERE holder.id=json_extract(r.actor,'$.id') AND holder.card_id=c.id))) AND ",
+            "({}))"), ASK_OPEN_SQL))
         .bind(card).fetch_one(&mut **tx).await?;
     if open {
         return Err(CalmError::Conflict("carrier has an open ask".into()));
     }
     Ok(())
+}
+
+/// The original conversation that receives a Wake answer. Never substitute the
+/// Track's current Planner for a missing, stale or superseded source session.
+pub(crate) async fn wake_target(
+    repo: &dyn crate::db::Repo,
+    track: &TrackId,
+    ask_id: i64,
+) -> Result<Option<owner::AskTarget>> {
+    let ask = stored_ask(repo, track, ask_id).await?;
+    if ask.delivery != AskDelivery::Wake {
+        return Ok(None);
+    }
+    match &ask.actor {
+        ActorId::AiPlannerSession(id) | ActorId::AiManagedSession(id) => {
+            let Some(row) = repo.session_get(id).await? else {
+                return Ok(None);
+            };
+            if row.track_id != *track
+                || crate::harness::profile::live_binding(repo, &row)
+                    .await?
+                    .is_none()
+            {
+                return Ok(None);
+            }
+            Ok(source_target(&ask.actor, row.card_id))
+        }
+        ActorId::AiPlanner(_) => Ok(source_target(&ask.actor, None)), // explicit historical card provenance
+        _ => Ok(None),
+    }
 }
 
 #[cfg(test)]

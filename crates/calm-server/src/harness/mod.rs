@@ -266,9 +266,10 @@ pub(crate) async fn spawn_recovered_harness_admitted(
         return Ok(RecoveryOutcome::Skipped);
     }
     let mut snapshot = HarnessSnapshot::from_value_strict(state_json);
-    // Catch-up is a PLANNER-push catch-up: replaying it into a conversation harness would inject
-    // a backlog it was never meant to see. Unknown/absent role falls into the no-replay arm (fail-closed).
-    if role == Some(CardRole::Planner) && PlannerFactory::pre_checkpoint_replay_eligible(&provider)
+    // Shared replay admits only source-owned answers for Assistant; ordinary Track
+    // notifications remain Planner-owned. Unknown/absent roles cannot acquire either.
+    if role.is_some_and(|role| role.capability_role() == CardRole::Planner)
+        && PlannerFactory::pre_checkpoint_replay_eligible(&provider)
     {
         let catch_up_watermark = snapshot.push_watermark;
         replay_harness_events_since(
@@ -397,7 +398,7 @@ pub(crate) async fn spawn_recovered_harness_admitted(
         .await?
     {
         snapshot = checkpoint;
-        if role == Some(CardRole::Planner) {
+        if role.is_some_and(|role| role.capability_role() == CardRole::Planner) {
             let watermark = snapshot.push_watermark;
             replay_harness_events_since(
                 repo.clone(),
@@ -475,8 +476,15 @@ async fn replay_harness_events_since(
     watermark: i64,
     snapshot: &mut HarnessSnapshot,
 ) -> Result<()> {
-    let observations =
-        catch_up::observations_since(repo.as_ref(), track_id, session, watermark, None).await?;
+    let observations = catch_up::observations_since(
+        repo.as_ref(),
+        track_id,
+        &CardId::from(card_id),
+        session,
+        watermark,
+        None,
+    )
+    .await?;
     let mut replayed = 0usize;
     let mut entries: VecDeque<queue::QueueEntry> = snapshot.pending_entries().into();
     for (event_id, obs) in observations {

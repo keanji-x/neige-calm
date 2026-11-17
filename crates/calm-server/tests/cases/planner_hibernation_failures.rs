@@ -46,7 +46,7 @@ async fn closed_nonquiescent_automatic_install(work: &str) {
             (boot.repo.db()).writer().execute(sqlx::query("UPDATE cards SET role=?,payload=? WHERE id=?")
                 .bind(role.as_db_str())
                 .bind(if role == CardRole::Assistant {
-                    json!({"schemaVersion":1,"harness_profile":work,"assistant_provider":"codex"})
+                    json!({"schemaVersion":1,"harness_profile":work,"assistant_provider":"codex","permission_mode":"never"})
                 } else {
                     json!({"schemaVersion":1,"harness_profile":work})
                 }.to_string())

@@ -1,3 +1,6 @@
+#[path = "tests/native_hold_fixture.rs"]
+mod native_hold_fixture;
+
 use super::*;
 use calm_truth::db::RepoRead;
 
@@ -207,14 +210,6 @@ fn ask_answered(track: &TrackId, ask_id: i64) -> Event {
 /// An `ask.requested` row on `track` in `repo`, appended by that track's Planner card through the
 /// gated decision append (the reader is under test, not the writer); returns its id, the ask's id.
 async fn seed_ask(repo: &crate::db::sqlite::SqlxRepo, track: &str) -> i64 {
-    seed_ask_with(repo, track, AskDelivery::Wake).await
-}
-
-async fn seed_ask_with(
-    repo: &crate::db::sqlite::SqlxRepo,
-    track: &str,
-    delivery: AskDelivery,
-) -> i64 {
     let planner = CardId::from(format!("planner-{track}"));
     (repo.db())
         .writer()
@@ -247,21 +242,7 @@ async fn seed_ask_with(
                     &ActorId::AiPlanner(planner),
                     &scope,
                     None,
-                    &match ask_requested(&track) {
-                        Event::AskRequested {
-                            track_id,
-                            questions,
-                            source_item_id,
-                            ..
-                        } => Event::AskRequested {
-                            action: None,
-                            track_id,
-                            questions,
-                            delivery,
-                            source_item_id,
-                        },
-                        other => other,
-                    },
+                    &ask_requested(&track),
                 )
                 .await
                 .unwrap();
@@ -2217,12 +2198,16 @@ async fn a_hold_answer_does_not_wake_the_planner() {
     .await
     .unwrap();
     let track = TrackId::from("w");
-    let wake = seed_ask_with(&repo, "w", AskDelivery::Wake).await;
-    let hold = seed_ask_with(&repo, "w", AskDelivery::Hold).await;
+    let hold = native_hold_fixture::seed(&repo, "w").await;
+    let wake = seed_ask(&repo, "w").await;
     let answered = |ask_id| Event::AskAnswered {
         ask_id,
         track_id: track.clone(),
-        answers: vec![AskAnswer::Option(1), AskAnswer::Text("eu".into())],
+        answers: if ask_id == hold {
+            vec![AskAnswer::Option(1)]
+        } else {
+            vec![AskAnswer::Option(1), AskAnswer::Text("eu".into())]
+        },
     };
     assert!(
         resolve_harness_observation(&repo, &track, &answered(wake))
@@ -2261,6 +2246,7 @@ async fn a_hold_answer_does_not_wake_the_planner() {
                 let replayed = crate::harness::catch_up::observations_since(
                     &repo,
                     &track,
+                    &CardId::from("planner-w"),
                     "non-report-only",
                     0,
                     None,
@@ -4083,6 +4069,7 @@ let mut tx = write_session_1.begin_immediate().await.unwrap();
         let replayed = crate::harness::catch_up::observations_since(
             repo.as_ref(),
             &track.id,
+            &planner_card.id,
             &worker_session_id,
             deferred_event_id - 1,
             None,

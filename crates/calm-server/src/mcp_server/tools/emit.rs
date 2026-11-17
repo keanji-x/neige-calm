@@ -68,7 +68,7 @@ async fn task_done(
     args: Value,
 ) -> Result<Value, RpcError> {
     let attempt_id = required_attempt_id(&args, TOOL_TASK_DONE)?;
-    if identity.role == CardRole::Planner {
+    if identity.role.capability_role() == CardRole::Planner {
         if ["result", "artifacts", "commit_message"]
             .iter()
             .any(|key| args.get(key).is_some())
@@ -174,7 +174,7 @@ async fn task_fail(
         .ok_or_else(|| RpcError::invalid_params("neige_task_fail: missing `reason` (non-empty)"))?
         .to_string();
 
-    if identity.role == CardRole::Planner {
+    if identity.role.capability_role() == CardRole::Planner {
         return super::track_state::report_child_assignment(
             ctx,
             identity,

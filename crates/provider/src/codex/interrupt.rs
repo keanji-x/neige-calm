@@ -22,11 +22,21 @@ impl CodexAppServer {
         turn_id: &str,
         gate: &PreSendGate<'_>,
     ) -> crate::control::NativeInterruptOutcome<Error> {
+        // The interrupt and approval replies share the actual socket writer. Once
+        // admitted, revoke exactly this turn's outstanding approval tokens there,
+        // before the interrupt's first write; queued old replies cannot follow it.
+        let gate = PreSendGate::new(|| {
+            Box::pin(async {
+                gate.run().await?;
+                self.approval_routes.revoke_turn(thread_id, turn_id);
+                Ok(())
+            })
+        });
         let response: Result<Value> = self
             .request_gated(
                 "turn/interrupt",
                 json!({ "threadId": thread_id, "turnId": turn_id }),
-                gate,
+                &gate,
             )
             .await;
         interrupt_response(response)

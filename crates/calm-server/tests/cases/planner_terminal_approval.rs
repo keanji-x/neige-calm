@@ -69,6 +69,7 @@ async fn assistant_thread_receives_only_the_terminal_control_and_input_policy() 
     assert_eq!(
         start.pointer("/params/config/mcp_servers/neige/tools"),
         Some(&json!({
+            "neige_terminal_open": {"approval_mode":"approve"},
             "neige_terminal_control": {"approval_mode":"approve"},
             "neige_terminal_input": {"approval_mode":"approve"}
         })),

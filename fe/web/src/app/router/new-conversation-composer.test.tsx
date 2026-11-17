@@ -176,7 +176,7 @@ it('leaves an empty field for the next `+` after the first message is sent', asy
   });
   await screen.findByRole('complementary', { name: 'The first message' });
   expect(requests.filter((request) => request.method === 'POST').map((request) => request.body))
-    .toEqual([{ text: 'The first message', provider: 'codex' }]);
+    .toEqual([{ text: 'The first message', provider: 'codex', permission_mode: 'never' }]);
   closeDrawer();
   await pressPlus();
   expect(messageField().textContent).toBe('');

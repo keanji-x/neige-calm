@@ -47,4 +47,6 @@
 // Revision 45 (#3531): managed ACP adds the Antigravity provider identity.
 // Revision 46 (#3633): retire token-in-URL share HTTP/WS routes; use scoped ordinary APIs.
 // Revision 47 (#3682): provider availability requires the selected authentication_method.
-pub const REST_API_VERSION: &str = "47";
+// Revision 48 (#3690): explicit creation approval choices and independent Assistant permission writes.
+// Revision 49 (#3695): shared conversation ask provenance in activity schema 5.
+pub const REST_API_VERSION: &str = "49";

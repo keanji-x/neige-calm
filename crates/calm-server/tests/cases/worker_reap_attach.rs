@@ -127,29 +127,48 @@ async fn worker_reap_persisted_exit_read_authorization() {
     let foreign = foreign_track(&h).await;
     let (_, _, foreign_token) = agent_token(&h, &foreign, CardRole::Planner).await;
     let (_, _, assistant_token) = agent_token(&h, &h.track, CardRole::Assistant).await;
-    for (token, reason) in [
-        (foreign_token, "outside the caller's Track"),
-        (assistant_token, "an Assistant reaches only task workers"),
-    ] {
-        let denied = h
-            .call_with_token(
-                &token,
-                "neige_terminal_read",
-                json!({"terminal_id":p.terminal}),
-            )
-            .await;
-        assert_eq!(denied["error"]["code"], -32403, "{denied}");
-        assert!(
-            denied["error"]["message"]
-                .as_str()
-                .unwrap()
-                .contains(reason),
-            "{denied}"
-        );
-        assert!(
-            denied["result"].is_null(),
-            "must not disclose exit output: {denied}"
-        );
-    }
+    let denied = h
+        .call_with_token(
+            &foreign_token,
+            "neige_terminal_read",
+            json!({"terminal_id":p.terminal}),
+        )
+        .await;
+    assert_eq!(denied["error"]["code"], -32403, "{denied}");
+    assert!(
+        denied["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("outside the caller's Track"),
+        "{denied}"
+    );
+    assert!(
+        denied["result"].is_null(),
+        "must not disclose exit output: {denied}"
+    );
+    let assistant = h
+        .call_with_token(
+            &assistant_token,
+            "neige_terminal_read",
+            json!({"terminal_id":p.terminal}),
+        )
+        .await;
+    assert!(assistant.get("error").is_none(), "{assistant}");
+    assert_eq!(assistant["result"]["structuredContent"], view);
+    assert_eq!(view["source"], "persisted_exit");
+    assert_eq!(view["exited"], true);
+    assert_eq!(view["controllable"], false);
+    let input = h
+        .call_with_token(
+            &assistant_token,
+            "neige_terminal_input",
+            json!({
+                "terminal_id":p.terminal, "idempotency_key":"assistant-after-exit",
+                "action":{"type":"submit","text":"must-not-run"}
+            }),
+        )
+        .await;
+    assert_eq!(input["error"]["code"], -32403, "{input}");
+    assert!(h.state.terminal_renderer.get(&p.terminal).is_none());
     h.stop(&p.terminal).await;
 }

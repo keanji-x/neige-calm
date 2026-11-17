@@ -119,10 +119,7 @@ async fn claude_assistant_side_context_tools_never_and_archived_input() {
     );
     assert!(text.find("Frozen Claude side excerpt").unwrap() < text.find(FIRST_BODY).unwrap());
     let instructions = read(&fixture, "instructions");
-    assert!(
-        instructions.contains("What you cannot do"),
-        "{instructions}"
-    );
+    assert!(!instructions.is_empty());
     let argv = read(&fixture, "argv");
     assert!(argv.contains("--model=claude-fable-5-1[1m]"));
     assert!(argv.contains("--effort=high"));
@@ -136,26 +133,28 @@ async fn claude_assistant_side_context_tools_never_and_archived_input() {
         .iter()
         .map(|tool| tool["name"].as_str().unwrap())
         .collect();
-    for allowed in ["neige_report_read", "neige_report_commit"] {
-        assert!(names.contains(&allowed), "{names:?}");
+    // The Assistant lists the shared Planner catalog. As for a Planner, discovery
+    // shows `neige_track_add` only on an open Admin Track.
+    for listed in [
+        "neige_report_read",
+        "neige_report_commit",
+        "neige_task_done",
+    ] {
+        assert!(names.contains(&listed), "{names:?}");
     }
-    for denied in ["neige_task_done", "neige_track_add"] {
-        assert!(!names.contains(&denied), "{names:?}");
-    }
+    assert!(!names.contains(&"neige_track_add"), "{names:?}");
     let replies: Vec<Value> =
         serde_json::from_str(&read(&fixture, "assistant-mcp-results")).unwrap();
+    assert_eq!(replies.len(), 4, "{replies:?}");
     for allowed in &replies[..2] {
-        assert!(
-            allowed.get("error").is_none() && allowed["result"].is_object(),
-            "{allowed}"
-        );
+        assert!(allowed.get("error").is_none(), "{allowed}");
+        assert!(allowed["result"].is_object(), "{allowed}");
         assert_ne!(allowed["result"]["isError"], true, "{allowed}");
     }
-    for denied in &replies[2..] {
-        assert!(
-            denied["error"].is_object() || denied["result"]["isError"] == true,
-            "{denied}"
-        );
+    // Planner task and Track tools pass the shared capability check and reach
+    // their own argument validation.
+    for planner_tool in &replies[2..] {
+        assert_eq!(planner_tool["error"]["code"], -32602, "{planner_tool}");
     }
     let run = crate::routes::canonical_flow_tests::input_feedback_tests::run(
         &app,
@@ -163,10 +162,7 @@ async fn claude_assistant_side_context_tools_never_and_archived_input() {
         &format!("/api/cards/{card}/planner/run?contract=conversation_v1"),
     )
     .await;
-    assert!(
-        run["permission_mode"].is_null(),
-        "Assistant has no mutable permission mode"
-    );
+    assert_eq!(run["permission_mode"], "never");
     let calm_types::conversation::InputInvocation::Recorded { configuration } =
         &before.canonical_inputs.attempts[0].invocation
     else {
@@ -187,7 +183,14 @@ async fn claude_assistant_side_context_tools_never_and_archived_input() {
         )
         .await
         .unwrap();
-    assert!(!response.status().is_success());
+    assert_eq!(response.status(), StatusCode::OK);
+    let changed = crate::routes::canonical_flow_tests::input_feedback_tests::run(
+        &app,
+        &cookie,
+        &format!("/api/cards/{card}/planner/run?contract=conversation_v1"),
+    )
+    .await;
+    assert_eq!(changed["permission_mode"], "full");
     let counts = fixture.counts(card).await;
     let response = app
         .clone()
@@ -448,6 +451,7 @@ async fn claude_assistant_internal_historical_key_replays_original_evidence() {
             headers,
             track.clone(),
             NewTrackConversationBody {
+                permission_mode: None,
                 provider: AssistantProviderRequest::Explicit(
                     calm_types::runtime::AgentProvider::Claude,
                 ),
@@ -534,3 +538,64 @@ async fn claude_assistant_unavailable_version_keeps_durable_acceptance() {
 }
 
 mod activation;
+
+#[tokio::test]
+async fn conversation_permission_assistant_claude_full_and_next_never_native_settings() {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter("warn,calm_server=debug")
+        .try_init();
+    let mut fixture = Fixture::new().await;
+    configure(&mut fixture, "exit");
+    let (state, app, cookie) = fixture.application().await;
+    let track = track(&app, &cookie).await;
+    let created = post(
+        &app,
+        &cookie,
+        &format!("/api/tracks/{track}/conversations"),
+        "permission-first",
+        json!({"provider":"claude","permission_mode":"full","text":FIRST_BODY}),
+    )
+    .await;
+    let card = created["id"].as_str().unwrap();
+    super::super::conversation_permission_tests::assert_first_native_admission(
+        &fixture, &app, &cookie, card,
+    )
+    .await;
+    wait_frame(&fixture, card, |frame| {
+        frame.idle_for_lifecycle() && frame.canonical_inputs.attempts.len() == 1
+    })
+    .await;
+    let full = read(&fixture, "argv");
+    let args: Vec<_> = full.lines().collect();
+    assert!(
+        args.windows(2)
+            .any(|pair| pair == ["--permission-mode", "bypassPermissions"])
+    );
+    let settings: Value =
+        serde_json::from_str(args[args.iter().position(|arg| *arg == "--settings").unwrap() + 1])
+            .unwrap();
+    assert_eq!(settings["sandbox"]["enabled"], false);
+    let (worker, _) = carrier(&fixture, card).await;
+    state.harness.shutdown_and_remove(&worker).await.unwrap();
+    super::super::conversation_permission_tests::set_mode(&app, &cookie, card, "never").await;
+    post(
+        &app,
+        &cookie,
+        &format!("/api/cards/{card}/planner/input"),
+        "permission-next",
+        json!({"text":"Never on next issuance"}),
+    )
+    .await;
+    wait_frame(&fixture, card, |frame| {
+        frame.idle_for_lifecycle() && frame.canonical_inputs.attempts.len() == 2
+    })
+    .await;
+    let never = read(&fixture, "argv");
+    let args: Vec<_> = never.lines().collect();
+    assert!(!args.contains(&"bypassPermissions"));
+    let settings: Value =
+        serde_json::from_str(args[args.iter().position(|arg| *arg == "--settings").unwrap() + 1])
+            .unwrap();
+    assert_eq!(settings["sandbox"]["enabled"], true);
+    fixture.shutdown_process(&state).await;
+}

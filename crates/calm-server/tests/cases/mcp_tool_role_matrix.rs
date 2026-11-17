@@ -66,7 +66,7 @@ async fn assert_role_matrix_row(role: CardRole) {
             "`{tool}` must be served to {role:?}: {response:#?}"
         );
         let refused = role_refused(&response, role);
-        if refused == roles.contains(&role) {
+        if refused == role.permits(roles) {
             wrong.push(format!(
                 "{tool}: declared roles {roles:?}, {role:?} {} -> {}",
                 if refused { "refused" } else { "admitted" },

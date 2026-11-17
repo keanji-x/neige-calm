@@ -94,6 +94,8 @@ async fn planner_switch_http_authenticated_user_success() {
     events.switched(&p, &receipt).await;
     let after = detail(&p).await;
     assert_eq!(after["planner_revision"], 1);
+    let demoted = p.fixture.repo.card_get(&p.cards[0]).await.unwrap().unwrap();
+    assert_eq!(demoted.payload["permission_mode"], "never");
     for (index, provider_key) in [(0, "assistant_provider"), (1, "planner_provider")] {
         let card = after["cards"]
             .as_array()

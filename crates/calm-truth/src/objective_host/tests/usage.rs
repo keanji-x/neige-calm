@@ -89,10 +89,10 @@ async fn objective_turn_usage_without_capability_skips_every_row() {
 }
 
 #[tokio::test]
-async fn objective_turn_usage_retains_selected_planner_authorization() {
+async fn objective_turn_usage_requires_current_conversation_authority() {
     let repo = fixture().await;
-    for session in ["a", "w", "foreign", "missing"] {
-        assert!(
+    for session in ["w", "foreign", "missing"] {
+        assert!(matches!(
             record_turn_usage(
                 repo.db(),
                 &"t".into(),
@@ -101,13 +101,61 @@ async fn objective_turn_usage_retains_selected_planner_authorization() {
                 TurnUsage {
                     context_growth: 1,
                     secs: 1
-                }
+                },
             )
-            .await
-            .is_err()
-        );
+            .await,
+            Err(TruthError::Forbidden(_))
+        ));
     }
     assert_eq!(counts(&repo).await, (0, 0, 0));
+    // The same native turn id belongs to each real conversation session separately.
+    for session in ["p", "a"] {
+        assert!(matches!(
+            record_turn_usage(
+                repo.db(),
+                &"t".into(),
+                session.into(),
+                "one".into(),
+                TurnUsage {
+                    context_growth: 1,
+                    secs: 1
+                },
+            )
+            .await
+            .unwrap(),
+            TurnUsageResult::Recorded(Reaction::Appended { .. })
+        ));
+    }
+    assert_eq!(
+        load_state(repo.db(), &"t".into()).await.unwrap().1.usage,
+        Usage {
+            context_tokens: 2,
+            turns: 2,
+            elapsed_secs: 2
+        }
+    );
+    assert_eq!(counts(&repo).await, (2, 1, 0));
+    // A still-active row whose card no longer selects it cannot record another turn.
+    repo.db()
+        .writer()
+        .execute(sqlx::query("UPDATE cards SET session_id=NULL WHERE id='a'"))
+        .await
+        .unwrap();
+    assert!(matches!(
+        record_turn_usage(
+            repo.db(),
+            &"t".into(),
+            "a".into(),
+            "two".into(),
+            TurnUsage {
+                context_growth: 1,
+                secs: 1
+            },
+        )
+        .await,
+        Err(TruthError::Forbidden(_))
+    ));
+    assert_eq!(counts(&repo).await, (2, 1, 0));
 }
 
 #[tokio::test]

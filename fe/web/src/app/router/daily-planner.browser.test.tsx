@@ -527,7 +527,7 @@ it.each([false, true])('focuses every explicit Today Reply without replacing the
     planner_revision: 0, can_reopen: false, can_admin: false, can_close: false,
     cards: [{ id: 'daily-planner', track_id: 'daily', kind: 'codex', title: 'Daily Planner conversation', sort: 1, payload: { planner_harness: true }, deletable: false, created_at: 1, updated_at: 2 }],
     overlays: [{ id: 'activity', plugin_id: 'kernel', entity_kind: 'track', entity_id: 'daily', kind: 'activity', updated_at: 5,
-      payload: { schemaVersion: 4, working: false, attention: 'input', activity_at_ms: 5, cards: [], items: [{ source: 'ask', key: 'ask:7', text: 'Choose the release branch', at_ms: 5, ask_id: 7, questions: [{ title: 'Release branch?', options: ['main'] }], delivery: 'wake' }] } }],
+      payload: { schemaVersion: 5, working: false, attention: 'input', activity_at_ms: 5, cards: [], items: [{ source: 'ask', key: 'ask:7', text: 'Choose the release branch', at_ms: 5, ask_id: 7, card_id: 'daily-planner', session_id: 'runtime', questions: [{ title: 'Release branch?', options: ['main'] }], delivery: 'wake' }] } }],
   } } : undefined });
   const field = page.getByRole('combobox', { name: 'Message', exact: true });
   await field.fill('An unfinished sentence');
@@ -536,7 +536,7 @@ it.each([false, true])('focuses every explicit Today Reply without replacing the
   const editor = field.element();
   for (let index = 0; index < 2; index++) {
     if (subview) await page.getByRole('button', { name: 'Report changes', exact: true }).click();
-    await page.getByRole('button', { name: 'Answer the Planner: Choose the release branch', exact: true }).click();
+    await page.getByRole('button', { name: 'Answer question: Choose the release branch', exact: true }).click();
     await expect.element(field).toHaveFocus();
     expect(field.element()).toBe(editor);
     expect(window.getSelection()?.anchorOffset).toBe(caret);

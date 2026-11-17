@@ -190,12 +190,12 @@ describe('the track closed status in the page header', () => {
     expect(window.innerHeight - noticeBox.bottom).toBeLessThanOrEqual(28);
 
     const row = notice.querySelector<HTMLElement>('[data-nc-notification-state="ask"]')!;
-    const open = row.querySelector<HTMLButtonElement>('[aria-label^="Answer the Planner: "]')!;
+    const open = row.querySelector<HTMLButtonElement>('[aria-label^="Answer question: "]')!;
     const dismiss = row.querySelector<HTMLButtonElement>('[aria-label^="Dismiss: Needs your answer: "]')!;
     const link = row.querySelector<HTMLAnchorElement>('a')!;
     const time = row.querySelector<HTMLElement>('time')!;
     const label = [...row.querySelectorAll<HTMLElement>('span')].find((el) => el.textContent === 'Needs your answer')!;
-    const action = [...row.querySelectorAll<HTMLElement>('span')].find((el) => el.textContent === 'Answer in Planner')!;
+    const action = [...row.querySelectorAll<HTMLElement>('span')].find((el) => el.textContent === 'Answer in conversation')!;
     /* The row button covers the whole row inside its divider; the body text is under it, the link and
        the × are above it. */
     const rowBox = row.getBoundingClientRect();

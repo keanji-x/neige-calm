@@ -7,12 +7,12 @@ import { ApiError } from '../../../../core/domain/failure-class.ts';
 import { PlannerAskDrawer, type AnswerAsk } from './asks.tsx';
 
 afterEach(cleanup);
-const TWO: OpenAsk = { askId: 7, delivery: 'wake', questions: [
+const TWO: OpenAsk = { askId: 7, cardId: 'planner', sessionId: 'session', delivery: 'wake', questions: [
   { title: 'Which branch?', options: ['main', 'release'] }, { title: 'Notes?', options: [] },
 ] };
-const SINGLE: OpenAsk = { askId: 9, delivery: 'wake', questions: [{ title: 'Merge PR #12?', options: ['Merge', 'Hold'] }] };
+const SINGLE: OpenAsk = { askId: 9, cardId: 'planner', sessionId: 'session', delivery: 'wake', questions: [{ title: 'Merge PR #12?', options: ['Merge', 'Hold'] }] };
 /* A paused turn's request (#2348): one question, options only. */
-const HOLD: OpenAsk = { askId: 12, delivery: 'hold', questions: [
+const HOLD: OpenAsk = { askId: 12, cardId: 'planner', sessionId: 'session', delivery: 'hold', questions: [
   { title: 'Run `cargo test` (cwd /work)?', options: ['Allow', 'Allow for this session', 'Deny'] },
 ] };
 const http = (status: number, message: string) => new ApiError({ kind: 'http', status, code: 'error', message });
@@ -37,7 +37,7 @@ describe('PlannerAskDrawer', () => {
     const { onAnswer } = setup([SINGLE]);
     await userEvent.click(screen.getByRole('button', { name: 'Hold' }));
     await waitFor(() => expect(onAnswer).toHaveBeenCalledWith(9, [{ option: 1 }]));
-    expect(screen.queryByRole('group', { name: 'The Planner asks' })).toBeNull();
+    expect(screen.queryByRole('group', { name: 'Questions' })).toBeNull();
   });
   it('commits all answers in order only at the last question', async () => {
     const { onAnswer } = setup([TWO]);
@@ -82,7 +82,7 @@ describe('PlannerAskDrawer', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Other…' }));
     await userEvent.type(screen.getByRole('textbox', { name: 'Merge PR #12?' }), ' Wait for CI {Enter}');
     await waitFor(() => expect(onAnswer).toHaveBeenCalledExactlyOnceWith(9, [{ text: 'Wait for CI' }]));
-    expect(screen.queryByRole('group', { name: 'The Planner asks' })).toBeNull();
+    expect(screen.queryByRole('group', { name: 'Questions' })).toBeNull();
   });
   it('advances custom answers with Enter and sends only after the last question', async () => {
     const { onAnswer } = setup([TWO]);
@@ -119,7 +119,7 @@ describe('PlannerAskDrawer', () => {
     fireEvent.keyDown(input, { key: 'Enter' });
     expect(onAnswer).toHaveBeenCalledExactlyOnceWith(9, [{ text: 'Wait for CI' }]);
     finish();
-    await waitFor(() => expect(screen.queryByRole('group', { name: 'The Planner asks' })).toBeNull());
+    await waitFor(() => expect(screen.queryByRole('group', { name: 'Questions' })).toBeNull());
   });
   it('rejects blank free answers and clamps the server’s character limit', () => {
     setup([SINGLE]);
@@ -151,7 +151,7 @@ describe('PlannerAskDrawer', () => {
   it('settles a 409 without inventing a local answer receipt', async () => {
     setup([SINGLE], () => Promise.reject(http(409, 'already answered')));
     await userEvent.click(screen.getByRole('button', { name: 'Hold' }));
-    await waitFor(() => expect(screen.queryByRole('group', { name: 'The Planner asks' })).toBeNull());
+    await waitFor(() => expect(screen.queryByRole('group', { name: 'Questions' })).toBeNull());
     expect(screen.queryByRole('status', { name: 'Submitted Planner answers' })).toBeNull();
     expect(screen.queryByRole('alert')).toBeNull();
   });
@@ -169,7 +169,7 @@ describe('PlannerAskDrawer', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Hold' }));
     expect(await screen.findByText('Sending your answer is unconfirmed.')).toBeTruthy();
     await userEvent.click(screen.getByRole('button', { name: 'Hold' }));
-    await waitFor(() => expect(screen.queryByRole('group', { name: 'The Planner asks' })).toBeNull());
+    await waitFor(() => expect(screen.queryByRole('group', { name: 'Questions' })).toBeNull());
     expect(onAnswer).toHaveBeenCalledTimes(2);
   });
   it('locks every choice and group switch during a write', async () => {
@@ -187,7 +187,7 @@ describe('PlannerAskDrawer', () => {
   });
   it('wraps multi-option choices in a bounded scrollable list and steps through 4 questions without unrolling all questions', async () => {
     const FOUR_BY_SIX: OpenAsk = {
-      askId: 44,
+      askId: 44, cardId: 'planner', sessionId: 'session',
       delivery: 'wake',
       questions: [
         { title: 'Q1: Primary goal?', options: ['A1', 'A2', 'A3', 'A4', 'A5', 'A6'] },
@@ -229,7 +229,7 @@ it('offers only the two explicit choices for a lifecycle question, with no ambig
 describe('PlannerAskDrawer with a paused turn (#2348)', () => {
   it('says the turn is paused and offers its options only, with no field for words of one\'s own', () => {
     setup([HOLD]);
-    const ask = screen.getByRole('group', { name: 'The Planner asks' });
+    const ask = screen.getByRole('group', { name: 'Questions' });
     expect(ask.textContent).toContain('Turn paused, waiting for your approval');
     expect(ask.querySelector('[data-nc-ask-paused]')?.textContent).toBe('Turn paused, waiting for your approval');
     expect(screen.queryByRole('textbox')).toBeNull();
@@ -246,7 +246,7 @@ describe('PlannerAskDrawer with a paused turn (#2348)', () => {
     const { onAnswer } = setup([HOLD]);
     await userEvent.click(screen.getByRole('button', { name: 'Deny' }));
     await waitFor(() => expect(onAnswer).toHaveBeenCalledWith(12, [{ option: 2 }]));
-    expect(screen.queryByRole('group', { name: 'The Planner asks' })).toBeNull();
+    expect(screen.queryByRole('group', { name: 'Questions' })).toBeNull();
   });
   it('says a request that went away is no longer pending, and keeps the row until the overlay drops it', async () => {
     const { rerender, onAnswer } = setup([HOLD], vi.fn<AnswerAsk>(() => Promise.reject(http(409, 'its paused request is gone'))));
@@ -255,7 +255,7 @@ describe('PlannerAskDrawer with a paused turn (#2348)', () => {
     expect(screen.queryByText('its paused request is gone')).toBeNull();
     expect(screen.getByRole('heading', { name: 'Run `cargo test` (cwd /work)?' })).toBeTruthy();
     rerender(<PlannerAskDrawer asks={[]} onAnswer={onAnswer} />);
-    expect(screen.queryByRole('group', { name: 'The Planner asks' })).toBeNull();
+    expect(screen.queryByRole('group', { name: 'Questions' })).toBeNull();
   });
   it('leaves a wake ask beside it as it was', () => {
     setup([HOLD, SINGLE]);
@@ -279,7 +279,7 @@ it('renders grant_admin kernel choices and sends only the clicked answer', async
 });
 
 it('uses the existing questions drawer for Track plugin authorization without a free-text grant', async () => {
-  const ask: OpenAsk = { askId: 81, delivery: 'wake',
+  const ask: OpenAsk = { askId: 81, cardId: 'planner', sessionId: 'session', delivery: 'wake',
     action: { kind: 'track_plugin_access', plugin_id: 'calendar', enabled: true, manifest_sha256: 'digest', expected_revision: 0 },
     questions: [{ title: '允许此 Track 使用 Calendar？', detail: '可管理本 Track 的日程，定时日程可唤醒此 Track。',
       options: ['允许此 Track 使用', '本次不更改'] }],

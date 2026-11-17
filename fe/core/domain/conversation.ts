@@ -813,13 +813,13 @@ export function trackConversationsOperation(trackId: string): ApiOperation<Conve
  * conversation after a timeout.
  */
 export function createTrackConversationOperation(
-  trackId: string, text: string, idempotencyKey: string, provider: AgentProvider, selection: ModelSelection, side?: SideConversation,
+  trackId: string, text: string, idempotencyKey: string, provider: AgentProvider, selection: ModelSelection, permissionMode: PlannerPermissionMode | undefined, side?: SideConversation,
 ): ApiOperation<CreatedConversation> {
   return {
     method: 'POST',
     path: `/api/tracks/${encodeURIComponent(trackId)}/conversations`,
     headers: { 'Idempotency-Key': idempotencyKey },
-    body: { text, provider,
+    body: { text, provider, ...(permissionMode === undefined ? {} : { permission_mode: permissionMode }),
       ...(side === undefined ? {} : { side }),
       ...(selection.model === null ? {} : { model: selection.model }),
       ...(selection.reasoning_effort === null ? {} : { reasoning_effort: selection.reasoning_effort }),
