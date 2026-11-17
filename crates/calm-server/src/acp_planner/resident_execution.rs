@@ -1,5 +1,6 @@
 //! Engine ownership for one resident ACP generation. No card owns its process.
 use super::config::{AcpPlannerHost, Registration};
+use super::profile::AcpAgentProfile;
 use crate::{
     db::sqlite::SqliteDb,
     error::{CalmError, Result},
@@ -10,6 +11,7 @@ use crate::{
 };
 use calm_truth::db::sqlite::acp_resident;
 use calm_truth::db::sqlite::workspace_execution as sql;
+use calm_types::runtime::AgentProvider;
 use std::path::Path;
 use workspace_runtime::execution::*;
 
@@ -109,7 +111,7 @@ impl ResidentExecution {
 
     pub(super) async fn stop(&mut self) -> Result<()> {
         if !self.drained {
-            drain(&self.pool, &self.engine, &self.id).await?;
+            drain(&self.pool, &self.engine, &self.id, false).await?;
             self.drained = true;
         }
         Ok(())
@@ -124,7 +126,7 @@ impl Drop for ResidentExecution {
         let (pool, engine, id) = (self.pool.clone(), self.engine.clone(), self.id.clone());
         if let Ok(runtime) = tokio::runtime::Handle::try_current() {
             runtime.spawn(async move {
-                if let Err(error) = drain(&pool, &engine, &id).await {
+                if let Err(error) = drain(&pool, &engine, &id, false).await {
                     tracing::warn!(execution = id.as_str(), %error, "ACP generation retained for recovery");
                 }
             });
@@ -161,7 +163,8 @@ pub(crate) async fn stop_previous(
         .await
         .map_err(calm_truth::TruthError::from)??;
     for id in ids {
-        let result = async { drain(pool, provider_execution::engine(engine)?, &id).await }.await;
+        let result =
+            async { drain(pool, provider_execution::engine(engine)?, &id, true).await }.await;
         if !boot {
             result?;
         } else if let Err(error) = result {
@@ -202,6 +205,7 @@ pub(super) async fn stop_detached_workspace(
             pool,
             provider_execution::engine(host.execution.engine())?,
             &id,
+            false,
         )
         .await?;
     }
@@ -238,12 +242,28 @@ async fn request(
     Ok(())
 }
 
-async fn drain(pool: &SqliteDb, engine: &ExecutionEngine, id: &ExecutionId) -> Result<()> {
+async fn drain(
+    pool: &SqliteDb,
+    engine: &ExecutionEngine,
+    id: &ExecutionId,
+    restarting: bool,
+) -> Result<()> {
     request(pool, engine, id, Desired::Stop).await?;
     provider_execution::wait_settled(engine, id, QUIESCE_DEADLINE).await?;
-    if !provider_execution::settlement(pool, id)
-        .await?
-        .is_some_and(|settlement| {
+    let settlement = provider_execution::settlement(pool, id).await?;
+    let restart_proof = if restarting
+        && matches!(
+            settlement,
+            Some(Settlement::Journal(
+                ExecutionState::InterruptedQuiescent { .. }
+            ))
+        ) {
+        interrupted_restart_allowed(pool, id).await?
+    } else {
+        false
+    };
+    if !restart_proof
+        && !settlement.is_some_and(|settlement| {
             settlement.descendants_complete()
                 || matches!(
                     settlement,
@@ -263,24 +283,73 @@ async fn drain(pool: &SqliteDb, engine: &ExecutionEngine, id: &ExecutionId) -> R
     engine.wait_retired(id).await.map_err(conflict)
 }
 
-pub(super) async fn has_drained_tx(
+fn accepts_interrupted_restart(provider: &AgentProvider) -> bool {
+    AcpAgentProfile::of(provider)
+        .and_then(|profile| profile.resident)
+        .is_some_and(|resident| resident.restart_after_interrupted_quiescence)
+}
+
+async fn interrupted_restart_allowed(pool: &SqliteDb, id: &ExecutionId) -> Result<bool> {
+    let Some(row) = sql::load(pool.read_pool(), id.as_str()).await? else {
+        return Ok(false);
+    };
+    let intent: ExecutionMetadata = serde_json::from_str(&row.intent_json)?;
+    let ExecutionOwnership::Host { backend } = &intent.scope else {
+        return Ok(false);
+    };
+    Ok(intent.id == *id
+        && intent.consumer.0 == CONSUMER
+        && intent.alias.0 == generation_alias(backend, id)
+        && AgentProvider::ALL.iter().any(|provider| {
+            provider.wire_name() == backend && accepts_interrupted_restart(provider)
+        }))
+}
+
+async fn owner_settlement_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
-    provider: &calm_types::runtime::AgentProvider,
+    provider: &AgentProvider,
     execution_id: &ExecutionId,
-) -> Result<bool> {
+) -> Result<Option<Settlement>> {
     let settlement: Option<String> = sqlx::query_scalar(
         "SELECT settlement_json FROM workspace_executions
          WHERE execution_id=?1 AND alias=?2 AND json_extract(intent_json,'$.consumer')=?3
-           AND settlement_json IS NOT NULL",
+           AND json_extract(intent_json,'$.track.backend')=?4 AND settlement_json IS NOT NULL",
     )
     .bind(execution_id.as_str())
     .bind(generation_alias(provider.wire_name(), execution_id))
     .bind(CONSUMER)
+    .bind(provider.wire_name())
     .fetch_optional(&mut **tx)
     .await?;
-    let settlement: Option<Settlement> = settlement
+    Ok(settlement
         .as_deref()
         .map(serde_json::from_str)
-        .transpose()?;
-    Ok(settlement.is_some_and(|settlement| settlement.descendants_complete()))
+        .transpose()?)
+}
+
+pub(super) async fn has_drained_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    provider: &AgentProvider,
+    execution_id: &ExecutionId,
+) -> Result<bool> {
+    Ok(owner_settlement_tx(tx, provider, execution_id)
+        .await?
+        .is_some_and(|settlement| settlement.descendants_complete()))
+}
+
+pub(super) async fn restart_owner_exited_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    provider: &AgentProvider,
+    execution_id: &ExecutionId,
+) -> Result<bool> {
+    Ok(owner_settlement_tx(tx, provider, execution_id)
+        .await?
+        .is_some_and(|settlement| {
+            settlement.descendants_complete()
+                || (accepts_interrupted_restart(provider)
+                    && matches!(
+                        settlement,
+                        Settlement::Journal(ExecutionState::InterruptedQuiescent { .. })
+                    ))
+        }))
 }

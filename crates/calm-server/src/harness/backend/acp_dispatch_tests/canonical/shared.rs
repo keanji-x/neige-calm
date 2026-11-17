@@ -443,6 +443,103 @@ async fn canonical_antigravity_restart_resumes_native_and_dispatches_only_pendin
 }
 
 #[tokio::test]
+async fn canonical_antigravity_restart_retires_interrupted_generation() {
+    use workspace_runtime::execution::*;
+
+    let mut fx = Fixture::with_provider(AgentProvider::Antigravity, "reply", true).await;
+    fx.dispatch().await.unwrap();
+    fx.wait_idle().await;
+    assert!(fx.complete().await.is_some());
+    let db = fx.owner.repo.db();
+    let ids = calm_truth::db::sqlite::acp_resident::for_worker(db.read_pool(), &fx.owner.worker)
+        .await
+        .unwrap();
+    let [id] = ids.as_slice() else {
+        panic!("one attached generation");
+    };
+    let id = id.clone();
+    let execution = ExecutionId::try_from(id.clone()).unwrap();
+    let settlement = Settlement::Journal(ExecutionState::InterruptedQuiescent {
+        reason: ExecutionInterruption::ExecutorInterrupted,
+        proof: InterruptedQuiescenceProof {
+            host_boot_id: "test-boot".into(),
+            helper_process: NativeProcessIdentity::LinuxHelper(LinuxProcessIdentity {
+                pid: 12345,
+                start_time_ticks: 1,
+                nonce: CapabilityToken::fresh().unwrap(),
+            }),
+            mechanism: ScopeMechanismIdentity::LinuxHelper(LinuxHelperIdentity {
+                executable_device: 1,
+                executable_inode: 2,
+                protocol_version: 1,
+            }),
+            scope: InterruptedScope::LinuxOriginalGroupAndSessionEmpty,
+        },
+    });
+    db.writer()
+        .with_writer(|writer| {
+            Box::pin(async move {
+                let mut tx = writer.begin_immediate().await.unwrap();
+                calm_truth::db::sqlite::workspace_execution::settle_tx(
+                    &mut tx,
+                    &id,
+                    &serde_json::to_string(&settlement).unwrap(),
+                    1,
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+            })
+        })
+        .await
+        .unwrap();
+
+    let (backend, session, _held) =
+        session_for_provider(&fx.owner, &fx.dir, AgentProvider::Antigravity);
+    recover_agy_fixture(&fx.owner, &session).await;
+    assert!(
+        calm_truth::db::sqlite::acp_resident::for_worker(db.read_pool(), &fx.owner.worker)
+            .await
+            .unwrap()
+            .is_empty(),
+        "boot retires the interrupted AGY generation"
+    );
+    session
+        .host()
+        .execution
+        .engine()
+        .unwrap()
+        .wait_retired(&execution)
+        .await
+        .unwrap();
+    assert_eq!(fx.prompts(), 1);
+
+    fx.backend = backend;
+    fx.session = session;
+    let next = fx.claim_successor().await;
+    fx.dispatch_submission(&next).await;
+    fx.wait_idle().await;
+    assert!(fx.complete().await.is_some());
+    let requests = fx.requests();
+    let prompts: Vec<_> = requests
+        .iter()
+        .filter(|r| r["method"] == "session/prompt")
+        .collect();
+    assert_eq!(prompts.len(), 2);
+    assert_eq!(
+        prompts[0]["params"]["sessionId"],
+        prompts[1]["params"]["sessionId"]
+    );
+    assert_ne!(prompts[0]["_pid"], prompts[1]["_pid"]);
+    assert!(
+        prompts[1]["params"]["prompt"]
+            .to_string()
+            .contains("fresh successor")
+    );
+    fx.session.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn canonical_antigravity_restart_drops_initial_claim_before_native_attachment() {
     let fx = Fixture::with_provider(AgentProvider::Antigravity, "reply", true).await;
     let (_, session, _held) = session_for_provider(&fx.owner, &fx.dir, AgentProvider::Antigravity);

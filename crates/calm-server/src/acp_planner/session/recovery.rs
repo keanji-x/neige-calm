@@ -325,7 +325,8 @@ async fn restart_owner_stopped(
                 .leader_exited(),
         ),
         Some(AcpSharedRestartOwner::Execution { execution_id }) => {
-            super::super::resident_execution::has_drained_tx(tx, provider, &execution_id).await
+            super::super::resident_execution::restart_owner_exited_tx(tx, provider, &execution_id)
+                .await
         }
         _ => Ok(false),
     }

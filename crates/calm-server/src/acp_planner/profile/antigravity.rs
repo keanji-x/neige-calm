@@ -10,6 +10,7 @@ pub(super) const PROFILE: AcpAgentProfile = AcpAgentProfile {
     resident: Some(ResidentProfile {
         launch: &NOTHING,
         detach: ResidentDetach::CloseSession,
+        restart_after_interrupted_quiescence: true,
         release_unknown_on_restart: true,
     }),
     mcp_call_session_key: None,

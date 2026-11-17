@@ -33,6 +33,7 @@ pub(super) const PROFILE: AcpAgentProfile = AcpAgentProfile {
     resident: Some(ResidentProfile {
         launch: &RESIDENT_LAUNCH,
         detach: ResidentDetach::DrainGeneration,
+        restart_after_interrupted_quiescence: false,
         release_unknown_on_restart: false,
     }),
     mcp_call_session_key: Some("ai.opencode/sessionID"),
