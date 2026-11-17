@@ -80,7 +80,7 @@ impl<'a> PlannerFactory<'a> {
         match binding.profile {
             HarnessProfile::Planner => Some(WorkerContract::Planner),
             HarnessProfile::Assistant => Some(WorkerContract::Assistant),
-            HarnessProfile::PlainChat => None,
+            HarnessProfile::PlainChat | HarnessProfile::TaskWorker => None,
         }
     }
 

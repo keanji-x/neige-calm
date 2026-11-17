@@ -167,6 +167,9 @@ async fn refresh_catch_up_upstream(track: &Track) {
 /// post-crash resubmit idempotency-matches the original instead of conflicting on payload hash.
 pub fn build_worker_payload(task: &Task) -> Result<(&'static str, Value)> {
     match task.kind {
+        TaskKind::Agent => Err(CalmError::Conflict(
+            "agent worker execution is not wired yet".into(),
+        )),
         TaskKind::Compact => Err(CalmError::Internal(
             "compact tasks have no worker payload".into(),
         )),
@@ -242,6 +245,7 @@ pub fn build_child_track_payload(task: &Task) -> Result<Value> {
 
 fn task_kind_str(kind: TaskKind) -> &'static str {
     match kind {
+        TaskKind::Agent => "agent",
         TaskKind::Codex => "codex",
         TaskKind::Claude => "claude",
         TaskKind::Terminal => "terminal",
@@ -2255,3 +2259,6 @@ mod isolation_none_tests;
 
 #[cfg(test)]
 mod timeout_cleanup_fence_tests;
+
+#[cfg(test)]
+mod task_worker_tests;

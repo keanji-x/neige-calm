@@ -4,6 +4,9 @@ use super::*;
 pub const TASK_FIELDS: &[&str] = &[
     "key",
     "kind",
+    "provider",
+    "model",
+    "reasoning_effort",
     "goal",
     "command",
     "acceptance",
@@ -80,10 +83,10 @@ pub(super) fn validate_task(map: &Map<String, Value>, errors: &mut Vec<String>) 
         errors.push("tombstoned_by: must be absent from a non-tombstone task".into());
     }
     let task_kind = match map.get("kind").and_then(Value::as_str) {
-        Some(kind @ ("codex" | "claude" | "terminal" | "compact")) => Some(kind),
+        Some(kind @ ("agent" | "codex" | "claude" | "terminal" | "compact")) => Some(kind),
         _ => {
             errors.push(
-                "kind: required; must be one of \"codex\" | \"claude\" | \"terminal\" | \"compact\"".into(),
+                "kind: required; must be one of \"agent\" | \"codex\" | \"claude\" | \"terminal\" | \"compact\"".into(),
             );
             None
         }
@@ -125,13 +128,37 @@ pub(super) fn validate_task(map: &Map<String, Value>, errors: &mut Vec<String>) 
                 errors.push("goal: must be absent when kind is \"terminal\"".into());
             }
         }
-        Some("codex" | "claude") => {
+        Some("agent" | "codex" | "claude") => {
             required_non_empty_string(map, "goal", errors);
             if map.contains_key("command") {
                 errors.push("command: must be absent when kind is \"codex\" or \"claude\"".into());
             }
         }
         _ => {}
+    }
+    let in_checkout = map.get("spawn").and_then(Value::as_str) != Some("sub-track");
+    if task_kind == Some("claude") && in_checkout {
+        errors.push(
+            "kind: unsupported_worker_provider: claude workers are not supported in-checkout"
+                .into(),
+        );
+    }
+    for field in ["provider", "model", "reasoning_effort"] {
+        optional_non_empty_string(map, field, errors);
+        if map.contains_key(field)
+            && (!matches!(task_kind, Some("agent" | "codex")) || !in_checkout)
+        {
+            errors.push(format!(
+                "{field}: requires an in-checkout agent or codex task"
+            ));
+        }
+    }
+    if let Some(provider) = map.get("provider").and_then(Value::as_str) {
+        if !matches!(provider, "codex" | "antigravity" | "opencode" | "grok") {
+            errors.push("provider: unsupported_worker_provider: expected codex, antigravity, opencode or grok".into());
+        } else if task_kind == Some("codex") && provider != "codex" {
+            errors.push("provider: conflicts with kind codex".into());
+        }
     }
     optional_non_empty_string(map, "acceptance", errors);
     optional_non_empty_string(map, "no_gate_reason", errors);

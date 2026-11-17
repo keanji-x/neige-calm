@@ -19,6 +19,9 @@ pub(crate) async fn profile_instructions(
             )
             .await
         }
+        HarnessProfile::TaskWorker => Err(crate::error::CalmError::Conflict(
+            "task worker harness is not wired yet".into(),
+        )),
         HarnessProfile::PlainChat => Ok(String::new()),
         HarnessProfile::Assistant => {
             let template = if crate::routes::today::is_launchpad_track(repo, track_id).await? {

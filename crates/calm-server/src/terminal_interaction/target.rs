@@ -524,6 +524,7 @@ impl TerminalInteraction {
                 let expected = match latest.kind {
                     TaskKind::Compact => anyhow::bail!("compact tasks have no worker terminal"),
                     TaskKind::Terminal => "terminal",
+                    TaskKind::Agent => anyhow::bail!("agent worker execution is not wired yet"),
                     TaskKind::Codex => "codex",
                     TaskKind::Claude => "claude",
                 };

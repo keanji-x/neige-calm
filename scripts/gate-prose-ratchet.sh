@@ -1,4 +1,10 @@
 #!/usr/bin/env bash
+# #3718 bounded storage-fixture exception: long_literal/crates/**/*.rs 220 -> 223.
+# The pre-0222 upgrade fixture has three SQL literals: new agent/session
+# insertion, refused recovery allocation, and failure-epoch/terminal cleanup
+# transitions. These are storage evidence, not agent-facing prose. Fixture or
+# schema edits update their owner and this baseline; ordinary additions need no
+# inventory entry. The existing scan and selftest each run once in CI lint.
 # #3633 bounded SQL exception: long_literal/crates/**/*.rs 208 -> 213.
 # Five SQL statements describe real storage contracts:
 # 1. conversation/messages.rs inserts explicit Human or LinkGuest attribution.

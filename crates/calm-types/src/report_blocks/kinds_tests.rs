@@ -386,7 +386,7 @@ fn task_payload_validates_every_field_and_unknown_fields() {
 
 #[test]
 fn task_instruction_field_is_discriminated_by_worker_kind() {
-    for kind in ["codex", "claude"] {
+    for kind in ["agent", "codex"] {
         let mut agent = valid_task();
         agent["kind"] = json!(kind);
         assert_eq!(validate_payload(KIND_TASK, &agent), Ok(()));
@@ -460,9 +460,9 @@ fn task_access_rules_name_the_valid_choices() {
         payload
     };
     assert_eq!(validate_payload(KIND_TASK, &reader()), Ok(()));
-    let mut claude = reader();
-    claude["kind"] = json!("claude");
-    assert_eq!(validate_payload(KIND_TASK, &claude), Ok(()));
+    let mut agent = reader();
+    agent["kind"] = json!("agent");
+    assert_eq!(validate_payload(KIND_TASK, &agent), Ok(()));
     let blocks = |payload: Value| {
         vec![crate::track_report::ReportBlock {
             id: "b_0001".into(),
@@ -613,9 +613,9 @@ fn task_start_rules_name_the_valid_choices() {
         payload
     };
     assert_eq!(validate_payload(KIND_TASK, &catch_up()), Ok(()));
-    let mut claude = catch_up();
-    claude["kind"] = json!("claude");
-    assert_eq!(validate_payload(KIND_TASK, &claude), Ok(()));
+    let mut agent = catch_up();
+    agent["kind"] = json!("agent");
+    assert_eq!(validate_payload(KIND_TASK, &agent), Ok(()));
     for start in [Value::Null, json!("checkout")] {
         let mut payload = valid_task();
         payload["start"] = start;
@@ -670,7 +670,7 @@ fn task_start_rules_name_the_valid_choices() {
 /// through `neige_task_done`; a tombstone carries none.
 #[test]
 fn task_result_contract_must_name_a_registered_contract() {
-    for kind in ["codex", "claude"] {
+    for kind in ["agent", "codex"] {
         let mut payload = valid_task();
         payload["kind"] = json!(kind);
         for contract in crate::task_result::RESULT_CONTRACTS {
@@ -898,4 +898,48 @@ fn child_track_continue_declaration_accepts_only_exclusive_nonempty_target() {
         payload["child_track"] = serde_json::json!({"continue":target});
         assert!(super::validate_payload(super::KIND_TASK, &payload).is_err());
     }
+}
+
+#[test]
+fn agent_worker_task_selection_validates_provider_alias_and_placement() {
+    for kind in ["agent", "codex"] {
+        let mut task = valid_task();
+        task["kind"] = json!(kind);
+        task["model"] = json!("model");
+        task["reasoning_effort"] = json!("high");
+        assert_eq!(validate_payload(KIND_TASK, &task), Ok(()));
+        for provider in ["codex", "antigravity", "opencode", "grok"] {
+            task["provider"] = json!(provider);
+            assert_eq!(
+                validate_payload(KIND_TASK, &task).is_ok(),
+                kind == "agent" || provider == "codex"
+            );
+        }
+        task["provider"] = json!("claude");
+        assert!(
+            validate_payload(KIND_TASK, &task)
+                .unwrap_err()
+                .contains("unsupported_worker_provider")
+        );
+        task["provider"] = json!("codex");
+        for field in ["model", "reasoning_effort"] {
+            for invalid in [json!(""), json!(" "), json!(1), Value::Null] {
+                let mut bad = task.clone();
+                bad[field] = invalid;
+                assert!(validate_payload(KIND_TASK, &bad).is_err(), "{field}");
+            }
+        }
+        task["spawn"] = json!("sub-track");
+        assert!(validate_payload(KIND_TASK, &task).is_err());
+    }
+    let mut task = valid_task();
+    task["kind"] = json!("claude");
+    assert!(
+        validate_payload(KIND_TASK, &task)
+            .unwrap_err()
+            .contains("unsupported_worker_provider")
+    );
+    task["kind"] = json!("terminal");
+    task["provider"] = json!("codex");
+    assert!(validate_payload(KIND_TASK, &task).is_err());
 }

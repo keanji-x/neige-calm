@@ -255,7 +255,8 @@ pub(crate) fn derive_session_identity(
         WorkerSessionKind::Terminal => WorkerProviderKind::Terminal,
         WorkerSessionKind::CodexCard
         | WorkerSessionKind::SharedPlanner
-        | WorkerSessionKind::ManagedAssistant => WorkerProviderKind::Codex,
+        | WorkerSessionKind::ManagedAssistant
+        | WorkerSessionKind::ManagedWorker => WorkerProviderKind::Codex,
         WorkerSessionKind::ClaudeCard => WorkerProviderKind::Claude,
     };
     let mode = match provider.protocol() {

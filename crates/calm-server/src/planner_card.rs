@@ -722,6 +722,8 @@ mod tests {
             TaskKind::Compact,
         ] {
             match kind {
+                // The agent route is not advertised until its executor is wired.
+                TaskKind::Agent => continue,
                 TaskKind::Codex | TaskKind::Claude | TaskKind::Terminal | TaskKind::Compact => {}
             }
             let serialized = serde_json::to_value(kind).unwrap();

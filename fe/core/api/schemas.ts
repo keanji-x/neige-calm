@@ -85,7 +85,7 @@ export const trackSchema = z.preprocess(
   trackObjectSchema,
 );
 
-export const runtimeKindSchema = z.enum(['terminal', 'codex', 'claude', 'shared-spec', 'managed-assistant']);
+export const runtimeKindSchema = z.enum(['terminal', 'codex', 'claude', 'shared-spec', 'managed-assistant', 'managed-worker']);
 export type WorkerSessionKind = z.infer<typeof runtimeKindSchema>;
 
 export const agentProviderSchema = z.enum(['codex', 'claude', 'opencode', 'grok', 'antigravity']);

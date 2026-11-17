@@ -220,6 +220,7 @@ pub(crate) async fn spawn_recovered_harness_admitted(
         profile::HarnessProfile::Planner => WorkerSessionKind::SharedPlanner,
         profile::HarnessProfile::Assistant => WorkerSessionKind::ManagedAssistant,
         profile::HarnessProfile::PlainChat => WorkerSessionKind::CodexCard,
+        profile::HarnessProfile::TaskWorker => return Ok(RecoveryOutcome::Skipped),
     };
     if runtime.kind != expected_kind {
         tracing::warn!(worker_session_id = %runtime.id, "refusing harness recovery: row/card identity mismatch");
@@ -1036,6 +1037,9 @@ mod tests {
                     start: crate::model::TaskStart::Checkout,
                     result_contract: None,
                     child_track_json: None,
+                    provider: None,
+                    model: None,
+                    reasoning_effort: None,
                     created_at_ms: 1,
                     updated_at_ms: 1,
                     finished_at_ms: None,

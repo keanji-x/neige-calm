@@ -28,6 +28,8 @@ pub const TRACK_CREATION_CONTEXT_PAYLOAD_KEY: &str = "track_creation_context";
 pub const PLANNER_PROVIDER_PAYLOAD_KEY: &str = "planner_provider";
 /// Immutable managed Assistant backend, minted by its start operation.
 pub const ASSISTANT_PROVIDER_PAYLOAD_KEY: &str = "assistant_provider";
+/// Immutable managed task Worker backend, minted by its task preparation.
+pub const WORKER_PROVIDER_PAYLOAD_KEY: &str = "worker_provider";
 /// Creation-owned origin of an assistant discussion branch.
 pub const SIDE_SOURCE_CARD_PAYLOAD_KEY: &str = "side_source_card_id";
 /// Frozen opening material; the first canonical render plan consumes this context.
@@ -55,7 +57,7 @@ pub const BOUND_SESSION_CWD_PAYLOAD_KEY: &str = "bound_session_cwd";
 
 /// Kernel-owned card fields, refused at client boundaries and preserved by
 /// `card_update_tx` even when a replacement payload omits them.
-pub const SERVER_OWNED_CARD_PAYLOAD_KEYS: [&str; 13] = [
+pub const SERVER_OWNED_CARD_PAYLOAD_KEYS: [&str; 14] = [
     BOUND_SESSION_CWD_PAYLOAD_KEY,
     TERMINAL_SIGNALS_PAYLOAD_KEY,
     TERMINAL_PRESENTATION_PAYLOAD_KEY,
@@ -63,6 +65,7 @@ pub const SERVER_OWNED_CARD_PAYLOAD_KEYS: [&str; 13] = [
     TRACK_CREATION_CONTEXT_PAYLOAD_KEY,
     PLANNER_PROVIDER_PAYLOAD_KEY,
     ASSISTANT_PROVIDER_PAYLOAD_KEY,
+    WORKER_PROVIDER_PAYLOAD_KEY,
     SIDE_SOURCE_CARD_PAYLOAD_KEY,
     ASSISTANT_OPENING_CONTEXT_PAYLOAD_KEY,
     PLANNER_PERMISSION_MODE_PAYLOAD_KEY,
@@ -83,6 +86,7 @@ pub fn server_owned_value_is_sticky(key: &str, value: &Value) -> bool {
         // Creation-owned identity stays immutable, including a corrupt stored value.
         PLANNER_PROVIDER_PAYLOAD_KEY
         | ASSISTANT_PROVIDER_PAYLOAD_KEY
+        | WORKER_PROVIDER_PAYLOAD_KEY
         | SIDE_SOURCE_CARD_PAYLOAD_KEY
         | ASSISTANT_OPENING_CONTEXT_PAYLOAD_KEY => true,
         // Only its own writer changes it; a replacement can neither drop nor "repair" a stored value.

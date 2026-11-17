@@ -22,6 +22,8 @@ pub enum WorkerSessionKind {
     SharedPlanner,
     #[serde(rename = "managed-assistant")]
     ManagedAssistant,
+    #[serde(rename = "managed-worker")]
+    ManagedWorker,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema, TS)]

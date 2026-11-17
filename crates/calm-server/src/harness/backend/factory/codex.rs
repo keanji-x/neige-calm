@@ -110,7 +110,9 @@ impl PlannerFactory<'_> {
             AgentProtocol::Codex => {
                 let developer_instructions = match profile {
                     HarnessProfile::PlainChat => None,
-                    HarnessProfile::Planner | HarnessProfile::Assistant => Some(
+                    HarnessProfile::Planner
+                    | HarnessProfile::Assistant
+                    | HarnessProfile::TaskWorker => Some(
                         crate::harness::instructions::profile_instructions(
                             repo,
                             plugin,

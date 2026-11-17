@@ -211,7 +211,7 @@ impl Fx {
             WorkerSessionKind::CodexCard
             | WorkerSessionKind::SharedPlanner
             | WorkerSessionKind::ManagedAssistant => Some(AgentProvider::Codex),
-            WorkerSessionKind::Terminal => None,
+            WorkerSessionKind::Terminal | WorkerSessionKind::ManagedWorker => None,
         };
         let (runtime,) = {
             let write_db = (self.db()).clone();

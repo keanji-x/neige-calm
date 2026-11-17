@@ -259,6 +259,9 @@ pub struct TaskDeclaration {
     pub block_id: String,
     pub key: String,
     pub kind: String,
+    pub provider: Option<String>,
+    pub model: Option<String>,
+    pub reasoning_effort: Option<String>,
     pub goal: String,
     pub acceptance: Option<String>,
     pub gate: Option<GateInput>,
@@ -731,7 +734,7 @@ pub fn gate_rule_violations(declarations: &[TaskDeclaration], require_gates: boo
         .iter()
         .filter(|declaration| !declaration.tombstone)
         .filter(|declaration| {
-            matches!(declaration.kind.as_str(), "codex" | "claude")
+            matches!(declaration.kind.as_str(), "agent" | "codex" | "claude")
                 && crate::task_execution::runs_in_track_checkout(
                     &declaration.kind,
                     &declaration.spawn,
@@ -753,7 +756,7 @@ pub fn gate_cwd_violations(declarations: &[TaskDeclaration]) -> Vec<String> {
         .iter()
         .filter(|declaration| !declaration.tombstone)
         .filter(|declaration| {
-            matches!(declaration.kind.as_str(), "codex" | "claude")
+            matches!(declaration.kind.as_str(), "agent" | "codex" | "claude")
                 && declaration
                     .gate
                     .as_ref()
@@ -947,6 +950,18 @@ pub fn project_task_declarations(
                 .and_then(Value::as_str)
                 .unwrap_or("")
                 .to_string(),
+            provider: payload
+                .get("provider")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            model: payload
+                .get("model")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            reasoning_effort: payload
+                .get("reasoning_effort")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
             goal: payload
                 .get(
                     if payload.get("kind").and_then(Value::as_str) == Some("terminal") {
@@ -1257,6 +1272,9 @@ mod tests {
             start: TaskStart::Checkout,
             result_contract: None,
             child_track: None,
+            provider: None,
+            model: None,
+            reasoning_effort: None,
             tombstoned_by: None,
             ready: true,
             tombstone: false,

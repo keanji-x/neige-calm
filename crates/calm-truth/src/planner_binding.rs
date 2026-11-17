@@ -1,6 +1,8 @@
 //! Persisted conversation binding shared by creation, authorization and replacement.
 use crate::model::{Card, CardRole};
-use crate::validation::{ASSISTANT_PROVIDER_PAYLOAD_KEY, PLANNER_PROVIDER_PAYLOAD_KEY};
+use crate::validation::{
+    ASSISTANT_PROVIDER_PAYLOAD_KEY, PLANNER_PROVIDER_PAYLOAD_KEY, WORKER_PROVIDER_PAYLOAD_KEY,
+};
 use calm_types::{harness::HarnessProfile, runtime::AgentProvider};
 use serde_json::Value;
 pub const PLAIN_CHAT_MARKER: &str = "plain_chat";
@@ -18,7 +20,7 @@ impl PlannerBinding {
         match self.profile {
             HarnessProfile::Planner => WorkerContract::Planner,
             HarnessProfile::Assistant => WorkerContract::Assistant,
-            HarnessProfile::PlainChat => WorkerContract::Executor,
+            HarnessProfile::PlainChat | HarnessProfile::TaskWorker => WorkerContract::Executor,
         }
     }
 
@@ -74,7 +76,7 @@ impl PlannerBinding {
                 );
                 CardRole::Assistant
             }
-            HarnessProfile::PlainChat => {
+            HarnessProfile::PlainChat | HarnessProfile::TaskWorker => {
                 return Err(crate::error::CalmError::Conflict(
                     "replacement requires a conversation binding",
                 ));
@@ -100,6 +102,15 @@ impl PlannerBinding {
                 serde_json::from_value(payload.get(ASSISTANT_PROVIDER_PAYLOAD_KEY)?.clone()).ok()?
             }
             HarnessProfile::PlainChat => AgentProvider::Codex,
+            HarnessProfile::TaskWorker => {
+                let provider: AgentProvider =
+                    serde_json::from_value(payload.get(WORKER_PROVIDER_PAYLOAD_KEY)?.clone())
+                        .ok()?;
+                if provider == AgentProvider::Claude {
+                    return None;
+                }
+                provider
+            }
         };
         Some(Self { profile, provider })
     }
@@ -110,6 +121,11 @@ pub fn profile_from_shape(kind: &str, role: CardRole, payload: &Value) -> Option
     }
     match role {
         CardRole::Planner => Some(HarnessProfile::Planner),
+        CardRole::Worker
+            if payload.get("harness_profile").and_then(Value::as_str) == Some("task_worker") =>
+        {
+            Some(HarnessProfile::TaskWorker)
+        }
         CardRole::Worker
             if payload.get("harness_profile").and_then(Value::as_str)
                 == Some(PLAIN_CHAT_MARKER) =>
@@ -169,4 +185,52 @@ mod tests {
             }
         }
     }
+}
+
+#[cfg(test)]
+#[test]
+fn task_worker_binding_requires_worker_marker_and_supported_provider() {
+    use calm_types::worker::{SessionMode, WorkerContract, WorkerProviderKind};
+    use serde_json::json;
+    for provider in [
+        AgentProvider::Codex,
+        AgentProvider::OpenCode,
+        AgentProvider::Antigravity,
+        AgentProvider::Grok,
+    ] {
+        let payload = json!({"harness_profile":"task_worker","worker_provider":provider,"model":"model","reasoning_effort":"high"});
+        let binding = PlannerBinding::from_shape("codex", CardRole::Worker, &payload).unwrap();
+        assert_eq!(binding.profile, HarnessProfile::TaskWorker);
+        assert_eq!(binding.provider, provider);
+        assert!(binding.matches_session_contract_parts(
+            SessionMode::Resumable,
+            WorkerProviderKind::from(&provider),
+            WorkerContract::Executor
+        ));
+        assert!(!binding.matches_session_contract_parts(
+            SessionMode::Resumable,
+            WorkerProviderKind::from(&provider),
+            WorkerContract::Planner
+        ));
+        assert!(PlannerBinding::from_shape("terminal", CardRole::Worker, &payload).is_none());
+        assert!(PlannerBinding::from_shape("codex", CardRole::Assistant, &payload).is_none());
+    }
+    for provider in [json!(null), json!("unknown"), json!("claude")] {
+        assert!(
+            PlannerBinding::from_shape(
+                "codex",
+                CardRole::Worker,
+                &json!({"harness_profile":"task_worker","worker_provider":provider})
+            )
+            .is_none()
+        );
+    }
+    assert_eq!(
+        serde_json::to_value(HarnessProfile::TaskWorker).unwrap(),
+        json!("task_worker")
+    );
+    assert_eq!(
+        serde_json::to_value(calm_types::runtime::WorkerSessionKind::ManagedWorker).unwrap(),
+        json!("managed-worker")
+    );
 }

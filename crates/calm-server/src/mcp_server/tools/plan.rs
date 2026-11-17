@@ -262,6 +262,7 @@ fn declaration_from_normalized(task: &NormalizedTask) -> Result<TaskDeclaration,
         block_id: String::new(),
         key: task.key.clone(),
         kind: match task.kind {
+            TaskKind::Agent => "agent",
             TaskKind::Codex => "codex",
             TaskKind::Claude => "claude",
             TaskKind::Terminal => "terminal",
@@ -286,6 +287,9 @@ fn declaration_from_normalized(task: &NormalizedTask) -> Result<TaskDeclaration,
         start: crate::model::TaskStart::Checkout,
         result_contract: None,
         child_track: None,
+        provider: None,
+        model: None,
+        reasoning_effort: None,
         tombstoned_by: None,
         ready: true,
         tombstone: false,
@@ -322,6 +326,9 @@ fn task_row_from_normalized(track_id: &str, t: &NormalizedTask, now: i64) -> Tas
         start: crate::model::TaskStart::Checkout,
         result_contract: None,
         child_track_json: None,
+        provider: None,
+        model: None,
+        reasoning_effort: None,
         created_at_ms: now,
         updated_at_ms: now,
         finished_at_ms: None,
@@ -700,7 +707,7 @@ fn task_list_entry(t: &Task) -> Value {
     });
     match t.kind {
         TaskKind::Terminal => entry["command"] = json!(t.goal),
-        TaskKind::Codex | TaskKind::Claude => entry["goal"] = json!(t.goal),
+        TaskKind::Agent | TaskKind::Codex | TaskKind::Claude => entry["goal"] = json!(t.goal),
         TaskKind::Compact => {}
     }
     entry

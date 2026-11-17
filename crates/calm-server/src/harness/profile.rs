@@ -26,6 +26,7 @@ impl HarnessProfileExt for HarnessProfile {
             Self::Planner => WorkerSessionKind::SharedPlanner,
             Self::Assistant => WorkerSessionKind::ManagedAssistant,
             Self::PlainChat => WorkerSessionKind::CodexCard,
+            Self::TaskWorker => WorkerSessionKind::ManagedWorker,
         }
     }
 
@@ -34,7 +35,7 @@ impl HarnessProfileExt for HarnessProfile {
         match self {
             Self::Planner => Some(CardRole::Planner),
             Self::Assistant => Some(CardRole::Assistant),
-            Self::PlainChat => None,
+            Self::PlainChat | Self::TaskWorker => None,
         }
     }
 }
@@ -259,6 +260,25 @@ mod tests {
             payload[PLANNER_PROVIDER_PAYLOAD_KEY] = provider;
         }
         card("codex", payload)
+    }
+
+    #[test]
+    fn task_worker_card_uses_shared_model_selection_reader() {
+        let card = card(
+            "codex",
+            json!({"harness_profile":"task_worker","worker_provider":"opencode","model":"worker-model","reasoning_effort":"high"}),
+        );
+        let binding = PlannerBinding::from_card(&card, CardRole::Worker).unwrap();
+        assert_eq!(binding.profile, HarnessProfile::TaskWorker);
+        assert_eq!(binding.provider, AgentProvider::OpenCode);
+        let selection =
+            crate::planner_model::CardModelSelection::from_payload(&card.payload).unwrap();
+        assert_eq!(selection.model.as_deref(), Some("worker-model"));
+        assert_eq!(selection.reasoning_effort.as_deref(), Some("high"));
+        assert_eq!(
+            binding.profile.session_kind(),
+            crate::session_projection_repo::WorkerSessionKind::ManagedWorker
+        );
     }
 
     #[test]

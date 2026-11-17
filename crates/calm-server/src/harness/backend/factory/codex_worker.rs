@@ -122,7 +122,7 @@ impl PlannerFactory<'_> {
     ) -> Option<TurnEnd> {
         match task.kind {
             TaskKind::Codex => idle.observe(pool, task, card_id).await,
-            TaskKind::Claude | TaskKind::Terminal | TaskKind::Compact => None,
+            TaskKind::Agent | TaskKind::Claude | TaskKind::Terminal | TaskKind::Compact => None,
         }
     }
 }

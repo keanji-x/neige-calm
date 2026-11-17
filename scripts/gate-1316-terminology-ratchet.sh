@@ -1,4 +1,11 @@
 #!/usr/bin/env bash
+# #3718 bounded forward-migration exception: wave/crates 667 -> 668,
+# spec/crates 533 -> 534 and runtime_id/crates 1132 -> 1141. Migration 0222
+# preserves the released task route/author values and the canonical conversation
+# trigger identifiers verbatim while rebuilding worker_sessions. No new domain
+# vocabulary or scan rules. Later schema changes edit their owning migration and
+# this baseline; ordinary additions need no roster edit. The existing scan and
+# selftest each run once in CI lint.
 # #3633 scoped creation bounded contract exception: runtime_id/crates 1125 -> 1132.
 # All seven occurrences in 0219_share_creation_receipts.sql preserve the frozen
 # origin_runtime_id column and initialRuntimeId receipt key while replacing the

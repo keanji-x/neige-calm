@@ -101,7 +101,7 @@ fn task_is_advertised_by_the_commit_contract() {
     assert!(
         command_description.contains("passed verbatim")
             && command_description.contains("Required only for terminal")
-            && command_description.contains("forbidden for codex/claude"),
+            && command_description.contains("forbidden for agent/codex"),
         "task command description must stay terminal-only: {command_description}"
     );
     assert_eq!(properties["priority"]["minimum"], i64::MIN);

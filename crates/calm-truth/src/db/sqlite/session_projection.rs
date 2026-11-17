@@ -238,6 +238,11 @@ pub(super) async fn runtimes_active_for_kind_from_pool(
     pool: &SqlitePool,
     kind: WorkerSessionKind,
 ) -> WorkerSessionProjectionResult<Vec<WorkerSessionProjection>> {
+    if kind == WorkerSessionKind::ManagedWorker {
+        return Err(super::session_row::runtime_message(
+            "managed worker session execution is not wired yet",
+        ));
+    }
     let (provider, _mode, contract) = derive_session_identity(&kind);
     // A Planner row carries its own provider (`WorkerSessionInit::shared_planner`), so the
     // managed contract selects every registered backend.

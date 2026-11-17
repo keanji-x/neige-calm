@@ -293,7 +293,7 @@ fn task_result_contracts() -> Value {
 
 /// Keep this schema in sync with `report_blocks::validate_payload`'s task validation.
 fn task_kind() -> Value {
-    json!({
+    let mut kind = json!({
         "kind": "task",
         "schema": {
             "type": "object",
@@ -312,7 +312,7 @@ fn task_kind() -> Value {
                 {
                     "description": "Agent task",
                     "required": ["key", "kind", "goal", "ready", "declared_by"],
-                    "properties": { "kind": { "enum": ["codex", "claude"] } },
+                    "properties": { "kind": { "enum": ["agent", "codex"] } },
                     "not": { "anyOf": [
                         { "required": ["command"] }, { "required": ["tombstoned_by"] },
                         {
@@ -384,20 +384,20 @@ fn task_kind() -> Value {
                     }
                 },
                 "key": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$" },
-                "kind": { "type": "string", "enum": ["codex", "claude", "terminal", "compact"] },
+                "kind": { "type": "string", "enum": ["agent", "codex", "claude", "terminal", "compact"] },
                 "goal": {
                     "type": "string",
                     "minLength": 1,
                     "maxLength": report_blocks::MAX_STRING_CHARS,
                     "pattern": "\\S",
-                    "description": "Natural-language objective. Required only for codex/claude tasks; forbidden for terminal tasks."
+                    "description": "Natural-language objective. Required only for agent/codex tasks; forbidden for terminal tasks."
                 },
                 "command": {
                     "type": "string",
                     "minLength": 1,
                     "maxLength": report_blocks::MAX_STRING_CHARS,
                     "pattern": "\\S",
-                    "description": "Exact Shell command passed verbatim as `/bin/sh -c <command>`. Required only for terminal tasks; forbidden for codex/claude tasks."
+                    "description": "Exact Shell command passed verbatim as `/bin/sh -c <command>`. Required only for terminal tasks; forbidden for agent/codex tasks."
                 },
                 "acceptance": { "type": "string", "minLength": 1, "maxLength": report_blocks::MAX_STRING_CHARS, "pattern": "\\S" },
                 "gate": {
@@ -435,7 +435,7 @@ fn task_kind() -> Value {
                     "type": "string",
                     "enum": ["read_only", "read_write"],
                     "default": "read_write",
-                    "description": "`read_only`: a codex/claude task that leaves the checkout unchanged; no gate, runs beside other readers."
+                    "description": "`read_only`: a agent/codex task that leaves the checkout unchanged; no gate, runs beside other readers."
                 },
                 "head": { "type": "string", "pattern": "^[0-9a-f]{40}$", "description": "`read_only` only: the commit the checkout must be at; the launch is refused otherwise." },
                 "base": { "type": "string", "pattern": "^[0-9a-f]{40}$", "description": "`read_only` only: the commit a review compares against." },
@@ -443,7 +443,7 @@ fn task_kind() -> Value {
                     "type": "string",
                     "enum": ["checkout", "upstream"],
                     "default": "checkout",
-                    "description": "`upstream` (codex/claude, read_write): start at the upstream the kernel fetches; replay the last done commit."
+                    "description": "`upstream` (agent/codex, read_write): start at the upstream the kernel fetches; replay the last done commit."
                 },
                 "result_contract": {
                     "type": "string",
@@ -455,8 +455,31 @@ fn task_kind() -> Value {
             },
             "description": "Non-tombstones use the required fields above. Tombstones are the closed shape {key,tombstone,declared_by,tombstoned_by}."
         },
-        "usage": "Task declaration block. `ready: true` lets the kernel project and schedule it. Use `goal` for codex/claude and `command` for terminal; the two fields are mutually exclusive. The terminal runner passes `command` verbatim to `/bin/sh -c`. Every string nested anywhere in `context` is limited to 2048 characters."
-    })
+        "usage": "Task declaration block. `ready: true` lets the kernel project and schedule it. Use `goal` for agent/codex and `command` for terminal; the two fields are mutually exclusive. The terminal runner passes `command` verbatim to `/bin/sh -c`. Every string nested anywhere in `context` is limited to 2048 characters."
+    });
+    let schema = &mut kind["schema"];
+    schema["properties"]["provider"] =
+        json!({"type":"string","enum":["codex","antigravity","opencode","grok"]});
+    for field in ["model", "reasoning_effort"] {
+        schema["properties"][field] = json!({"type":"string","minLength":1,"pattern":"\\S","maxLength":report_blocks::MAX_STRING_CHARS});
+    }
+    // Assemble these separately to stay within json!'s recursion limit.
+    schema["allOf"].as_array_mut().expect("task constraints").extend([
+        json!({"anyOf":[
+            {"not":{"required":["spawn"],"properties":{"spawn":{"const":"sub-track"}}}},
+            {"properties":{"kind":{"const":"codex"}}}
+        ]}),
+        json!({"anyOf":[
+            {"not":{"required":["kind"],"properties":{"kind":{"const":"codex"}}}},
+            {"properties":{"provider":{"const":"codex"}}}
+        ]}),
+        json!({"anyOf":[
+            {"not":{"anyOf":[{"required":["provider"]},{"required":["model"]},{"required":["reasoning_effort"]}]}},
+            {"required":["kind"],"properties":{"kind":{"enum":["agent","codex"]}},
+             "not":{"required":["spawn"],"properties":{"spawn":{"const":"sub-track"}}}}
+        ]}),
+    ]);
+    kind
 }
 
 /// Keep this schema in sync with `report_blocks::validate_payload`'s preview validation.

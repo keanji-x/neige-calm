@@ -1203,6 +1203,7 @@ mod tests {
                 "track_creation_context",
                 "planner_provider",
                 "assistant_provider",
+                "worker_provider",
                 "side_source_card_id",
                 "assistant_opening_context",
                 "permission_mode",
