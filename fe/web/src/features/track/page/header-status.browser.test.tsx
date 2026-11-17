@@ -339,7 +339,7 @@ describe('the track closed status in the page header', () => {
         canCloseTrack={!closed} adminGrantedAt={null}
         onRenameTrack={vi.fn()}
         closedControl={closedControl}
-        onDeleteTrack={vi.fn()} onTrackDeleted={vi.fn()}
+        onDeleteTrack={vi.fn()} onTrackDeleted={vi.fn()} existingCardIds={new Set<string>()}
       />
     );
   }

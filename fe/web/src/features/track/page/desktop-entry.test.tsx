@@ -74,7 +74,7 @@ describe('the page paints its desktop panel through paintDesktopPanel', () => {
     renderPage({ cards: CARDS, tasks: TASKS, onDeleteCard: vi.fn() });
 
     expect(calls.length, 'paintDesktopPanel calls').toBe(1);
-    expect(calls[0].view).toEqual(deriveTrackPageView({ cards: CARDS, tasks: TASKS, activity: NEUTRAL_ACTIVITY, openableCards: openableCardsOf(CARDS, TASKS) }).desktop);
+    expect(calls[0].view).toEqual(deriveTrackPageView({ existingCardIds: new Set(CARDS.map(card => card.id)), cards: CARDS, tasks: TASKS, activity: NEUTRAL_ACTIVITY, openableCards: openableCardsOf(CARDS, TASKS) }).desktop);
     expect(calls[0].view.rowModules.map((module) => module.key)).toEqual(['work', 'cards']);
     expect(calls[0].view.rowModules.map((module) => module.rows.length))
       .toEqual([TASKS.length, CARDS.length - 1]);

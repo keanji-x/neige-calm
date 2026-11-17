@@ -104,6 +104,8 @@ export type TrackPageProps = Readonly<{
   /** App-composed panel module: shares the desktop card, precedes the report on compact screens. */
   panelContent?: ReactNode;
   cards: readonly CardWire[];
+  /** Full Track card identities, independently of panel visibility or openability. */
+  existingCardIds: ReadonlySet<string>;
   /** The track's tasks, joined by `app/router` from the report's `task` blocks and the kernel's verdicts. */
   tasks: readonly ReportTaskRow[];
   /** The cards the board can draw, as `app/router` asks the registry. Required: a default here would be a second, silent verdict. It gates only whether a Task row's kind is an `open-card` control. */
@@ -187,7 +189,7 @@ function rowModule(view: TrackPageView, key: RowModuleView['key']): RowModuleVie
 }
 
 export function TrackPage({ fillReading = false, mobileReportIntro, mobileChatComposer,
-  panelContent, progressDisclosure, track, cards, tasks, openableCards, outlineItems = [], report, backlinks, conversationList, conversationContextList,
+  panelContent, progressDisclosure, track, cards, existingCardIds, tasks, openableCards, outlineItems = [], report, backlinks, conversationList, conversationContextList,
   shareLinks, onShareTrack, onStartConversation, showConversationAction = true, conversationOpen = false, mobilePanelObscured, inputNotifications = [], onReply, onDismiss, nowMs,
   cardsAction, recentFiles, onOpenCard, onDeleteCard, onSetWorkbench, onOpenTask, onOpenOutline, board, onCloseBoard,
   panel = null, onOpenPanel, onClosePanel,
@@ -279,7 +281,7 @@ export function TrackPage({ fillReading = false, mobileReportIntro, mobileChatCo
   /* The desktop panel goes through `core/view`: one derivation, one traversal, one painter. This file may not spell a projection marker; `desktop-projection.test.tsx` scans for that. */
   /* `activity` is the track itself: `Track` carries the overlay-derived
      `cards` verdicts, and that field is all the derivation is typed to read. */
-  const panelView = deriveTrackPageView({ cards, tasks, activity: track, openableCards });
+  const panelView = deriveTrackPageView({ cards, existingCardIds, tasks, activity: track, openableCards });
   const desktopConversations = conversationContextList ?? conversationList;
   const hasDesktopConversations = desktopConversations !== undefined || onStartConversation !== undefined;
   const desktopPainter = makeDesktopPainter({ cardsAction, onOpenCard, onOpenTask, onDeleteCard, onSetWorkbench, progressDisclosure,

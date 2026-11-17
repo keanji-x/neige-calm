@@ -79,7 +79,7 @@ describe('the page paints its mobile Cards page through paintMobileModule', () =
     renderPage({ cards: CARDS, panel: 'cards', onDeleteCard: vi.fn() });
 
     expect(calls.length, 'paintMobileModule calls').toBe(1);
-    const expected = deriveTrackPageView({ cards: CARDS, tasks: [], activity: NEUTRAL_ACTIVITY, openableCards: openableCardsOf(CARDS, []) }).rowModules
+    const expected = deriveTrackPageView({ existingCardIds: new Set(CARDS.map(card => card.id)), cards: CARDS, tasks: [], activity: NEUTRAL_ACTIVITY, openableCards: openableCardsOf(CARDS, []) }).rowModules
       .find((module) => module.key === 'cards');
     expect(calls[0].module).toEqual(expected);
     expect(calls[0].module.key).toBe('cards');
@@ -124,7 +124,7 @@ describe('the page paints its mobile Tasks page through paintMobileModule', () =
     renderPage({ cards: CARDS, tasks: TASKS, panel: 'tasks', onOpenTask: vi.fn() });
 
     expect(calls.length, 'paintMobileModule calls').toBe(1);
-    const expected = deriveTrackPageView({ cards: CARDS, tasks: TASKS, activity: NEUTRAL_ACTIVITY, openableCards: openableCardsOf(CARDS, TASKS) }).rowModules
+    const expected = deriveTrackPageView({ existingCardIds: new Set(CARDS.map(card => card.id)), cards: CARDS, tasks: TASKS, activity: NEUTRAL_ACTIVITY, openableCards: openableCardsOf(CARDS, TASKS) }).rowModules
       .find((module) => module.key === 'tasks');
     expect(calls[0].module).toEqual(expected);
     expect(calls[0].module.key).toBe('tasks');

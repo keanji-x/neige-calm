@@ -73,6 +73,7 @@ describe('TrackPage delete confirm contract', () => {
   it('renders no <a> element anywhere on the page (INV-A11Y-061)', () => {
     const { container } = renderPage({
       cards: [card({ id: 'k1' }), card({ id: 'k2', title: null, deletable: false })],
+      existingCardIds: new Set(['k1', 'k2', 'card-9']),
       tasks: taskRows(),
     }); openInventoryDisclosures(document.body);
     expect(container.querySelectorAll('[data-nc-work-inventory] [data-nc-row^="task:"]').length).toBe(4);
@@ -83,6 +84,7 @@ describe('TrackPage delete confirm contract', () => {
   it('nests no button inside another button (INV-A11Y-061)', () => {
     const { container } = renderPage({
       cards: [card({ id: 'k1' })],
+      existingCardIds: new Set(['k1', 'card-9']),
       tasks: taskRows(),
       board: <div>grid</div>,
       onCloseBoard: () => undefined,

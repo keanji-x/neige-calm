@@ -16,7 +16,7 @@ const task = (blockId: string, status: string, kind: NonNullable<ReportTaskRow['
 });
 /** These cases are about layout, so every worker the fixture names is drawable and each task row keeps its kind control. */
 const derive = (input: { cards: readonly CardWire[]; tasks: readonly ReportTaskRow[] }) =>
-  deriveTrackPageView({ ...input, activity: NEUTRAL_ACTIVITY, openableCards: openableCardsOf(input.cards, input.tasks) });
+  deriveTrackPageView({ existingCardIds: new Set(input.cards.map(card => card.id)), ...input, activity: NEUTRAL_ACTIVITY, openableCards: openableCardsOf(input.cards, input.tasks) });
 
 it('lists tool names and their real statuses without type subgroups', async () => {
   await page.viewport(1200, 900);
@@ -173,7 +173,7 @@ it.each([false, true])('left-aligns type icons beside names with deletable=%s', 
   await page.viewport(1200, 900);
   const worker = card({ id: 'worker', title: 'A longer worker title', kind: 'codex', deletable,
     runtime: { worker_session_id: 'session', kind: 'codex', status: 'running' } });
-  const view = deriveTrackPageView({ cards: [worker, card({ id: 'execution-worker', title: 'Execution', kind: 'codex' })],
+  const view = deriveTrackPageView({ existingCardIds: new Set([worker.id, "execution-worker"]), cards: [worker, card({ id: 'execution-worker', title: 'Execution', kind: 'codex' })],
     tasks: [{ ...task('work', 'running', 'codex'), workerCardId: 'execution-worker' }],
     activity: { cards: { worker: 'working', 'execution-worker': 'working' } }, openableCards: new Set(['worker', 'execution-worker']) });
   const onDeleteCard = vi.fn<NonNullable<DesktopPainterDeps['onDeleteCard']>>();
@@ -219,7 +219,7 @@ it('keeps inventory activity metadata nonvisual and free of animation', async ()
   await page.viewport(1200, 900);
   const worker = card({ id: 'worker', title: 'Worker', kind: 'codex',
     runtime: { worker_session_id: 'session', kind: 'codex', status: 'running' } });
-  const view = deriveTrackPageView({ cards: [worker],
+  const view = deriveTrackPageView({ existingCardIds: new Set([worker.id]), cards: [worker],
     tasks: [{ ...task('work', 'running', 'codex'), workerCardId: 'worker' }],
     activity: { cards: { worker: 'working' } }, openableCards: new Set(['worker']) });
   render(<div style={{ inlineSize: 300 }}><PanelCard>{paintDesktopPanel(makeDesktopPainter({}), view)}</PanelCard></div>);
@@ -263,7 +263,7 @@ it('keeps a visible task anchored when rows above it are inserted and removed', 
 it('lists tools directly while keeping kernel attention visible', async () => {
   await page.viewport(1200, 900);
   const worker = card({ id: 'attention-worker', title: 'Needs a reply', kind: 'codex' });
-  const view = deriveTrackPageView({ cards: [worker], tasks: [],
+  const view = deriveTrackPageView({ existingCardIds: new Set([worker.id]), cards: [worker], tasks: [],
     activity: { cards: { 'attention-worker': 'input' } }, openableCards: new Set([worker.id]) });
   const onOpenCard = vi.fn();
   render(<div style={{ inlineSize: 300 }}><PanelCard>{paintDesktopPanel(makeDesktopPainter({ onOpenCard }), view)}</PanelCard></div>);
@@ -312,6 +312,7 @@ it('groups work and conversation entries in the real page without duplicating st
   const newConversation = vi.fn();
   renderPage({
     cards: [card({ title: 'Development server' })], tasks: [task('Review layout', 'running', 'codex')],
+    existingCardIds: new Set(['card-1', 'card-Review layout']),
     conversationList: <button type="button" onClick={openConversation}>Planner conversation</button>,
     cardsAction: <button type="button" onClick={newConversation}>New</button>,
   });
@@ -333,7 +334,7 @@ it.each(['input', 'failed'] as const)('keeps kernel %s visible alongside a runni
   const worker = card({ id: 'busy-worker', title: 'Preview', runtime: {
     worker_session_id: 'busy-session', kind: 'terminal', status: 'running',
   } });
-  const view = deriveTrackPageView({ cards: [worker], tasks: [],
+  const view = deriveTrackPageView({ existingCardIds: new Set([worker.id]), cards: [worker], tasks: [],
     activity: { cards: { [worker.id]: activity } }, openableCards: new Set([worker.id]) });
   render(<PanelCard>{paintDesktopPanel(makeDesktopPainter({}), view)}</PanelCard>);
   const name = document.querySelector('[data-nc-row="busy-worker"]')!;

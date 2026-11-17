@@ -73,7 +73,7 @@ describe('the panel card, against a scrolling report', () => {
             <div className={styles.content}>
               <div className={styles.doc} />
               <aside className={styles.panel} data-nc-panel="">
-                <PanelCard>{paintDesktopPanel(makeDesktopPainter({}), deriveTrackPageView({
+                <PanelCard>{paintDesktopPanel(makeDesktopPainter({}), deriveTrackPageView({ existingCardIds: new Set<string>(),
                   cards: [], activity: NEUTRAL_ACTIVITY, openableCards: new Set(),
                   tasks: Array.from({ length: 30 }, (_, index) => ({
                     blockId: `task-${index}`, key: `Task ${index}`, state: 'ready',

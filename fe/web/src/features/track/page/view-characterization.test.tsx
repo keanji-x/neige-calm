@@ -123,7 +123,7 @@ function expectFieldsPresent(text: string, fields: readonly string[], where: str
 describe('deriveTrackPageView against the rendered desktop panel', () => {
   it('renders every derived module title, and every row field inside its own row', async () => {
     const { container } = renderPage({ cards: CARDS, tasks: TASKS, onDeleteCard: vi.fn() });
-    const view = deriveTrackPageView({ cards: CARDS, tasks: TASKS, activity: NEUTRAL_ACTIVITY, openableCards: openableCardsOf(CARDS, TASKS) });
+    const view = deriveTrackPageView({ existingCardIds: new Set(CARDS.map(card => card.id)), cards: CARDS, tasks: TASKS, activity: NEUTRAL_ACTIVITY, openableCards: openableCardsOf(CARDS, TASKS) });
     const snapshot = await captureContextProjection(container);
     const whole = visibleText(snapshot);
 
@@ -150,7 +150,7 @@ describe('deriveTrackPageView against the rendered desktop panel', () => {
 
   it('renders each module’s empty text when, and only when, the module has no rows', () => {
     const { container } = renderPage({ cards: [], tasks: [] });
-    const view = deriveTrackPageView({ cards: [], tasks: [], activity: NEUTRAL_ACTIVITY, openableCards: new Set() });
+    const view = deriveTrackPageView({ existingCardIds: new Set<string>(), cards: [], tasks: [], activity: NEUTRAL_ACTIVITY, openableCards: new Set() });
     const whole = visibleText(container);
 
     for (const module of view.desktop.rowModules) {

@@ -64,6 +64,7 @@ export function renderPage(overrides: Partial<TrackPageProps> & LegacyActions = 
     mobilePanelObscured: false,
     track: track(),
     cards,
+    existingCardIds: new Set(cards.map(card => card.id)),
     tasks,
     openableCards: openableCardsOf(cards, tasks),
     canReopenTrack: false,

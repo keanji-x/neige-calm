@@ -64,8 +64,8 @@ function desktopPanel(container: Element): Element {
 }
 
 const ALL_MODULES: readonly RowModuleView[] = [
-  ...deriveTrackPageView({ cards: CARDS, tasks: TASKS, activity: NEUTRAL_ACTIVITY, openableCards: openableCardsOf(CARDS, TASKS) }).desktop.rowModules,
-  ...deriveTrackPageView({ cards: [], tasks: [], activity: NEUTRAL_ACTIVITY, openableCards: new Set() }).desktop.rowModules,
+  ...deriveTrackPageView({ existingCardIds: new Set(CARDS.map(card => card.id)), cards: CARDS, tasks: TASKS, activity: NEUTRAL_ACTIVITY, openableCards: openableCardsOf(CARDS, TASKS) }).desktop.rowModules,
+  ...deriveTrackPageView({ existingCardIds: new Set<string>(), cards: [], tasks: [], activity: NEUTRAL_ACTIVITY, openableCards: new Set() }).desktop.rowModules,
 ];
 const ALL_ROWS: readonly PanelRow[] = ALL_MODULES.flatMap((module) => [...module.rows]);
 
@@ -124,19 +124,19 @@ beforeAll(() => {
 describe('the rendered desktop panel projects its view model faithfully', () => {
   it('with cards and tasks, a delete handler, and every row shape above', async () => {
     const { container } = renderPage({ cards: CARDS, tasks: TASKS, onDeleteCard: vi.fn() });
-    const view = deriveTrackPageView({ cards: CARDS, tasks: TASKS, activity: NEUTRAL_ACTIVITY, openableCards: openableCardsOf(CARDS, TASKS) });
+    const view = deriveTrackPageView({ existingCardIds: new Set(CARDS.map(card => card.id)), cards: CARDS, tasks: TASKS, activity: NEUTRAL_ACTIVITY, openableCards: openableCardsOf(CARDS, TASKS) });
     expect(checkProjectionIn(painter(), view.desktop.rowModules, await captureContextProjection(desktopPanel(container)))).toEqual([]);
   });
 
   it('with both modules empty', async () => {
     const { container } = renderPage({ cards: [], tasks: [] });
-    const view = deriveTrackPageView({ cards: [], tasks: [], activity: NEUTRAL_ACTIVITY, openableCards: new Set() });
+    const view = deriveTrackPageView({ existingCardIds: new Set<string>(), cards: [], tasks: [], activity: NEUTRAL_ACTIVITY, openableCards: new Set() });
     expect(checkProjectionIn(painter(), view.desktop.rowModules, await captureContextProjection(desktopPanel(container)))).toEqual([]);
   });
 
   it('with no delete handler, so no row carries a delete action', async () => {
     const { container } = renderPage({ cards: CARDS, tasks: TASKS });
-    const view = deriveTrackPageView({ cards: CARDS, tasks: TASKS, activity: NEUTRAL_ACTIVITY, openableCards: openableCardsOf(CARDS, TASKS) });
+    const view = deriveTrackPageView({ existingCardIds: new Set(CARDS.map(card => card.id)), cards: CARDS, tasks: TASKS, activity: NEUTRAL_ACTIVITY, openableCards: openableCardsOf(CARDS, TASKS) });
     const noDelete = makeDesktopPainter({ onOpenCard: vi.fn(), onOpenTask: vi.fn() });
     expect(checkProjectionIn(noDelete, view.desktop.rowModules, await captureContextProjection(desktopPanel(container)))).toEqual([]);
     expect(view.desktop.rowModules.find(module => module.key === 'work')!.rows.some((row) =>

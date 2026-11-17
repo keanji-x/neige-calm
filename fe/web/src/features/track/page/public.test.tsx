@@ -323,7 +323,7 @@ describe('TrackPage header', () => {
             canCloseTrack={false} adminGrantedAt={null}
             onRenameTrack={vi.fn()}
             closedControl={{ pending: false, setClosed: () => Promise.resolve(true), feedback: { error: null, clear: () => undefined, run: () => Promise.resolve(true) } }}
-            onDeleteTrack={vi.fn()} onTrackDeleted={vi.fn()}
+            onDeleteTrack={vi.fn()} onTrackDeleted={vi.fn()} existingCardIds={new Set<string>()}
           />
         </>
       );
@@ -488,6 +488,7 @@ describe('TrackPage task inventory', () => {
   /* The visible word is `aria-hidden`; the same complete phrase stays on the reveal control's accessible description. */
   it('keeps the full status on the reveal control without a duplicate status graphic', () => {
     const { container } = renderPage({
+      existingCardIds: new Set(['card-9', 'card-4']),
       tasks: [
         running('alpha', 'running', 'card-9', 'terminal'),
         running('beta', 'pending', null),
@@ -512,6 +513,7 @@ describe('TrackPage task inventory', () => {
     };
     const { container } = renderPage({
       tasks: [running('alpha', 'running', 'card-9', 'terminal'), queued],
+      existingCardIds: new Set(['card-9']),
     }); openInventoryDisclosures(document.body);
     const inventory = container.querySelector('[data-nc-module="work"]');
     expect(inventory).not.toBeNull();
@@ -533,6 +535,7 @@ describe('TrackPage task inventory', () => {
      in its tooltip and the row control's accessible description. */
   it('shows only the failed word and keeps its reason on hover and the reveal description', () => {
     const { container } = renderPage({
+      existingCardIds: new Set(['card-9', 'card-4']),
       tasks: [
         running('alpha', 'running', 'card-9', 'terminal'),
         running('delta', 'failed', 'card-4', 'codex', 'track 9a4c is not a git repository'),
@@ -572,7 +575,7 @@ describe('TrackPage task inventory', () => {
   it('opens the executor from the item menu without revealing the task', async () => {
     const onOpenCard = vi.fn();
     const onOpenTask = vi.fn();
-    renderPage({ tasks: [running('alpha', 'running', 'card-9', 'terminal')], onOpenCard, onOpenTask });
+    renderPage({ tasks: [running('alpha', 'running', 'card-9', 'terminal')], existingCardIds: new Set(['card-9']), onOpenCard, onOpenTask });
     fireEvent.click(screen.getByRole('button', { name: 'Progress' }));
     await userEvent.click(screen.getByRole('button', { name: 'Actions for alpha' }));
     await userEvent.click(await screen.findByRole('menuitem', { name: 'View execution' }));
@@ -583,7 +586,7 @@ describe('TrackPage task inventory', () => {
   it('reveals the block from the row even when the task has a worker card', async () => {
     const onOpenCard = vi.fn();
     const onOpenTask = vi.fn();
-    renderPage({ tasks: [running('alpha', 'running', 'card-9', 'terminal')], onOpenCard, onOpenTask });
+    renderPage({ tasks: [running('alpha', 'running', 'card-9', 'terminal')], existingCardIds: new Set(['card-9']), onOpenCard, onOpenTask });
     fireEvent.click(screen.getByRole('button', { name: 'Progress' }));
     await userEvent.click(screen.getByRole('button', { name: 'alpha' }));
     expect(onOpenTask).toHaveBeenCalledWith('b-alpha');
@@ -672,7 +675,7 @@ describe('TrackPage card inventory', () => {
       tasks: MENU_TASKS,
       outlineItems: [{ blockId: 'section-1', label: 'What changed', excerpt: '', number: 1, children: [] }],
     });
-    const modules = deriveTrackPageView({ cards: MENU_CARDS, tasks: MENU_TASKS, activity: NEUTRAL_ACTIVITY, openableCards: new Set(['card-1']) }).rowModules;
+    const modules = deriveTrackPageView({ existingCardIds: new Set(MENU_CARDS.map(card => card.id)), cards: MENU_CARDS, tasks: MENU_TASKS, activity: NEUTRAL_ACTIVITY, openableCards: new Set(['card-1']) }).rowModules;
     expect(modules.length).toBeGreaterThan(1);
 
     await userEvent.click(screen.getByRole('button', { name: 'Track actions' }));
@@ -685,7 +688,7 @@ describe('TrackPage card inventory', () => {
   });
 
   it('and each of those entries opens the module it names', async () => {
-    const modules = deriveTrackPageView({ cards: MENU_CARDS, tasks: MENU_TASKS, activity: NEUTRAL_ACTIVITY, openableCards: new Set(['card-1']) }).rowModules;
+    const modules = deriveTrackPageView({ existingCardIds: new Set(MENU_CARDS.map(card => card.id)), cards: MENU_CARDS, tasks: MENU_TASKS, activity: NEUTRAL_ACTIVITY, openableCards: new Set(['card-1']) }).rowModules;
     for (const [index, module] of modules.entries()) {
       /* No `outlineItems`, so the derived entries start the list and their menu
          position is their index in `rowModules`. */
@@ -767,7 +770,7 @@ describe('TrackPage card inventory', () => {
   it('renders whatever panel it is handed, and closes when that becomes null', () => {
     const props = {
       mobilePanelObscured: false,
-      track: track(), cards: [card({ id: 'k1', title: 'Build log' })], tasks: [], openableCards: new Set(['k1']),
+      track: track(), cards: [card({ id: 'k1', title: 'Build log' })], existingCardIds: new Set(['k1']), tasks: [], openableCards: new Set(['k1']),
       canReopenTrack: false, canCloseTrack: false, adminGrantedAt: null, onRenameTrack: vi.fn(), closedControl: { pending: false, setClosed: () => Promise.resolve(true), feedback: { error: null, clear: () => undefined, run: () => Promise.resolve(true) } }, onDeleteTrack: vi.fn(), onTrackDeleted: vi.fn(),
     };
     const { container, rerender } = render(<TrackPage {...props} panel="cards" />);
@@ -823,7 +826,7 @@ describe('TrackPage card inventory', () => {
       canCloseTrack={false} adminGrantedAt={null}
       onRenameTrack={vi.fn()}
       closedControl={{ pending: false, setClosed: () => Promise.resolve(true), feedback: { error: null, clear: () => undefined, run: () => Promise.resolve(true) } }}
-      onDeleteTrack={vi.fn()} onTrackDeleted={vi.fn()}
+      onDeleteTrack={vi.fn()} onTrackDeleted={vi.fn()} existingCardIds={new Set(["k1"])}
     />);
     expect(container.textContent).toContain('notes');
     expect(screen.getAllByText('notes').length).toBe(1);
