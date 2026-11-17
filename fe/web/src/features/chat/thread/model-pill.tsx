@@ -276,7 +276,6 @@ function GroupChoices<Provider extends string>({ group, selection, onChange }: R
 }>) {
   const models: readonly CatalogEntry[] = group.catalog?.models ?? [];
   const defaultName = defaultNameOf(group.catalog);
-  const unreachable = group.catalog !== null && group.catalog.source === 'unavailable';
   return <>
     <GroupNotices group={group} />
     <Choice
@@ -301,12 +300,8 @@ function GroupChoices<Provider extends string>({ group, selection, onChange }: R
         onSelect={() => onChange({ model: model.model, reasoning_effort: null })}
       />
     ))}
-    {models.length === 0 && unavailabilityReason(group) === null && (
-      <DropdownMenuItem
-        label={unreachable ? (group.selectionProblem !== undefined ? `${group.provider} model catalog is unavailable`
-          : legacyPresentation(group.provider)?.unavailable ?? `${group.provider} is unavailable`) : 'No models available on this account'}
-        isDisabled
-      />
+    {models.length === 0 && group.catalog?.source !== 'unavailable' && unavailabilityReason(group) === null && (
+      <DropdownMenuItem label="No models available on this account" isDisabled />
     )}
   </>;
 }
@@ -324,6 +319,12 @@ function GroupNotices({ group }: Readonly<{ group: ModelGroup<string> }>) {
         {`${providerLabel(group, group.provider)} is unavailable: ${reason}${refused ? '' : ` ${unavailableCreationNote(providerLabel(group, group.provider))}`}`}
       </Text>
     </div>}
+    {reason === null && group.catalog?.source === 'unavailable' && group.catalog.models.length === 0 && (
+      <div className={styles.reason} role="note"><Text type="supporting">
+        {group.selectionProblem !== undefined ? `${group.provider} model catalog is unavailable`
+          : legacyPresentation(group.provider)?.unavailable ?? `${group.provider} is unavailable`}
+      </Text></div>
+    )}
   </>;
 }
 

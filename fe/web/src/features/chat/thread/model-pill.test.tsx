@@ -431,7 +431,9 @@ describe('ModelPill', () => {
       expect(trigger(/^Model:/).textContent).toBe('sonnet');
       expect(trigger(/^Agent:/).textContent).toBe('Claude');
       expect(isDisabled(trigger(/^Model:/))).toBe(true);
-      fireEvent.click(within(openMenu(/^Agent:/)).getByRole('menuitem', { name: 'Codex' }));
+      const agents = openMenu(/^Agent:/);
+      expect(within(within(agents).getByRole('group', { name: 'Claude' })).getByRole('note').textContent).toBe(CLAUDE_UNAVAILABLE);
+      fireEvent.click(within(agents).getByRole('menuitem', { name: 'Codex' }));
       expect(onChange).toHaveBeenCalledWith({ model: null, reasoning_effort: null }, 'codex');
     });
 

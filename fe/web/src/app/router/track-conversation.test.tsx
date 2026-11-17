@@ -4146,12 +4146,12 @@ it('keeps the first-message model fixed when a menu opened before sending is sel
   await waitFor(() => expect(modelPicker.hasAttribute('disabled') || modelPicker.getAttribute('aria-disabled') === 'true').toBe(false));
   fireEvent.click(modelPicker);
   fireEvent.click(await screen.findByRole('menuitem', { name: 'Chosen model' }));
-  fireEvent.click(screen.getByRole('button', { name: 'Model: codex Chosen model' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Model: Chosen model' }));
   await write('Keep my choice');
   await waitFor(() => expect(creates(requests, CONVERSATIONS)).toHaveLength(1));
   try {
     fireEvent.click(screen.getByRole('menuitem', { name: /^Default/, hidden: true }));
-    expect(screen.getByRole('button', { name: /^Model:/ }).getAttribute('aria-label')).toBe('Model: codex Chosen model');
+    expect(screen.getByRole('button', { name: /^Model:/ }).getAttribute('aria-label')).toBe('Model: Chosen model');
   } finally {
     await act(async () => { settle(failure(500, 'internal', 'Try again')); await pending; });
   }
