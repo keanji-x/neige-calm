@@ -109,7 +109,12 @@ export function byRecency(left: Conversation, right: Conversation): number {
 /** Who wrote a turn. Tool calls, shell runs and the like are not speech; they arrive as `ConversationActivity`. */
 export type TurnAuthor = 'you' | 'agent' | 'human' | 'unknown';
 
-export type ConversationTurn = Readonly<{
+/** Known native execution identity; absent for application inputs and unknown historical sources. */
+export type NativeTurnContext = Readonly<{
+  nativeTurn?: Readonly<{ threadId: string; turnId: string }>;
+}>;
+
+export type ConversationTurn = NativeTurnContext & Readonly<{
   id: string;
   author: TurnAuthor;
   /** Present only for actual canonical Human identity; native user echoes have none. */
@@ -1134,7 +1139,7 @@ export type ConversationTurnOutcome = Readonly<{
   atMs: number;
 }>;
 
-export type TranscriptEntry = ConversationMessage | ConversationActivity | ConversationTurnOutcome;
+export type TranscriptEntry = NativeTurnContext & (ConversationMessage | ConversationActivity | ConversationTurnOutcome);
 
 /** The speakers; neither an activity line nor a turn outcome is one. */
 export function isConversationMessage(entry: TranscriptEntry): entry is ConversationMessage {

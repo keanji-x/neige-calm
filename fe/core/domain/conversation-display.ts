@@ -126,6 +126,7 @@ export function buildConversationTranscript(items: readonly ConversationDisplayI
     return buildTranscript([source.item]).map((entry,index) => ({ ...entry,
       id:`native:${encodeURIComponent(JSON.stringify([source.item.thread_id,source.item.item_uuid]))}:${index}`,
       displayPosition:cursor.position,
+      ...(source.item.turn_id === null ? {} : { nativeTurn: { threadId: source.item.thread_id, turnId: source.item.turn_id } }),
     }));
   });
   return retireFollowedThoughts(entries);

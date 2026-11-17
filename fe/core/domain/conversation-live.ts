@@ -153,6 +153,8 @@ export function liveReplyTurns(copies: readonly LiveReplyCopy[]): readonly Conve
   return copies.flatMap((copy) => {
     /* Trimmed as the stored reply is, so the text does not move when the row replaces it. */
     const text = copy.text.trim();
-    return text === '' ? [] : [{ id: copy.nativeThreadId === null ? `live-${copy.turnId}-${copy.itemId}` : `live-native:${encodeURIComponent(JSON.stringify([copy.nativeThreadId,copy.turnId,copy.itemId]))}`, author: 'agent' as const, text, atMs: copy.atMs }];
+    return text === '' ? [] : [{ id: copy.nativeThreadId === null ? `live-${copy.turnId}-${copy.itemId}` : `live-native:${encodeURIComponent(JSON.stringify([copy.nativeThreadId,copy.turnId,copy.itemId]))}`, author: 'agent' as const, text, atMs: copy.atMs,
+      ...(copy.nativeThreadId === null ? {} : { nativeTurn: { threadId: copy.nativeThreadId, turnId: copy.turnId } }),
+    }];
   });
 }

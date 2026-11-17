@@ -13,7 +13,7 @@ import mobileStyles from './mobile-composer.module.css';
 // The conversation itself: a transcript and the box you write into. The unit is the
 // exchange — one thing you said and everything that came back.
 
-import { memo, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, type ReactNode, type Ref, type Dispatch, type SetStateAction } from 'react';
+import { Fragment, memo, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, type ReactNode, type Ref, type Dispatch, type SetStateAction } from 'react';
 import { createPortal } from 'react-dom';
 import {
   ChatComposer as AstryxChatComposer,
@@ -23,6 +23,7 @@ import {
   type ChatComposerTrigger,
 } from '@astryxdesign/core/Chat';
 import { Button } from '@astryxdesign/core/Button';
+import { Divider } from '@astryxdesign/core/Divider';
 import { HeldInputStatus } from './held-input.tsx';
 import { heldConversationInputs } from '../../../../../core/domain/conversation-display.ts';
 import type { ConversationActiveInput, ConversationSubmissionDelivery } from '../../../../../core/api/generated/wire.ts';
@@ -323,21 +324,20 @@ export const ChatThread = memo(function ChatThread({ conversation, turns, pendin
       <ExchangeNavigation turns={turns} frameRef={frameRef} seam={railSeam} navigate={scrollFollower.navigate} />
       <div className={`${styles.thread} ${empty ? styles.empty : ''} ${compactViewport ? mobileStyles.transcript : ''}`} data-nc-thread="" data-nc-link-reading="" data-nc-thread-empty={empty ? '' : undefined} ref={focus.ref} onFocus={focus.onFocus} onBlur={focus.onBlur}>
         {empty && <EmptyState variant="panel" align="center" {...emptyConversationContent(live)} />}
-        {transcriptGroups.map(({ entry: turn, activities, key, body }) => {
+        {transcriptGroups.map(({ entry: turn, activities, key, body, startsResponse }) => {
           const block = body.quiet;
-          if (block !== null) {
-            return (
-              <div key={block.id} data-nc-entry={key}>
+          return <Fragment key={key}>
+            {startsResponse && <Divider label="新一轮回复" />}
+            {block !== null ? (
+              <div data-nc-entry={key}>
                 <QuietSyncFold expanded={reading.expanded.get(`quiet-${block.id}`) ?? false}
                   onExpandedChange={expanded => reading.setExpanded(`quiet-${block.id}`, expanded)} group={block} time={clockTime(gapClock, block.atMs)}
                   live={live && block.entries.some((entry) => entry === lastTurn)}>
                   {block.entries.map((entry) => renderEntry(entry, entry.id, false))}
                 </QuietSyncFold>
               </div>
-            );
-          }
-          if (activities !== null) return renderRun(activities, key, live && activities.at(-1) === lastTurn);
-          return renderEntry(turn, key);
+            ) : activities !== null ? renderRun(activities, key, live && activities.at(-1) === lastTurn) : renderEntry(turn, key)}
+          </Fragment>;
         })}
         {/* Decorative marks follow the visible activity or the current status row; this is the single spoken Working fact. */}
         {live && <VisuallyHidden>{activityLabelOf('working')}</VisuallyHidden>}

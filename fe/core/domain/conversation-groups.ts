@@ -1,4 +1,4 @@
-import type { ConversationActivity, TranscriptEntry } from './conversation.ts';
+import { isUserConversationTurn, type ConversationActivity, type TranscriptEntry } from './conversation.js';
 
 export type TranscriptGroup = Readonly<{
   /** Original transcript position, for exchange markers and time gaps. */
@@ -6,17 +6,31 @@ export type TranscriptGroup = Readonly<{
   /** The first entry; a message is the group, a run of activities starts here. */
   entry: TranscriptEntry;
   activities: readonly ConversationActivity[] | null;
+  /** A known new native turn without a user message already separating it. */
+  startsResponse: boolean;
 }>;
 
-/** Group only adjacent activities. Every message remains an ordering boundary. */
+/** Group adjacent activities within one response. Every message remains an ordering boundary. */
 export function groupTranscriptActivities(turns: readonly TranscriptEntry[]): readonly TranscriptGroup[] {
-  const groups: Array<{ index: number; entry: TranscriptEntry; activities: ConversationActivity[] | null }> = [];
+  const groups: Array<{ index: number; entry: TranscriptEntry; activities: ConversationActivity[] | null; startsResponse: boolean }> = [];
+  let previousNative: TranscriptEntry['nativeTurn'];
+  let userSeparates = false;
   for (const [index, entry] of turns.entries()) {
+    const native = entry.nativeTurn;
+    const startsResponse = native !== undefined && previousNative !== undefined && !userSeparates
+      && (native.threadId !== previousNative.threadId || native.turnId !== previousNative.turnId);
+    if (isUserConversationTurn(entry)) userSeparates = true;
+    if (native !== undefined) {
+      previousNative = native;
+      // A queued input can precede more output from the original turn. Only
+      // a user message after that output already separates the next response.
+      userSeparates = false;
+    }
     const previous = groups.at(-1);
-    if (entry.author === 'activity' && previous?.activities) {
+    if (entry.author === 'activity' && previous?.activities && !startsResponse) {
       previous.activities.push(entry);
     } else {
-      groups.push({ index, entry, activities: entry.author === 'activity' ? [entry] : null });
+      groups.push({ index, entry, activities: entry.author === 'activity' ? [entry] : null, startsResponse });
     }
   }
   return groups;
