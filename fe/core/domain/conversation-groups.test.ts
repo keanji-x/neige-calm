@@ -24,8 +24,8 @@ describe('groupTranscriptActivities', () => {
   it('leaves a lone activity as a group of one at its own index', () => {
     const turns = [you, activity('a')];
     expect(groupTranscriptActivities(turns)).toEqual([
-      { index: 0, entry: you, activities: null },
-      { index: 1, entry: turns[1], activities: [turns[1]] },
+      { index: 0, entry: you, activities: null, startsResponse: false },
+      { index: 1, entry: turns[1], activities: [turns[1]], startsResponse: false },
     ]);
   });
 
@@ -33,7 +33,7 @@ describe('groupTranscriptActivities', () => {
     const turns = [you, activity('a'), activity('b'), activity('c')];
     const groups = groupTranscriptActivities(turns);
     expect(groups).toHaveLength(2);
-    expect(groups[1]).toEqual({ index: 1, entry: turns[1], activities: [turns[1], turns[2], turns[3]] });
+    expect(groups[1]).toEqual({ index: 1, entry: turns[1], activities: [turns[1], turns[2], turns[3]], startsResponse: false });
   });
 
   it.each([
@@ -45,7 +45,7 @@ describe('groupTranscriptActivities', () => {
     const groups = groupTranscriptActivities(turns);
     expect(groups.map((group) => group.index)).toEqual([0, 2, 3]);
     expect(groups[0]?.activities?.map((entry) => entry.id)).toEqual(['a', 'b']);
-    expect(groups[1]).toEqual({ index: 2, entry: message, activities: null });
+    expect(groups[1]).toEqual({ index: 2, entry: message, activities: null, startsResponse: false });
     expect(groups[2]?.activities?.map((entry) => entry.id)).toEqual(['c', 'd']);
   });
 
