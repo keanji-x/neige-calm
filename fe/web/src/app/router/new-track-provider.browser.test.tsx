@@ -97,27 +97,31 @@ async function openModelMenu(name: string) {
 it.each([1280, 390])('a Claude pick sets provider and model, drops the Codex effort and offers its own (%ipx)', async (width) => {
   await page.viewport(width, 844);
   const { creates } = mount(CLAUDE_CATALOG);
-  await openModelMenu('Model: Codex Default');
-  await page.getByRole('group', { name: 'Codex' }).getByRole('menuitem', { name: 'GPT-5' }).click();
+  await openModelMenu('Model: Default');
+  await page.getByRole('menuitem', { name: 'GPT-5' }).click();
   if (width < 600) {
     /* Phone: effort lives inside the model menu. */
-    await openModelMenu('Model: Codex GPT-5');
+    await openModelMenu('Model: GPT-5');
   } else {
     await page.getByRole('button', { name: 'Reasoning effort: low (the default)' }).click();
   }
   await page.getByRole('menuitem', { name: /high/ }).click();
 
-  await openModelMenu('Model: Codex GPT-5');
-  await page.getByRole('group', { name: 'Claude' }).getByRole('menuitem', { name: 'Haiku' }).click();
-  await expect.element(page.getByRole('button', { name: 'Model: Claude Haiku' })).toBeVisible();
+  await openModelMenu('Agent: Codex');
+  await page.getByRole('menuitem', { name: 'Claude', exact: true }).click();
+  await expect.element(page.getByRole('button', { name: 'Agent: Claude' })).toBeVisible();
+  await openModelMenu("Model: Opus (1M context) (this installation's default)");
+  await expect.element(page.getByRole('menuitem', { name: 'GPT-5' })).not.toBeInTheDocument();
+  await page.getByRole('menuitem', { name: 'Haiku' }).click();
+  await expect.element(page.getByRole('button', { name: 'Model: Haiku' })).toBeVisible();
   /* Haiku declares no effort level, so there is none to pick. */
   await expect.element(page.getByRole('button', { name: /^Reasoning effort:/ })).not.toBeInTheDocument();
 
-  await openModelMenu('Model: Claude Haiku');
-  await page.getByRole('group', { name: 'Claude' }).getByRole('menuitem', { name: 'Fable' }).click();
-  await expect.element(page.getByRole('button', { name: 'Model: Claude Fable' })).toBeVisible();
+  await openModelMenu('Model: Haiku');
+  await page.getByRole('menuitem', { name: 'Fable' }).click();
+  await expect.element(page.getByRole('button', { name: 'Model: Fable' })).toBeVisible();
   if (width < 600) {
-    await openModelMenu('Model: Claude Fable');
+    await openModelMenu('Model: Fable');
   } else {
     /* The Codex effort did not come along: Fable's own levels start at its default. */
     await page.getByRole('button', { name: 'Reasoning effort: Default' }).click();
@@ -126,7 +130,7 @@ it.each([1280, 390])('a Claude pick sets provider and model, drops the Codex eff
   await page.getByRole('menuitem', { name: 'high', exact: true }).click();
 
   /* The picker and Create share one row, with no horizontal scroll. */
-  const model = (await page.getByRole('button', { name: 'Model: Claude Fable' }).findElement()).getBoundingClientRect();
+  const model = (await page.getByRole('button', { name: 'Model: Fable' }).findElement()).getBoundingClientRect();
   const send = (await page.getByRole('button', { name: 'Create track' }).findElement()).getBoundingClientRect();
   expect(Math.abs(model.top + model.height / 2 - send.top - send.height / 2)).toBeLessThan(2);
   expect(model.right).toBeLessThanOrEqual(send.left);
@@ -153,9 +157,9 @@ it('offers only Codex on a server without Claude Planners', async () => {
 it.each([1280, 390])('OpenCode can create a track with inherited agent settings (%ipx)', async (width) => {
   await page.viewport(width, 844);
   const { creates } = mount(NO_CLAUDE, true);
-  await openModelMenu('Model: Codex Default');
-  await page.getByRole('group', { name: 'OpenCode (Beta)', exact: true }).getByRole('menuitem', { name: 'Default', exact: true }).click();
-  await expect.element(page.getByRole('button', { name: 'Model: OpenCode Default' })).toBeVisible();
+  await openModelMenu('Agent: Codex');
+  await page.getByRole('menuitem', { name: 'OpenCode (Beta)', exact: true }).click();
+  await expect.element(page.getByRole('button', { name: 'Model: Default' })).toBeVisible();
   await page.getByRole('combobox', { name: 'What this track should do' }).fill('Plan with OpenCode');
   await page.getByRole('button', { name: 'Create track' }).click();
   await expect.poll(() => creates.length).toBe(1);
@@ -175,9 +179,11 @@ it.each([1280, 390])('OpenCode models can be selected before creating a track (%
     default_source: 'acp_session', source: 'live', fetched_at_ms: 1,
   };
   const { creates } = mount(NO_CLAUDE, true, catalog);
-  await openModelMenu('Model: Codex Default');
-  await page.getByRole('group', { name: 'OpenCode (Beta)', exact: true }).getByRole('menuitem', { name: 'DeepSeek Flash' }).click();
-  await expect.element(page.getByRole('button', { name: 'Model: OpenCode DeepSeek Flash' })).toBeVisible();
+  await openModelMenu('Agent: Codex');
+  await page.getByRole('menuitem', { name: 'OpenCode (Beta)', exact: true }).click();
+  await openModelMenu("Model: zhipuai/glm-5.2 (this installation's default)");
+  await page.getByRole('menuitem', { name: 'DeepSeek Flash' }).click();
+  await expect.element(page.getByRole('button', { name: 'Model: DeepSeek Flash' })).toBeVisible();
   await page.getByRole('combobox', { name: 'What this track should do' }).fill('Plan with DeepSeek');
   await page.getByRole('button', { name: 'Create track' }).click();
   await expect.poll(() => creates.length).toBe(1);

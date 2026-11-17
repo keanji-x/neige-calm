@@ -12,6 +12,29 @@ import { ModelPill, type ModelGroup } from './model-pill.tsx';
 
 afterEach(cleanup);
 
+it('selects an agent before showing only its models, resetting model and effort on an agent change', () => {
+  const onChange = vi.fn();
+  const view = render(<ModelPill groups={both()} provider="codex"
+    selection={{ model: 'gpt-5', reasoning_effort: 'high' }} onChange={onChange} />);
+  expect(trigger(/^Agent:/).textContent).toBe('Codex');
+  expect(trigger(/^Model:/).textContent).toBe('GPT-5');
+  const models = openMenu(/^Model:/);
+  expect(within(models).getByRole('menuitem', { name: 'GPT-5Selected' })).toBeTruthy();
+  expect(within(models).queryByRole('menuitem', { name: /^Sonnet/ })).toBeNull();
+  fireEvent.keyDown(models, { key: 'Escape' });
+  const agents = openMenu(/^Agent:/);
+  expect(within(agents).queryByRole('menuitem', { name: /^GPT-5/ })).toBeNull();
+  fireEvent.click(within(agents).getByRole('menuitem', { name: 'Claude' }));
+  expect(onChange).toHaveBeenLastCalledWith({ model: null, reasoning_effort: null }, 'claude');
+  view.rerender(<ModelPill groups={both()} provider="claude" selection={FOLLOW_INSTALLATION_DEFAULT} onChange={onChange} />);
+  expect(trigger(/^Agent:/).textContent).toBe('Claude');
+  expect(trigger(/^Model:/).textContent).toBe('Opus (1M context)');
+  const claude = openMenu(/^Model:/);
+  expect(within(claude).queryByRole('menuitem', { name: 'GPT-5' })).toBeNull();
+  fireEvent.click(within(claude).getByRole('menuitem', { name: /^Sonnet/ }));
+  expect(onChange).toHaveBeenLastCalledWith({ model: 'sonnet', reasoning_effort: null }, 'claude');
+});
+
 function model(overrides: Partial<ModelCatalog['models'][number]> = {}): ModelCatalog['models'][number] {
   return {
     id: 'preset-fast',
@@ -377,14 +400,14 @@ describe('ModelPill', () => {
     render(
       <ModelPill provider="codex" groups={[{ provider: 'codex', availability: null, catalog: catalog() }]} selection={selection} onChange={vi.fn()} isDisabled />,
     );
-    for (const name of [/^Model:/, /^Reasoning effort:/] as const) {
+    for (const name of [/^Agent:/, /^Model:/, /^Reasoning effort:/] as const) {
       const button = trigger(name);
       expect(button.hasAttribute('disabled') || button.getAttribute('aria-disabled') === 'true')
         .toBe(true);
     }
   });
 
-  describe('grouped by provider (#1810)', () => {
+  describe('separate agent and model controls', () => {
     it('leaves the Claude group out while the server has no Claude Planner or has not answered', () => {
       for (const [claude, availability] of [
         [claudeCatalog({ models: [], source: 'unavailable' }), notConfigured('claude')],
@@ -394,55 +417,47 @@ describe('ModelPill', () => {
       ] as const) {
         const view = render(<ModelPill groups={both(claude, availability)} provider="codex" selection={FOLLOW_INSTALLATION_DEFAULT} onChange={vi.fn()} />);
         expect(trigger(/^Model:/).textContent).toBe('gpt-5-codex');
-        const menu = openMenu(/^Model:/);
+        const menu = openMenu(/^Agent:/);
         expect(within(menu).queryByRole('group', { name: 'Claude' })).toBeNull();
         expect(within(menu).queryByRole('menuitem', { name: /Sonnet/ })).toBeNull();
         view.unmount();
       }
     });
 
-    it('keeps a Claude pick in its own group, named, when its catalog turns unavailable', () => {
-      render(<ModelPill groups={both(claudeCatalog({ models: [], source: 'unavailable' }), notConfigured('claude'))} provider="claude"
-        selection={{ model: 'sonnet', reasoning_effort: null }} onChange={vi.fn()} />);
-      expect(trigger(/^Model:/).textContent).toBe('Claude sonnet');
-      const menu = openMenu(/^Model:/);
-      const claude = within(menu).getByRole('group', { name: 'Claude' });
-      expect(within(claude).getByText(CLAUDE_UNAVAILABLE)).toBeTruthy();
-      expect(within(menu).getByRole('group', { name: 'Codex' })).toBeTruthy();
-    });
-
-    it('offers each provider as a group, Default first, when the server runs Claude Planners', () => {
-      render(<ModelPill groups={both()} provider="codex" selection={FOLLOW_INSTALLATION_DEFAULT} onChange={vi.fn()} />);
-      const menu = openMenu(/^Model:/);
-      const codex = within(menu).getByRole('group', { name: 'Codex' });
-      expect(within(codex).getAllByRole('menuitem').map((item) => item.textContent))
-        .toEqual(['Default (gpt-5-codex)Selected', 'GPT-5']);
-      const claude = within(menu).getByRole('group', { name: 'Claude' });
-      expect(within(claude).getAllByRole('menuitem').map((item) => item.textContent))
-        .toEqual(['Defaultclaude-opus-5-5[1m]', ...RESOLVED_ROWS]);
-    });
-
-    it('hands back the Claude value and the provider with a Claude pick, and codex with a Codex one', () => {
+    it('keeps an unavailable current agent named and allows switching to another agent', () => {
       const onChange = vi.fn();
-      const view = render(<ModelPill groups={both()} provider="codex" selection={{ model: 'gpt-5', reasoning_effort: 'high' }} onChange={onChange} />);
-      fireEvent.click(within(within(openMenu(/^Model:/)).getByRole('group', { name: 'Claude' })).getByRole('menuitem', { name: /^Sonnet/ }));
-      expect(onChange).toHaveBeenLastCalledWith({ model: 'sonnet', reasoning_effort: null }, 'claude');
-      view.rerender(<ModelPill groups={both()} provider="claude" selection={{ model: 'sonnet', reasoning_effort: null }} onChange={onChange} />);
-      fireEvent.keyDown(trigger(/^Model:/), { key: 'ArrowDown' });
-      const menu = screen.getByRole('menu');
-      expect(within(within(menu).getByRole('group', { name: 'Claude' })).getByRole('menuitem', { name: /Sonnet/ }).textContent).toContain('Selected');
-      expect(within(within(menu).getByRole('group', { name: 'Codex' })).getByRole('menuitem', { name: /^Default/ }).textContent).not.toContain('Selected');
-      fireEvent.click(within(within(menu).getByRole('group', { name: 'Codex' })).getByRole('menuitem', { name: /^Default/ }));
-      expect(onChange).toHaveBeenLastCalledWith({ model: null, reasoning_effort: null }, 'codex');
+      render(<ModelPill groups={both(claudeCatalog({ models: [], source: 'unavailable' }), notConfigured('claude'))} provider="claude"
+        selection={{ model: 'sonnet', reasoning_effort: null }} onChange={onChange} />);
+      expect(trigger(/^Model:/).textContent).toBe('sonnet');
+      expect(trigger(/^Agent:/).textContent).toBe('Claude');
+      expect(isDisabled(trigger(/^Model:/))).toBe(true);
+      fireEvent.click(within(openMenu(/^Agent:/)).getByRole('menuitem', { name: 'Codex' }));
+      expect(onChange).toHaveBeenCalledWith({ model: null, reasoning_effort: null }, 'codex');
     });
 
-    it('names the provider on the trigger when more than one is offered', () => {
+    it('lists agents without their models and preserves the model when reselecting the current agent', () => {
+      const onChange = vi.fn();
+      render(<ModelPill groups={both()} provider="codex" selection={{ model: 'gpt-5', reasoning_effort: 'high' }} onChange={onChange} />);
+      const menu = openMenu(/^Agent:/);
+      expect(within(menu).getAllByRole('menuitem').map(item => item.textContent)).toEqual(['CodexSelected', 'Claude']);
+      fireEvent.click(within(menu).getByRole('menuitem', { name: 'CodexSelected' }));
+      expect(onChange).not.toHaveBeenCalled();
+    });
+
+    it('switches back to Codex with its default rather than the previous agent model', () => {
+      const onChange = vi.fn();
+      render(<ModelPill groups={both()} provider="claude" selection={{ model: 'sonnet', reasoning_effort: 'high' }} onChange={onChange} />);
+      fireEvent.click(within(openMenu(/^Agent:/)).getByRole('menuitem', { name: 'Codex' }));
+      expect(onChange).toHaveBeenCalledWith({ model: null, reasoning_effort: null }, 'codex');
+    });
+
+    it('names the agent separately from the model', () => {
       const view = render(<ModelPill groups={both()} provider="claude" selection={{ model: 'sonnet', reasoning_effort: null }} onChange={vi.fn()} />);
-      expect(trigger(/^Model:/).textContent).toBe('Claude Sonnet');
+      expect(trigger(/^Model:/).textContent).toBe('Sonnet');
       view.rerender(<ModelPill groups={both()} provider="claude" selection={FOLLOW_INSTALLATION_DEFAULT} onChange={vi.fn()} />);
-      expect(trigger(/^Model:/).getAttribute('aria-label')).toBe("Model: Claude Opus (1M context) (this installation's default)");
+      expect(trigger(/^Model:/).getAttribute('aria-label')).toBe("Model: Opus (1M context) (this installation's default)");
       view.rerender(<ModelPill groups={both()} provider="codex" selection={FOLLOW_INSTALLATION_DEFAULT} onChange={vi.fn()} />);
-      expect(trigger(/^Model:/).getAttribute('aria-label')).toBe("Model: Codex gpt-5-codex (this installation's default)");
+      expect(trigger(/^Model:/).getAttribute('aria-label')).toBe("Model: gpt-5-codex (this installation's default)");
     });
 
     it('offers exactly a Claude model\'s declared effort levels, and sends the chosen one (#1822)', () => {
@@ -481,18 +496,18 @@ describe('ModelPill', () => {
       expect(onChange).toHaveBeenLastCalledWith({ model: null, reasoning_effort: 'medium' }, 'claude');
     });
 
-    it('lays each Claude row out as its name and, beside it, the model it resolves to; Codex rows stay as they were', () => {
-      render(<ModelPill groups={both()} provider="codex" selection={FOLLOW_INSTALLATION_DEFAULT} onChange={vi.fn()} />);
-      const menu = openMenu(/^Model:/);
-      const claude = within(menu).getByRole('group', { name: 'Claude' });
+    it('keeps the resolved model beside each Claude name and leaves Codex rows unchanged', () => {
+      const view = render(<ModelPill groups={both()} provider="claude" selection={FOLLOW_INSTALLATION_DEFAULT} onChange={vi.fn()} />);
+      const claude = openMenu(/^Model:/);
       const fable = within(claude).getByRole('menuitem', { name: /^Fable/ });
       expect(within(fable).getByText('Fable', { exact: true })).toBeTruthy();
       expect(within(fable).getByTitle('claude-fable-5-1').textContent).toBe('claude-fable-5-1');
       const claudeDefault = within(claude).getByRole('menuitem', { name: /^Default/ });
-      expect(within(claudeDefault).getByText('Default', { exact: true })).toBeTruthy();
       expect(within(claudeDefault).getByTitle('claude-opus-5-5[1m]')).toBeTruthy();
-      const codex = within(menu).getByRole('group', { name: 'Codex' });
-      expect(within(codex).getAllByRole('menuitem').map((item) => item.textContent))
+      fireEvent.keyDown(claude, { key: 'Escape' });
+      view.rerender(<ModelPill groups={both()} provider="codex" selection={FOLLOW_INSTALLATION_DEFAULT} onChange={vi.fn()} />);
+      const codex = openMenu(/^Model:/);
+      expect(within(codex).getAllByRole('menuitem').map(item => item.textContent))
         .toEqual(['Default (gpt-5-codex)Selected', 'GPT-5']);
       expect(within(codex).queryAllByTitle(/./)).toEqual([]);
     });
@@ -516,11 +531,12 @@ describe('ModelPill', () => {
     });
 
     it('keeps Claude choosable while codex is not running', () => {
+      const onChange = vi.fn();
       render(<ModelPill groups={[{ provider: 'codex', availability: null, catalog: catalog({ models: [], source: 'unavailable' }) },
-        { provider: 'claude', availability: ready('claude'), catalog: claudeCatalog() }]} provider="codex" selection={FOLLOW_INSTALLATION_DEFAULT} onChange={vi.fn()} />);
-      const menu = openMenu(/^Model:/);
-      expect(within(within(menu).getByRole('group', { name: 'Codex' })).getByText('codex is not running')).toBeTruthy();
-      expect(within(within(menu).getByRole('group', { name: 'Claude' })).getByRole('menuitem', { name: /^Opus \(1M context\)/ })).toBeTruthy();
+        { provider: 'claude', availability: ready('claude'), catalog: claudeCatalog() }]} provider="codex" selection={FOLLOW_INSTALLATION_DEFAULT} onChange={onChange} />);
+      expect(isDisabled(trigger(/^Model:/))).toBe(true);
+      fireEvent.click(within(openMenu(/^Agent:/)).getByRole('menuitem', { name: 'Claude' }));
+      expect(onChange).toHaveBeenCalledWith({ model: null, reasoning_effort: null }, 'claude');
     });
   });
 
@@ -529,10 +545,10 @@ describe('ModelPill', () => {
       const onChange = vi.fn();
       render(<ModelPill groups={both(claudeCatalog(), unavailable('claude', CLAUDE_LOGGED_OUT))} provider="codex"
         selection={FOLLOW_INSTALLATION_DEFAULT} onChange={onChange} />);
-      const claude = within(openMenu(/^Model:/)).getByRole('group', { name: 'Claude' });
+      const claude = within(openMenu(/^Agent:/)).getByRole('group', { name: 'Claude' });
       expect(within(claude).getByRole('note').textContent).toBe(`Claude is unavailable: ${CLAUDE_LOGGED_OUT}`);
       expect(within(claude).getByRole('note').textContent).not.toContain('can still be created');
-      for (const name of [/^Default/, /^Opus/, /^Sonnet/, /^Haiku/]) {
+      for (const name of ['Claude']) {
         const choice = within(claude).getByRole('menuitem', { name });
         expect(isDisabled(choice), String(name)).toBe(true);
         fireEvent.click(choice);
@@ -542,9 +558,9 @@ describe('ModelPill', () => {
 
     it('keeps a ready group choosable and says nothing about availability', () => {
       render(<ModelPill groups={both()} provider="codex" selection={FOLLOW_INSTALLATION_DEFAULT} onChange={vi.fn()} />);
-      const claude = within(openMenu(/^Model:/)).getByRole('group', { name: 'Claude' });
+      const claude = within(openMenu(/^Agent:/)).getByRole('group', { name: 'Claude' });
       expect(within(claude).queryByRole('note')).toBeNull();
-      expect(isDisabled(within(claude).getByRole('menuitem', { name: /^Opus \(1M context\)/ }))).toBe(false);
+      expect(isDisabled(within(claude).getByRole('menuitem', { name: 'Claude' }))).toBe(false);
     });
 
     it('keeps an unavailable Codex group pickable, its reason a warning, because create still accepts it', () => {
@@ -554,14 +570,14 @@ describe('ModelPill', () => {
         { provider: 'codex', availability: unavailable('codex', reason), catalog: catalog(), acceptsUnavailableBlankTrack: true },
         { provider: 'claude', availability: ready('claude'), catalog: claudeCatalog() },
       ]} provider="claude" selection={FOLLOW_INSTALLATION_DEFAULT} onChange={onChange} />);
-      const menu = openMenu(/^Model:/);
+      const menu = openMenu(/^Agent:/);
       const codex = within(menu).getByRole('group', { name: 'Codex' });
       expect(within(codex).getByRole('note').textContent)
         .toBe(`Codex is unavailable: ${reason} A track can still be created; it runs once Codex is back.`);
-      for (const name of [/^Default/, 'GPT-5']) {
+      for (const name of ['Codex']) {
         expect(isDisabled(within(codex).getByRole('menuitem', { name })), String(name)).toBe(false);
       }
-      fireEvent.click(within(codex).getByRole('menuitem', { name: /^Default/ }));
+      fireEvent.click(within(codex).getByRole('menuitem', { name: 'Codex' }));
       expect(onChange).toHaveBeenLastCalledWith({ model: null, reasoning_effort: null }, 'codex');
     });
   });
@@ -573,8 +589,8 @@ it('emits a managed provider and model that have no UI presentation or policy ta
   const group: ModelGroup<'owner-backend'> = { provider: 'owner-backend', availability: null,
     catalog: catalog(), selectionProblem: null };
   render(<ModelPill groups={[group]} provider="owner-backend" selection={FOLLOW_INSTALLATION_DEFAULT} onChange={onChange} />);
-  fireEvent.click(screen.getByRole('button', { name: /^Model: owner-backend/ }));
-  expect(screen.getByRole('group', { name: 'owner-backend' })).toBeTruthy();
+  expect(screen.getByRole('button', { name: 'Agent: owner-backend' })).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: /^Model:/ }));
   fireEvent.click(screen.getByRole('menuitem', { name: /^GPT-5/ }));
   expect(onChange).toHaveBeenCalledWith({ model: 'gpt-5', reasoning_effort: null }, 'owner-backend');
 });
