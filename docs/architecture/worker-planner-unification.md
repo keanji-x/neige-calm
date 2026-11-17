@@ -92,12 +92,9 @@ AgentWorkerAdapter + WorkerTurnRunner (新增精简执行器，无 Terminal / �
 
 1. **泛化后端构造器**：将 `crates/calm-server/src/harness/backend/` 中的 `PlannerFactory::open` 扩展为接收角色配置（`Planner` / `Assistant` / `TaskWorker`）：
    - **指令装填**：对 `TaskWorker` 使用 `SeededCardRole::Worker` 渲染执行器系统提示词（`prompts/` 下的 Worker 契约说明），替代 Planner 的规划提示词；MCP 可见性继续由现有的 `mcp_server/tool_visibility.rs` 按 `CardRole::Worker` 严格裁剪（仅暴露 `neige_task_done`、`neige_task_fail`、`neige_message_read`、`neige_cat`、`neige_ls` 及读写权限允许的只读工具）。
-   - **无人值守权限模式映射（与现有 `CodexWorkerAdapter` 及 `acp_planner` 能力边界严格对齐）**：
-     - Codex 分支沿用现有 `CodexWorkerAdapter` 的共享守护进程线程契约（`thread_start_mint_mcp_shell` + `TurnApprovals::Unchanged`）。
-     - ACP 分支直接复用 `acp_planner` 现有的两种无人值守 `PlannerPermissionMode`，在 `admission.rs` 中放行 `WorkerContract::Executor` 并显式禁止 `PlannerPermissionMode::Ask`（确保绝不进入人工审批队列 `HeldRequests`）：
-       - `TaskAccess::ReadOnly` 映射为 `PlannerPermissionMode::Never`：所有向客户端发起的 `session/request_permission` 请求（除 `OwnTools` 匹配的当前卡片受控 Neige MCP 工具外）一律自动回复 `cancelled` 拒绝；CLI 原生判定为只读的本地探查正常执行，同时由 `workspace_lease::worker` 的无基线读者租约保证绝不产生 Git 候选提交。
-       - `TaskAccess::ReadWrite` 映射为 `PlannerPermissionMode::Full`：复用各 ACP Profile 已声明的无人值守放行策略（Grok 使用 `--always-approve`，Antigravity 与 OpenCode 使用当前 Turn 级 `AllowOnce` 自动放行以保持常驻进程跨卡片隔离）。
-     - *边界说明*：与现有 `CodexWorkerAdapter` 及 ACP Planner 一致，`PlannerPermissionMode` 控制协议层的 `session/request_permission` 应答与启动标志，并非内核态 `bwrap` 文件系统沙箱；若未来需要跨 Provider 强制系统调用级沙箱，再作为独立安全议题单独设计。
+   - **首版权限策略：统一无人值守放开（`Full`），明确边界、不做过度防御**：
+     - 与现有 `CodexWorkerAdapter` 完全一致，首版所有 `TaskWorker`（无论 `read_only` 还是 `read_write`）统一运行在无人值守完全放行模式下：Codex 沿用共享守护进程的 `TurnApprovals::Unchanged`；ACP 统一使用 `PlannerPermissionMode::Full`（Grok 为 `--always-approve`，Antigravity 与 OpenCode 为当轮 `AllowOnce` 自动放行），并在 `admission.rs` 中放行 `WorkerContract::Executor`、仅禁止需要人类点击的 `Ask`（绝不进入 `HeldRequests`）。
+     - *边界说明*：首版不尝试在协议回调层区分读写命令或引入内核态 `bwrap` 沙箱（避免将 OpenCode/Grok 的只读 `git diff` 等审查命令误拒中断）；`access: "read_only"` 的语义与现有 `CodexWorkerAdapter` 一致，由内核无基线读者租约（允许并发读、绝不产生 Git 候选提交）、MCP 只读工具可见性裁剪与 Worker 提示词契约共同表达。
 
 #### D4. `AgentWorkerAdapter` 与 `WorkerTurnRunner` 执行与即时收敛循环
 
@@ -166,7 +163,7 @@ AgentWorkerAdapter + WorkerTurnRunner (新增精简执行器，无 Terminal / �
 
 - **首版必做（构成闭环的最短路径）**：
   1. **最小契约与迁移（~250 行）**：`tasks` 表增加 `provider` / `model` / `reasoning_effort`；支持 `kind: "agent"`（兼容 `kind: "codex"`，拒绝 `claude` Worker）；`HarnessProfile::TaskWorker` 接入 `PlannerBinding`。
-  2. **共享 `AgentBackend` 无人值守打开（~300 行）**：打通 `Codex` 与 `ACP` 的 `TaskWorker` 指令装填、模型参数注入（`CatalogAccess` -> `TurnModelSelection`）及只读/写权限自动裁决。
+  2. **共享 `AgentBackend` 无人值守打开（~250 行）**：打通 `Codex` 与 `ACP` 的 `TaskWorker` 指令装填、模型参数注入（`CatalogAccess` -> `TurnModelSelection`）及统一无人值守 `Full` 权限放行（禁止 `Ask` 人工挂起）。
   3. **单轮自主 `AgentWorkerAdapter` + `WorkerTurnRunner`（~450 行）**：复用现有 `workspace_lease::worker` 与 `CardDecisionSink`（`done/fail` + Gate + Git 候选交付）；无 PTY 启动，流式写入 `LiveReplies` 与 `conversation_v1` 转录；Turn 结束未交卷则立即结算 `worker-turn-ended` 并释放锁；支持 `neige_task_cancel` 原生中断。
   4. **前端最薄无头卡片注册（~80~120 行）**：在 `fe/web/src/systems/cards/builtins/` 注册 `task_worker` 为 `headless: true` 并同步生成 API 类型 —— 因 `PlannerBinding` 已打通，现有会话面板可直接查看 Worker 实时输出，无需在首版手写新 UI 组件。
 - **首版刻意不做（为闭环减重，避免首版 Diff 膨胀）**：
@@ -193,8 +190,8 @@ AgentWorkerAdapter + WorkerTurnRunner (新增精简执行器，无 Terminal / �
 
 实施各阶段 PR 时需重点看护以下仓库级不变量与门禁：
 
-1. **无人值守审批模式边界（L2 核心不变量）**：`TaskWorker` 在 ACP `admission.rs` 中必须硬性拒绝 `PlannerPermissionMode::Ask`（杜绝挂起等待人工审批），并严格将 `TaskAccess::ReadOnly` 映射为 `Never`、`TaskAccess::ReadWrite` 映射为 `Full`；需对该权限映射与 `Ask` 拒绝栅栏执行单因子变异验证（Mutation Verification）。
-2. **工作区租约零泄漏**：`WorkerTurnRunner` 的所有退出路径（正常交卷、Turn 提前结束、协议报错、取消、进程崩溃、重启恢复）都必须通过事务原子释放 `workspace_lease`，确保不会遗留阻塞后续任务的脏锁。
+1. **无人值守执行不挂起（L2 核心不变量）**：`TaskWorker` 统一以无人值守 `Full` 模式运行，ACP `admission.rs` 硬性拒绝非 `Full`（特别是 `Ask`）模式以保证绝不挂起等待人工审批；首版明确将 `read_only` 定义为协作式提示词 + 无基线读者租约（无候选提交）+ MCP 工具裁剪契约，不做额外协议拦截或 OS 沙箱防御。
+2. **工作区租约零泄漏（变异验证锚点）**：`WorkerTurnRunner` 的所有退出路径（正常交卷、Turn 提前结束 `worker-turn-ended`、协议报错、取消、进程崩溃、重启恢复）都必须通过事务原子释放 `workspace_lease`，需对未交卷结束时的租约释放/状态收敛逻辑执行单因子变异验证（Mutation Verification）。
 3. **Planner MCP 工具面字节预算**：修改或新增 `neige_task_message` 时，必须运行 `mcp_server` 契约测试（守护 `42,097` 字节上限与 MCP 目录 golden 快照）。
 4. **OpenAPI 与前后端契约同步**：涉及 `calm-types` 路由模型变更时，运行 `scripts/local-rust-gates.sh --quick --base origin/main` 与 `(cd fe && npm run gen:api && npm run lint && npm run build)`。
 5. **仓库文本棘轮门禁（`scripts/local-ratchet-gates.sh`）**：新增 Worker 提示词必须放入 `crates/calm-server/prompts/*.md`（避免触发 `gate-prose-ratchet.sh` 的 Rust 中文/长字符串基线）；全仓命名避免引入已退役历史术语（守护 `gate-1316-terminology-ratchet.sh` 与 `gate-1209-template-rename-residual.sh`）。
