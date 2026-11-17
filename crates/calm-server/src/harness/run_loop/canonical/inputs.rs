@@ -12,11 +12,34 @@ pub(in crate::harness::run_loop) struct CanonicalInputs {
     // Every claim/crossing still revalidates its actual issuer and current scope.
     pub(super) sources: Arc<CanonicalSourceIndex>,
     projection: Mutex<CommittedFrame>,
+    // Scheduling only; no retry authority or persisted input state.
+    non_dispatch_delay: Mutex<std::time::Duration>,
     progress: Arc<Notify>,
     execution: crate::harness::registry::MaintenanceExecutionCell,
 }
 
 impl CanonicalInputs {
+    pub(super) async fn dispatch_retry_delay(
+        &self,
+        delivery: &crate::harness::backend::InputDelivery,
+    ) -> Option<std::time::Duration> {
+        use std::time::Duration;
+        let mut delay = self.non_dispatch_delay.lock().await;
+        if matches!(
+            delivery,
+            crate::harness::backend::InputDelivery::NotDispatched(_)
+        ) {
+            *delay = delay
+                .saturating_mul(2)
+                .max(super::TRANSIENT_RETRY_DELAY)
+                .min(Duration::from_secs(60));
+            Some(*delay)
+        } else {
+            *delay = Duration::ZERO;
+            None
+        }
+    }
+
     pub fn consumed(&self, inputs: &[CanonicalPendingIdentity]) {
         self.sources.consumed(inputs);
     }
@@ -29,6 +52,7 @@ impl CanonicalInputs {
         Self {
             sources,
             projection: Mutex::new(frame),
+            non_dispatch_delay: Mutex::new(std::time::Duration::ZERO),
             progress,
             execution,
         }

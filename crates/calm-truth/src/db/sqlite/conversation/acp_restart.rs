@@ -21,7 +21,9 @@ pub async fn shared_acp_restart_candidates_tx(
            AND (ws.completed_at_ms IS NULL OR ws.state='failed')
            AND ws.queue_harvested_at_ms IS NULL
            AND ws.handle_state_json IS NOT NULL
-           AND json_type(ws.handle_state_json,'$.canonical_inputs.active')='object'",
+           AND (json_type(ws.handle_state_json,'$.canonical_inputs.active')='object'
+             OR (json_type(ws.handle_state_json,'$.canonical_inputs.active')='null'
+                 AND json_extract(ws.handle_state_json,'$.phase')='issuing_turn'))",
     )
     .bind(provider.wire_name())
     .fetch_all(&mut **tx)
@@ -37,6 +39,9 @@ pub async fn release_shared_acp_restart_tx(
     thread: Option<&str>,
     expected_client: Option<&str>,
 ) -> Result<()> {
+    if expected_client.is_none() && recover_released_acp_turn_tx(tx, card, worker).await? {
+        return Ok(());
+    }
     let mut carrier = current_input_fact_carrier_tx(tx, card, worker).await?;
     let frame: CanonicalHarnessSnapshot = serde_json::from_value(carrier.snapshot().clone())?;
     let header = &frame.header;
@@ -133,4 +138,51 @@ pub async fn release_shared_acp_restart_tx(
         .map_err(|error| CalmError::Internal(error.to_string()))?;
     }
     Ok(())
+}
+
+/// Finish the release/phase-checkpoint crash window. The caller owns ACP recovery
+/// admission; this transition grants no dispatch and cannot release a native cut.
+/// Both boot and retained recovery use this same transaction and receipt fence.
+pub async fn recover_released_acp_turn_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    card: &str,
+    worker: &str,
+) -> Result<bool> {
+    let mut carrier = current_input_fact_carrier_tx(tx, card, worker).await?;
+    let frame: CanonicalHarnessSnapshot = serde_json::from_value(carrier.snapshot().clone())?;
+    let header = &frame.header;
+    if !carrier.is_execution_current()
+        || frame.canonical_inputs.active.is_some()
+        || header.phase != HarnessPhaseTag::IssuingTurn
+        || header.pending_rewind.is_some()
+        || header.interruption_intent.is_some()
+        || header.wedged_reason.is_some()
+        || super::super::provider_execution::retained(tx, worker).await?
+        || acp_submission_unresolved_tx(tx, worker).await?
+    {
+        return Ok(false);
+    }
+    let (provider, thread): (String, Option<String>) =
+        sqlx::query_as("SELECT provider,thread_id FROM worker_sessions WHERE id=?1")
+            .bind(worker)
+            .fetch_one(&mut **tx)
+            .await?;
+    let provider: calm_types::runtime::AgentProvider = serde_json::from_value(provider.into())?;
+    if provider.protocol() != calm_types::runtime::AgentProtocol::Acp
+        || thread != header.last_thread_id
+    {
+        return Ok(false);
+    }
+    carrier.set_phase(HarnessPhaseTag::Idle)?;
+    save_input_carrier_tx(tx, &mut carrier).await?;
+    super::super::session_set_harness_observation_runtime_tx(
+        tx,
+        &worker.to_owned(),
+        calm_types::worker::WorkerSessionState::Idle,
+        header.last_thread_id.as_deref(),
+        None,
+    )
+    .await
+    .map_err(|error| CalmError::Internal(error.to_string()))?;
+    Ok(true)
 }

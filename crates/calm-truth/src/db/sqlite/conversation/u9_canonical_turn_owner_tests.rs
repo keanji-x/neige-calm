@@ -460,3 +460,146 @@ async fn u9_canonical_turn_owner_missing_initial_and_plan_errors_propagate() {
 
     })).await.expect("independent write operation")
 }
+
+#[tokio::test]
+async fn acp_restart_issuing_turn_after_not_dispatched_release() {
+    let (repo, _, card) = fixture().await;
+    let s = super::retry_storage_tests::seed_repo_binding(
+        repo,
+        card,
+        invocation(),
+        body("human"),
+        (AgentProvider::OpenCode, "thread"),
+    )
+    .await;
+    let write_db = (s.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                let mut carrier = current_input_carrier_tx(&mut tx, &s.card, &s.carrier)
+                    .await
+                    .unwrap();
+                let attempt = carrier
+                    .checkpoint()
+                    .attempt(&s.root)
+                    .unwrap()
+                    .attempt
+                    .clone();
+                let correlation = carrier
+                    .checkpoint()
+                    .attempt(&s.root)
+                    .unwrap()
+                    .correlation
+                    .clone();
+                record_input_attempt_fact_tx(
+                    &mut tx,
+                    &mut carrier,
+                    InputAttemptFact {
+                        attempt: attempt.clone(),
+                        correlation,
+                        delivery: InputDeliveryFact::NotDispatched {
+                            basis: "refused".into(),
+                        },
+                    },
+                )
+                .await
+                .unwrap();
+                assert_eq!(facts(&mut tx, &s.card, &s.carrier).await, None);
+                release_submission_tx(&mut tx, &mut carrier, &attempt)
+                    .await
+                    .unwrap();
+                assert_eq!(facts(&mut tx, &s.card, &s.carrier).await, None);
+                assert!(carrier.checkpoint().active.is_none());
+                assert_eq!(carrier.snapshot()["phase"], "issuing_turn");
+                assert!(
+                    !super::super::acp_submission_unresolved_tx(&mut tx, &s.carrier)
+                        .await
+                        .unwrap()
+                );
+                let candidates =
+                    shared_acp_restart_candidates_tx(&mut tx, &AgentProvider::OpenCode)
+                        .await
+                        .unwrap();
+                assert!(candidates.contains(&(s.card.clone(), s.carrier.clone())));
+                let original = carrier.snapshot().clone();
+                for (phase, wedged) in [
+                    (calm_types::harness::HarnessPhaseTag::TurnRunning, None),
+                    (
+                        calm_types::harness::HarnessPhaseTag::IssuingTurn,
+                        Some("held"),
+                    ),
+                ] {
+                    let current = current_input_carrier_tx(&mut tx, &s.card, &s.carrier)
+                        .await
+                        .unwrap();
+                    let mut header = RuntimeExecutionFence::from_carrier(&current)
+                        .header()
+                        .clone();
+                    header["phase"] = serde_json::to_value(phase).unwrap();
+                    header["wedged_reason"] = serde_json::to_value(wedged).unwrap();
+                    persist_runtime_frame_tx(
+                        &mut tx,
+                        &s.card,
+                        &s.carrier,
+                        &RuntimeExecutionFence::from_carrier(&current),
+                        header,
+                    )
+                    .await
+                    .unwrap();
+                    let held = current_input_carrier_tx(&mut tx, &s.card, &s.carrier)
+                        .await
+                        .unwrap();
+                    release_shared_acp_restart_tx(
+                        &mut tx,
+                        &s.card,
+                        &s.carrier,
+                        Some("thread"),
+                        None,
+                    )
+                    .await
+                    .unwrap();
+                    let after = current_input_carrier_tx(&mut tx, &s.card, &s.carrier)
+                        .await
+                        .unwrap();
+                    assert_eq!(after.snapshot(), held.snapshot());
+                    let mut header = original.clone();
+                    header.as_object_mut().unwrap().remove("canonical_inputs");
+                    persist_runtime_frame_tx(
+                        &mut tx,
+                        &s.card,
+                        &s.carrier,
+                        &RuntimeExecutionFence::from_carrier(&after),
+                        header,
+                    )
+                    .await
+                    .unwrap();
+                }
+                // Even an orphan journal receipt must retain its worker fence;
+                // a missing active claim is never evidence that it was not sent.
+                for state in ["sending", "unknown"] {
+                    sqlx::query("SAVEPOINT unresolved_receipt").execute(&mut **tx).await.unwrap();
+                    sqlx::query("INSERT INTO acp_submissions(worker_session_id,client_id,turn_id,thread_id,native_session_id,input_json,state,created_at_ms)
+                        VALUES(?1,'orphan','orphan-turn','thread','native','{}',?2,1)")
+                        .bind(&s.carrier).bind(state).execute(&mut **tx).await.unwrap();
+                    release_shared_acp_restart_tx(&mut tx, &s.card, &s.carrier, Some("thread"), None).await.unwrap();
+                    let held = current_input_carrier_tx(&mut tx, &s.card, &s.carrier).await.unwrap();
+                    assert_eq!(held.snapshot(), &original);
+                    sqlx::query("ROLLBACK TO unresolved_receipt").execute(&mut **tx).await.unwrap();
+                    sqlx::query("RELEASE unresolved_receipt").execute(&mut **tx).await.unwrap();
+                }
+                release_shared_acp_restart_tx(&mut tx, &s.card, &s.carrier, Some("thread"), None)
+                    .await
+                    .unwrap();
+                let recovered = current_input_carrier_tx(&mut tx, &s.card, &s.carrier)
+                    .await
+                    .unwrap();
+                assert_eq!(recovered.snapshot()["phase"], "idle");
+                assert_eq!(recovered.checkpoint(), carrier.checkpoint());
+                tx.rollback().await.unwrap();
+            })
+        })
+        .await
+        .expect("independent write operation")
+}
