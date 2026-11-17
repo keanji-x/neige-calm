@@ -81,6 +81,36 @@ async fn acp_compact_success_preserves_inputs_and_settles_once() {
     success(false).await;
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn acp_compact_shared_waits_for_commands_after_setup_response() {
+    let root = Root::new("unused");
+    let stack = boot(&root).await;
+    let (_, card) = create(&stack).await;
+    std::fs::write(root.path().join("scenario"), "compact-late-commands").unwrap();
+    turn(&stack, &card, "first", 1).await;
+    let runtime = stack.runtime(&card).await;
+    let mut pending = Box::pin(compact(&stack, &card));
+    tokio::select! {
+        result = &mut pending => panic!("compact returned before its command declaration: {result:?}"),
+        _ = async {
+            wait_file(&root, "compact-catalog-ready").await;
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        } => {}
+    }
+    assert!(compact_prompts(&root).is_empty());
+    std::fs::write(root.path().join("release-compact-catalog"), "").unwrap();
+    let (status, body) = pending.await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    wait_phase(&stack, &runtime.id, "turn_completed").await;
+    assert_eq!(
+        snapshot(&stack, &card).await["compact_outcome"]["status"],
+        "completed"
+    );
+    assert_eq!(compact_prompts(&root).len(), 1);
+    assert_eq!(stack.runtime(&card).await.session_id, runtime.session_id);
+    stack.shutdown().await;
+}
+
 pub(super) async fn success(grok: bool) {
     let root = Root::new("unused");
     let stack = if grok {

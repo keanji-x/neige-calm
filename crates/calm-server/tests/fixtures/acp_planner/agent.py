@@ -185,11 +185,24 @@ def update(value, meta=None):
 
 def attach_updates():
     scenario = (root / 'scenario').read_text().strip()
-    if (xai and not scenario.startswith('grok-compact-')) or scenario == 'compact-undeclared':
+    if (xai and not scenario.startswith('grok-compact-')) or scenario in ['compact-undeclared', 'grok-compact-late-commands', 'compact-late-commands']:
         return
     update({'sessionUpdate': 'available_commands_update', 'availableCommands': [{'name': 'compact', 'description': 'Compact the session'}]})
     if not xai:
         update({'sessionUpdate': 'config_option_update', **config()})
+
+def deferred_attach_commands():
+    if (root / 'scenario').read_text().strip() not in ['grok-compact-late-commands', 'compact-late-commands']:
+        return
+    import threading
+    def declare_compact(session=current):
+        while not (root / 'release-compact-catalog').exists():
+            time.sleep(0.01)
+        emit({'jsonrpc': '2.0', 'method': 'session/update', 'params': {
+            'sessionId': session, 'update': {'sessionUpdate': 'available_commands_update',
+            'availableCommands': [{'name': 'compact', 'description': 'Compact the session'}]}}})
+    threading.Thread(target=declare_compact, daemon=True).start()
+    (root / 'compact-catalog-ready').touch()
 
 def finish(request, text, reason='end_turn'):
     update({'sessionUpdate': 'agent_message_chunk', 'content': {'type': 'text', 'text': text}})
@@ -354,6 +367,7 @@ for line in sys.stdin:
                 time.sleep(0.01)
         attach_updates()
         result(request, {'sessionId': current, **config()})
+        deferred_attach_commands()
     elif method == 'session/close':
         if (root / 'scenario').read_text().strip() == 'shared-close-error':
             emit({'jsonrpc':'2.0', 'id':request['id'], 'error':{'code':-32603, 'message':'close failed'}})
@@ -392,6 +406,7 @@ for line in sys.stdin:
                 threading.Thread(target=pre_send_completion, daemon=True).start()
 
         result(request, config())
+        deferred_attach_commands()
         # Fixture-only barrier: setup has replied, but the next prompt is not read yet.
         if (root / 'prompt-consumption.sock').exists():
             with socket.socket(socket.AF_UNIX) as barrier:

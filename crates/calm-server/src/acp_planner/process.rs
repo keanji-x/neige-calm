@@ -10,6 +10,9 @@ use tokio::process::Command;
 
 use super::start::StartFailure;
 
+mod commands;
+pub(super) use commands::Commands;
+
 enum ProcessOwner {
     Native(GroupChild),
     Supervised(ResidentExecution),
@@ -332,67 +335,6 @@ pub(super) async fn setup_request(
         }
     }
 }
-/// Session-scoped declarations observed from setup, idle traffic and the routed driver.
-/// Replacing a menu replaces that session's catalog, including an empty menu.
-#[derive(Clone, Default)]
-pub(super) struct Commands(
-    std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, Vec<String>>>>,
-);
-impl Commands {
-    pub(super) fn contains(&self, session: &str, command: &str) -> bool {
-        self.0
-            .lock()
-            .expect("ACP commands")
-            .get(session)
-            .is_some_and(|names| names.iter().any(|name| name == command))
-    }
-    pub(super) fn declared(&self, session: &str) -> bool {
-        self.0.lock().expect("ACP commands").contains_key(session)
-    }
-    pub(super) fn retain_sessions(&self, sessions: &std::collections::HashSet<&str>) {
-        self.0
-            .lock()
-            .expect("ACP commands")
-            .retain(|id, _| sessions.contains(id.as_str()));
-    }
-    pub(super) fn observe_for(&self, session: &str, frame: &Incoming) {
-        if let Incoming::Notification { params, .. } = frame
-            && params["sessionId"].as_str() == Some(session)
-        {
-            self.observe(frame);
-        }
-    }
-    pub(super) fn forget(&self, session: &str) {
-        self.0.lock().expect("ACP commands").remove(session);
-    }
-    pub(super) fn observe(&self, frame: &Incoming) {
-        let Incoming::Notification { method, params } = frame else {
-            return;
-        };
-        if method != "session/update"
-            || params["update"]["sessionUpdate"] != "available_commands_update"
-        {
-            return;
-        }
-        let Some(session) = params["sessionId"].as_str() else {
-            return;
-        };
-        let names = params["update"]["availableCommands"]
-            .as_array()
-            .map(|available| {
-                available
-                    .iter()
-                    .filter_map(|command| command["name"].as_str().map(str::to_owned))
-                    .collect()
-            })
-            .unwrap_or_default();
-        self.0
-            .lock()
-            .expect("ACP commands")
-            .insert(session.to_owned(), names);
-    }
-}
-
 async fn finish_setup(
     client: &provider::acp::Client,
     incoming: &mut tokio::sync::mpsc::Receiver<Incoming>,
