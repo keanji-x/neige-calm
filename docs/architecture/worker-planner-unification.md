@@ -92,9 +92,12 @@ AgentWorkerAdapter + WorkerTurnRunner (新增精简执行器，无 Terminal / �
 
 1. **泛化后端构造器**：将 `crates/calm-server/src/harness/backend/` 中的 `PlannerFactory::open` 扩展为接收角色配置（`Planner` / `Assistant` / `TaskWorker`）：
    - **指令装填**：对 `TaskWorker` 使用 `SeededCardRole::Worker` 渲染执行器系统提示词（`prompts/` 下的 Worker 契约说明），替代 Planner 的规划提示词；MCP 可见性继续由现有的 `mcp_server/tool_visibility.rs` 按 `CardRole::Worker` 严格裁剪（仅暴露 `neige_task_done`、`neige_task_fail`、`neige_message_read`、`neige_cat`、`neige_ls` 及读写权限允许的只读工具）。
-   - **无人值守工具审批（ACP 与 Codex 对齐）**：
-     - Codex 分支沿用现有的工作区沙箱配置（`ReadOnly` 任务对应只读沙箱，写任务对应 Track 工作区写权限 + `ApprovalPolicy::Never`）。
-     - ACP 分支（`acp_planner/wiring.rs`）为 `TaskWorker` 提供专用的无人值守审批器：对允许范围内的工作区读写/命令（写任务）或只读操作（`access: "read_only"` 任务）及已授权 `neige` MCP 工具自动批准；对越界请求或交互式提问立即返回确定性拒绝（如 `NO_APPROVER` / 权限拒绝响应），绝不挂入 `HeldRequests` 等待人类点击。
+   - **无人值守权限模式映射（与现有 `CodexWorkerAdapter` 及 `acp_planner` 能力边界严格对齐）**：
+     - Codex 分支沿用现有 `CodexWorkerAdapter` 的共享守护进程线程契约（`thread_start_mint_mcp_shell` + `TurnApprovals::Unchanged`）。
+     - ACP 分支直接复用 `acp_planner` 现有的两种无人值守 `PlannerPermissionMode`，在 `admission.rs` 中放行 `WorkerContract::Executor` 并显式禁止 `PlannerPermissionMode::Ask`（确保绝不进入人工审批队列 `HeldRequests`）：
+       - `TaskAccess::ReadOnly` 映射为 `PlannerPermissionMode::Never`：所有向客户端发起的 `session/request_permission` 请求（除 `OwnTools` 匹配的当前卡片受控 Neige MCP 工具外）一律自动回复 `cancelled` 拒绝；CLI 原生判定为只读的本地探查正常执行，同时由 `workspace_lease::worker` 的无基线读者租约保证绝不产生 Git 候选提交。
+       - `TaskAccess::ReadWrite` 映射为 `PlannerPermissionMode::Full`：复用各 ACP Profile 已声明的无人值守放行策略（Grok 使用 `--always-approve`，Antigravity 与 OpenCode 使用当前 Turn 级 `AllowOnce` 自动放行以保持常驻进程跨卡片隔离）。
+     - *边界说明*：与现有 `CodexWorkerAdapter` 及 ACP Planner 一致，`PlannerPermissionMode` 控制协议层的 `session/request_permission` 应答与启动标志，并非内核态 `bwrap` 文件系统沙箱；若未来需要跨 Provider 强制系统调用级沙箱，再作为独立安全议题单独设计。
 
 #### D4. `AgentWorkerAdapter` 与 `WorkerTurnRunner` 执行与即时收敛循环
 
@@ -190,7 +193,7 @@ AgentWorkerAdapter + WorkerTurnRunner (新增精简执行器，无 Terminal / �
 
 实施各阶段 PR 时需重点看护以下仓库级不变量与门禁：
 
-1. **只读任务与越界审批安全（L2 核心不变量）**：`access: "read_only"` 的 ACP Worker 必须在协议权限回调层硬性拦截一切写文件与非只读终端请求，需对权限拦截分支执行变异验证（Mutation Verification）。
+1. **无人值守审批模式边界（L2 核心不变量）**：`TaskWorker` 在 ACP `admission.rs` 中必须硬性拒绝 `PlannerPermissionMode::Ask`（杜绝挂起等待人工审批），并严格将 `TaskAccess::ReadOnly` 映射为 `Never`、`TaskAccess::ReadWrite` 映射为 `Full`；需对该权限映射与 `Ask` 拒绝栅栏执行单因子变异验证（Mutation Verification）。
 2. **工作区租约零泄漏**：`WorkerTurnRunner` 的所有退出路径（正常交卷、Turn 提前结束、协议报错、取消、进程崩溃、重启恢复）都必须通过事务原子释放 `workspace_lease`，确保不会遗留阻塞后续任务的脏锁。
 3. **Planner MCP 工具面字节预算**：修改或新增 `neige_task_message` 时，必须运行 `mcp_server` 契约测试（守护 `42,097` 字节上限与 MCP 目录 golden 快照）。
 4. **OpenAPI 与前后端契约同步**：涉及 `calm-types` 路由模型变更时，运行 `scripts/local-rust-gates.sh --quick --base origin/main` 与 `(cd fe && npm run gen:api && npm run lint && npm run build)`。
