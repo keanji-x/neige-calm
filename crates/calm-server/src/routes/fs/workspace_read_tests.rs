@@ -8,6 +8,7 @@ use std::os::unix::fs::{PermissionsExt, symlink};
 async fn text(state: &RouteState, track: &str, path: &str) -> Result<ReadFileResponse> {
     read_track_workspace_file(
         State(state.clone()),
+        host_access_tests::owner_principal().await,
         RoutePath(track.into()),
         Query(WorkspacePathQuery { path: path.into() }),
     )
@@ -18,6 +19,7 @@ async fn text(state: &RouteState, track: &str, path: &str) -> Result<ReadFileRes
 async fn raw(state: &RouteState, track: &str, path: &str) -> Result<Response> {
     read_track_workspace_file_raw(
         State(state.clone()),
+        host_access_tests::owner_principal().await,
         RoutePath(track.into()),
         Query(WorkspacePathQuery { path: path.into() }),
     )

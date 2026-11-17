@@ -15,6 +15,7 @@ const PAGE: &str = "<!doctype html><title>x</title><script>document.title='ran'<
 async fn raw(state: &RouteState, track: &str, path: &str) -> Result<Response> {
     read_track_workspace_file_raw(
         State(state.clone()),
+        host_access_tests::owner_principal().await,
         RoutePath(track.into()),
         Query(WorkspacePathQuery { path: path.into() }),
     )
