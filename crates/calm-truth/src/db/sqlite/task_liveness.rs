@@ -21,13 +21,22 @@ pub async fn task_stamp_missing_running_liveness_tx(
                running_started_at_ms = COALESCE(running_started_at_ms, ?2),
                updated_at_ms = ?2
            WHERE id = ?3
-             AND kind IN ('codex', 'claude')
+             AND (kind='agent' OR kind IN (SELECT value FROM json_each(?4)))
              AND status = 'running'
              AND (running_deadline_ms IS NULL OR running_started_at_ms IS NULL)"#,
     )
     .bind(running_deadline_ms)
     .bind(now)
     .bind(id)
+    .bind(serde_json::to_string(
+        &calm_types::runtime::AgentProvider::ALL
+            .into_iter()
+            .filter_map(|provider| {
+                let name = provider.wire_name();
+                (calm_types::provider_worker::legacy_task_provider(name).is_some()).then_some(name)
+            })
+            .collect::<Vec<_>>(),
+    )?)
     .execute(&mut **tx)
     .await?;
     Ok(res.rows_affected())

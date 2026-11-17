@@ -21,6 +21,7 @@ fn task_attempt_view(
         None => "awaiting_projection".into(),
     };
     Ok(TaskAttemptView {
+        worker_selection: None,
         attempt_id: allocation.attempt_id.clone(),
         generation: allocation.generation,
         status,
@@ -122,6 +123,7 @@ pub(crate) async fn task_recovery_view_tx(
         current_blocking_reason_tx(tx, &track, current, current_task.as_ref()).await?;
     let mut current = task_attempt_view(current, current_task.as_ref())?;
     current.blocking_reason = blocking_reason;
+    current.worker_selection = worker_selection_tx(tx, current_task.as_ref()).await?;
     let mut attempts = Vec::with_capacity(allocations.len());
     for allocation in allocations {
         let task = task_get_tx(tx, &allocation.attempt_id).await?;
@@ -131,6 +133,7 @@ pub(crate) async fn task_recovery_view_tx(
             ));
         }
         let mut entry = task_attempt_view(&allocation, task.as_ref())?;
+        entry.worker_selection = worker_selection_tx(tx, task.as_ref()).await?;
         if entry.attempt_id == current.attempt_id {
             entry.blocking_reason.clone_from(&current.blocking_reason);
         }
@@ -219,4 +222,49 @@ pub(crate) async fn current_blocking_reason_tx(
     Ok(task
         .is_none()
         .then(|| "Task declaration is eligible; waiting for scheduler projection".into()))
+}
+
+async fn worker_selection_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    task: Option<&Task>,
+) -> Result<Option<calm_types::provider_worker::TaskWorkerSelection>> {
+    use calm_types::{
+        acp_worker::AcpWorkerState,
+        provider_worker::{ProviderWorkerCapabilities, TaskWorkerSelection},
+    };
+    let Some(task) = task else { return Ok(None) };
+    let Some(provider) = task.agent_provider().map_err(CalmError::BadRequest)? else {
+        return Ok(None);
+    };
+    let Some(cap) = ProviderWorkerCapabilities::for_provider(provider.clone()) else {
+        return Ok(None);
+    };
+    let state = if let Some(card) = task.worker_card_id.as_deref() {
+        let json:Option<String>=sqlx::query_scalar("SELECT w.handle_state_json FROM cards c JOIN worker_sessions w ON w.id=c.session_id WHERE c.id=?1 AND c.track_id=?2").bind(card).bind(&task.track_id).fetch_optional(&mut **tx).await?.flatten();
+        json.and_then(|json| serde_json::from_str::<AcpWorkerState>(&json).ok())
+            .filter(|state| {
+                state.attempt_id == task.id && state.requested_selection.provider == provider
+            })
+    } else {
+        None
+    };
+    Ok(Some(TaskWorkerSelection {
+        mechanism: "agent".into(),
+        provider,
+        requested_model: task.model.clone(),
+        requested_effort: task.reasoning_effort.clone(),
+        effective_model: state.as_ref().and_then(|s| s.effective_model.clone()),
+        effective_effort: state.as_ref().and_then(|s| s.effective_effort.clone()),
+        selection_source: state
+            .as_ref()
+            .filter(|s| s.native_session_id.is_some())
+            .map(|s| s.selection_source.clone()),
+        capabilities: cap.clone(),
+        turn_phase: state.as_ref().map(|s| s.turn_phase),
+        cleanup_pending: state.as_ref().is_some_and(|s| {
+            !s.cleanup_confirmed
+                && (s.release_intent
+                    || s.turn_phase == calm_types::acp_worker::WorkerTurnPhase::Unknown)
+        }),
+    }))
 }

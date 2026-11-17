@@ -1,4 +1,12 @@
 #!/usr/bin/env bash
+# #3679 PR2 bounded SQL/syntax exception: long_literal/crates/**/*.rs 220 -> 228.
+# The independent task-block prose oracle lives in tests/goldens/planner_task_block.txt.
+# Eight new matches describe literal storage queries/fixtures and Rust syntax chains
+# (decision_sink/read_only.rs lease witness & diagnostics, operation/terminal_launch.rs
+# typed operation lookup, calm-truth/sqlite/task.rs typed operation ownership,
+# tasks_kind_compact_migration.rs schema-rebuild fixtures, and track_report_blocks/contracts.rs
+# typed provider enumeration). No scan pattern, scope, or exclusion changes; the existing
+# scan and separate selftest each run once per CI lint workflow.
 # #3633 bounded SQL exception: long_literal/crates/**/*.rs 208 -> 213.
 # Five SQL statements describe real storage contracts:
 # 1. conversation/messages.rs inserts explicit Human or LinkGuest attribution.

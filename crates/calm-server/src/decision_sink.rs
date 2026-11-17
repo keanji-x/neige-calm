@@ -1,6 +1,7 @@
 //! MCP identity decision-write sink for the MCP tool paths.
 
 mod planner_message;
+mod read_only;
 mod worker_report;
 pub(crate) use worker_report::admit_worker_write_tx;
 
@@ -60,6 +61,11 @@ impl CardDecisionSink {
         identity: &ToolCallIdentity,
         report: WorkerTaskReport,
     ) -> Result<(), CalmError> {
+        let read_only = if matches!(report, WorkerTaskReport::Completed { .. }) {
+            read_only::check(self.repo.clone(), identity, report.attempt_id()).await?
+        } else {
+            None
+        };
         let identity_for_tx = identity.clone();
         let actor = identity.to_actor_id();
         let card_id_str = identity.card_id.clone();
@@ -107,7 +113,7 @@ impl CardDecisionSink {
                 let track_id = track_id.clone();
                 let worker_card_id = worker_card_id_for_tx.clone();
                 Box::pin(async move {
-                    admit_worker_write_tx(tx, &identity, &track_id).await?;
+                    worker_report::admit_worker_identity_tx(tx, &identity, &track_id).await?;
                     // Admission, task CAS and report event share one transaction; same-outcome repeats roll back as idempotent success.
                     let now = crate::model::now_ms();
                     let task_id = report.attempt_id().to_string();
@@ -138,6 +144,7 @@ impl CardDecisionSink {
                     {
                         return Err(CalmError::Conflict(worker_report::REPEATED.into()));
                     }
+                    if let Some(checked)=&read_only {checked.recheck(tx).await?;}
                     if success {
                         let unread = crate::db::sqlite::planner_messages_unread_tx(tx, &task_id).await?;
                         if !unread.is_empty() {

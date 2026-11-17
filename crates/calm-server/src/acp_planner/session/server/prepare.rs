@@ -52,8 +52,8 @@ impl Role for PlannerRole<'_, '_> {
             .admission(self.thread, Some(self.permission), native, None);
         self.source.combined(&owner).check_local().await
     }
-    async fn mint(&mut self) -> Result<String> {
-        mint_token(&self.shared.params).await
+    async fn mint(&mut self, cleanup: &attachment::MintCleanup) -> Result<String> {
+        mint_token_with_cleanup(&self.shared.params, cleanup).await
     }
     fn pending(&mut self, _: CleanupWitness) {}
     async fn bind(&mut self, native: &str) -> Result<()> {

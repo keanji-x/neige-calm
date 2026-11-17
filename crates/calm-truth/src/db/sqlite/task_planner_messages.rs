@@ -1,7 +1,7 @@
 //! Attempt-owned Planner messages. Callers admit authority in the same write transaction.
 use crate::error::{CalmError, Result};
 use crate::model::{new_id, now_ms};
-use crate::track_fs_dto::TaskPlannerMessage;
+use crate::track_fs_dto::{TaskMessageSource, TaskPlannerMessage};
 use sqlx::{Sqlite, SqlitePool, Transaction};
 
 pub async fn planner_message_insert_tx(
@@ -10,11 +10,21 @@ pub async fn planner_message_insert_tx(
     key: &str,
     text: &str,
 ) -> Result<String> {
-    let prior: Option<(String, String)> = sqlx::query_as(
-        "SELECT message_id,text FROM task_planner_messages WHERE attempt_id=? AND idempotency_key=?"
+    planner_message_insert_with_source_tx(tx, attempt_id, key, text, TaskMessageSource::Planner)
+        .await
+}
+pub async fn planner_message_insert_with_source_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    attempt_id: &str,
+    key: &str,
+    text: &str,
+    source: TaskMessageSource,
+) -> Result<String> {
+    let prior: Option<(String, String, String)> = sqlx::query_as(
+        "SELECT message_id,text,source FROM task_planner_messages WHERE attempt_id=? AND idempotency_key=?"
     ).bind(attempt_id).bind(key).fetch_optional(&mut **tx).await?;
-    if let Some((id, original)) = prior {
-        if original != text {
+    if let Some((id, original, original_source)) = prior {
+        if original != text || original_source != source.as_str() {
             return Err(CalmError::BadRequest(
                 "input idempotency_key reused with different arguments",
             ));
@@ -24,8 +34,8 @@ pub async fn planner_message_insert_tx(
     let id = new_id();
     sqlx::query(
         "INSERT INTO task_planner_messages
-         (message_id,attempt_id,seq,text,idempotency_key,created_at_ms)
-         SELECT ?,?,COALESCE(MAX(seq),0)+1,?,?,?
+         (message_id,attempt_id,seq,text,idempotency_key,created_at_ms,source)
+         SELECT ?,?,COALESCE(MAX(seq),0)+1,?,?,?,?
          FROM task_planner_messages WHERE attempt_id=?",
     )
     .bind(&id)
@@ -33,6 +43,7 @@ pub async fn planner_message_insert_tx(
     .bind(text)
     .bind(key)
     .bind(now_ms())
+    .bind(source.as_str())
     .bind(attempt_id)
     .execute(&mut **tx)
     .await?;
@@ -82,7 +93,7 @@ async fn fetch_messages<'e>(
     unread_only: bool,
 ) -> Result<Vec<TaskPlannerMessage>> {
     let mut query = sqlx::QueryBuilder::<Sqlite>::new(
-        "SELECT m.message_id,m.seq,m.text,m.created_at_ms,m.read_at_ms FROM task_planner_messages m",
+        "SELECT m.message_id,m.seq,m.text,m.created_at_ms,m.read_at_ms,m.source FROM task_planner_messages m",
     );
     if track_id.is_some() {
         query.push(" JOIN task_attempt_allocations a ON a.attempt_id=m.attempt_id");
@@ -96,7 +107,7 @@ async fn fetch_messages<'e>(
     }
     query.push(" ORDER BY m.seq");
     Ok(query
-        .build_query_as::<(String, i64, String, i64, Option<i64>)>()
+        .build_query_as::<(String, i64, String, i64, Option<i64>, String)>()
         .fetch_all(executor)
         .await?
         .into_iter()
@@ -104,8 +115,13 @@ async fn fetch_messages<'e>(
         .collect())
 }
 
-fn decode(row: (String, i64, String, i64, Option<i64>)) -> TaskPlannerMessage {
+fn decode(row: (String, i64, String, i64, Option<i64>, String)) -> TaskPlannerMessage {
     TaskPlannerMessage {
+        source: if row.5 == "user" {
+            Some(TaskMessageSource::User)
+        } else {
+            None
+        },
         message_id: row.0,
         seq: row.1,
         text: row.2,

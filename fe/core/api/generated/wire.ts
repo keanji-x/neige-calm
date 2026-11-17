@@ -668,6 +668,8 @@ export type ProposalOp = { "op": "upsert_block", block_id?: string, temp_id?: st
  */
 export type ProvenanceSample = { realpath: string, common_dir: string, registered: boolean, };
 
+export type ProviderWorkerCapabilities = { provider: AgentProvider, operation: WorkerOperationKind, message_transport: WorkerMessageTransport, cancel_strategy: WorkerCancelStrategy, resumable: boolean, executor: boolean, validator: boolean, };
+
 export type QueuedMessageRequest = { carrier_id: string, if_revision: number, };
 
 export type QueuedMessageSteerResult = { submission_id: string, turn_id: string, delivery: ConversationDelivery, };
@@ -809,7 +811,11 @@ export type TailnetStatus = { desiredEnabled: boolean, phase: TailnetPhase, proc
  * Execution summary. Status includes awaiting_projection when admission capacity removed a pending row.
  * Blocking reason applies only to the selected current attempt; historical attempts carry null.
  */
-export type TaskAttemptView = { attempt_id: string, generation: number, status: string, status_detail: string | null, worker_card_id: string | null, created_at_ms: number, finished_at_ms: number | null, blocking_reason: string | null, };
+export type TaskAttemptView = { worker_selection?: TaskWorkerSelection, attempt_id: string, generation: number, status: string, status_detail: string | null, worker_card_id: string | null, created_at_ms: number, finished_at_ms: number | null, blocking_reason: string | null, };
+
+export type TaskCancelRequest = { attempt_id: string, };
+
+export type TaskCancelResponse = { ok: boolean, };
 
 /**
  * One changed frozen reference carried by a context-advance verdict.
@@ -821,13 +827,24 @@ export type TaskContextChangedRef = { track_id: TrackId, block_id: string, from_
  */
 export type TaskContextRef = { track_id: TrackId, block_id: string, rev: number, hash: string, is_root: boolean, };
 
-export type TaskPlannerMessage = { message_id: string, seq: number, text: string, created_at_ms: number, read_at_ms: number | null, };
+export type TaskMessageRequest = { attempt_id: string, idempotency_key: string, text: string, };
+
+export type TaskMessageResponse = { message_id: string, };
+
+export type TaskMessageSource = "planner" | "user";
+
+export type TaskPlannerMessage = { source?: TaskMessageSource, message_id: string, seq: number, text: string, created_at_ms: number, read_at_ms: number | null, };
 
 /**
  * Execution history. `current` is null only when the live declaration has never
  * received an allocation.
  */
 export type TaskRecoveryView = { key: string, current: TaskAttemptView | null, attempts: Array<TaskAttemptView>, };
+
+/**
+ * Frozen request plus provider-confirmed selection; absent actuals never imply an explicit default.
+ */
+export type TaskWorkerSelection = { mechanism: string, provider: AgentProvider, requested_model: string | null, requested_effort: string | null, effective_model: string | null, effective_effort: string | null, selection_source: WorkerSelectionSources | null, capabilities: ProviderWorkerCapabilities, turn_phase: WorkerTurnPhase | null, cleanup_pending: boolean, };
 
 export type TerminalPresentation = { source: CardCreationSource, in_workbench: boolean, };
 
@@ -1195,6 +1212,18 @@ export type VerifyTarget = { "kind": "candidate", candidate_id: string, commit_s
  */
 export type VerifyTargetEvidence = { "kind": "refused", cwd: string, before: Sample, reasons: Array<MismatchReason>, } | { "kind": "verified", cwd: string, before: Sample, after: Sample, reasons: Array<MismatchReason>, } | { "kind": "unsampled", phase: SamplePhase, } | { "kind": "reused", run: string, cwd: string, before: Sample, };
 
+export type WorkerCancelStrategy = "provider_stop" | "acp_cancel";
+
+export type WorkerMessageTransport = "terminal" | "native_session";
+
+export type WorkerOperationKind = "codex-worker" | "claude-worker" | "acp-worker" | "terminal-worker";
+
+export type WorkerReportOutcome = { "kind": "completed", result: unknown, artifacts: Array<ArtifactRef>, } | { "kind": "failed", reason: string, };
+
+export type WorkerSelectionSource = "explicit" | "provider_default_reported" | "provider_default_unreported";
+
+export type WorkerSelectionSources = { model: WorkerSelectionSource, effort: WorkerSelectionSource, };
+
 /**
  * Opaque execution-session identifier.
  */
@@ -1212,6 +1241,8 @@ last_turn_completed_ms?: number, };
  * Session state machine column (`worker_sessions.state`).
  */
 export type WorkerSessionState = "starting" | "running" | "idle" | "turn_pending" | "exited" | "failed" | "superseded";
+
+export type WorkerTurnPhase = "prepared" | "submitting" | "settled" | "unknown";
 
 /**
  * The decoded isolation of a track. This is derived, never stored separately.

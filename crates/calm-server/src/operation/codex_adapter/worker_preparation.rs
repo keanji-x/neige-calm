@@ -110,6 +110,7 @@ impl crate::operation::workspace_lease::worker::preparation::WorkerAdmission
             "branch": plan.branch,
             "base_sha": plan.base.base_sha,
             "canonical_path": plan.base.canonical_path,
+            "git_common_dir": plan.base.git_common_dir,
             "terminal_launch": crate::operation::terminal_launch::fresh_state(),
             "runtime_started_event_persisted": false,
             "env": env,

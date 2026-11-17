@@ -59,3 +59,7 @@ pub mod track_wire;
 pub mod report_knowledge;
 
 pub mod system_assistant;
+
+pub mod provider_worker;
+
+pub mod acp_worker;

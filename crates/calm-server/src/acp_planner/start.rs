@@ -113,6 +113,12 @@ impl From<crate::acp_session::failure::SetupFailure> for StartFailure {
             crate::acp_session::failure::SetupFailure::LoadUnsupported => {
                 ContinuationRefusal::LoadUnsupported.into()
             }
+            crate::acp_session::failure::SetupFailure::Refused(reason) => {
+                Self::Host(TurnStartFailure::Refused {
+                    error: CalmError::Conflict(reason.clone()),
+                    reader: reason,
+                })
+            }
         }
     }
 }

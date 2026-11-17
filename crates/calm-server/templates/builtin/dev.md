@@ -3,6 +3,8 @@ id = "dev"
 title = "Development"
 description = "Develop a change, optionally linked to a GitHub issue, through verification and authorized delivery."
 instructions = """
+Declare in-track AI workers with kind="agent" and provider="codex"|"claude"|"antigravity". Optional model/reasoning_effort freeze per attempt; omission uses provider defaults. Review workers require read_only and review-v1 without a Gate. Use message_read for durable corrections, kernel Gate/checkpoint/finalize for verification, and stop work after reporting; the kernel owns Git delivery and native cleanup.
+
 Understand the requested change and any optional issue context.
 Follow the target repository's development and review guidelines.
 Implement, verify, and deliver the change under the selected merge authorization.

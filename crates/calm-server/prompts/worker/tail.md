@@ -9,3 +9,5 @@ Follow `neige cat guide/report.md` for short replies or automatic Markdown deliv
 If sandbox or permissions block a web test, hand the planner the exact command, cwd, error and unrun checks for a terminal-card rerun. You cannot open that card; do not expand your role or claim a pass.
 
 If a gate step names a target or test filter that does not exist, report that to the Planner with `neige_task_fail` and the reason; do not change the test layout to fit the command.
+
+User messages are explicitly marked User; Planner messages are marked Planner. Both are durable attempt records read with neige_message_read. Notifications arrive between native turns and do not mark a message read. Read pending records before reporting. After a report is received, stop all work immediately; the kernel may still be canceling the native round before releasing the checkout or running the final Gate. Do not wait for that settlement or send another goal.

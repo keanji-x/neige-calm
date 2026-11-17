@@ -161,3 +161,35 @@ pub async fn task_history_by_key_pool(
         .fetch_all(pool)
         .await?)
 }
+
+/// Historical recovery allocations retain their predecessor's frozen Worker selection. No
+/// current Report or Planner picker may backfill a request into an older attempt.
+pub(super) async fn task_recovery_selection_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    attempt_id: &str,
+) -> Result<Option<(Option<String>, Option<String>, Option<String>)>> {
+    let origin: Option<String> =
+        sqlx::query_scalar("SELECT origin_json FROM task_attempt_allocations WHERE attempt_id=?1")
+            .bind(attempt_id)
+            .fetch_optional(&mut **tx)
+            .await?;
+    let Some(origin) = origin else {
+        return Ok(None);
+    };
+    let origin: TaskAttemptOrigin = serde_json::from_str(&origin)?;
+    let TaskAttemptOrigin::Recovery {
+        previous_attempt_id,
+        ..
+    } = origin
+    else {
+        return Ok(None);
+    };
+    sqlx::query_as("SELECT provider,model,reasoning_effort FROM tasks WHERE id=?1")
+        .bind(previous_attempt_id)
+        .fetch_optional(&mut **tx)
+        .await?
+        .map(Some)
+        .ok_or_else(|| {
+            CalmError::Conflict("recovery predecessor's frozen Worker selection is missing")
+        })
+}

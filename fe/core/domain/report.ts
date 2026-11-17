@@ -3,6 +3,9 @@
 // deep link addresses); `body` is the flat fallback. Everything here is fail-soft.
 
 import { z } from 'zod';
+import type { AgentProvider } from '../api/generated/wire.js';
+import { agentProviderSchema } from '../api/schemas.js';
+import { taskProvider } from './provider-presentation.js';
 import { objectiveBlockPayloadSchema, type ObjectiveBlockPayload } from './report-objective.js';
 import { max2048CodePoints, inlineTableBlockPayloadSchema } from './report-table.js';
 import { isCalendarDate } from './report-date.js';
@@ -142,7 +145,10 @@ function liveTaskSharedShape() {
 
 const agentTaskBlockPayloadSchema = z.strictObject({
   key: z.string(),
-  kind: z.enum(['codex', 'claude']),
+  kind: z.enum(['agent', 'codex', 'claude']),
+  provider: agentProviderSchema.optional(),
+  model: z.string().refine(value => value.trim() !== '').optional(),
+  reasoning_effort: z.string().refine(value => value.trim() !== '').optional(),
   goal: z.string(),
   /** The kernel owns contract registration; the reader preserves its declared name. */
   result_contract: z.string().optional(),
@@ -151,7 +157,9 @@ const agentTaskBlockPayloadSchema = z.strictObject({
   base: z.string().nullish(),
   start: z.enum(['checkout', 'upstream']).nullish(),
   ...liveTaskSharedShape(),
-});
+}).refine(task => task.kind !== 'agent' || task.provider !== undefined, { message: 'An agent task requires provider' })
+  .refine(task => task.kind === 'agent' || task.provider === undefined || task.provider === task.kind, { message: 'Task alias and provider disagree' })
+  .refine(task => task.spawn !== 'sub-track' || (task.kind === 'codex' && task.provider === undefined && task.model === undefined && task.reasoning_effort === undefined), { message: 'Sub-track uses the historical codex declaration' });
 
 const terminalTaskBlockPayloadSchema = z.strictObject({
   key: z.string(),
@@ -506,7 +514,7 @@ export function trackTaskVerdictsOperation(trackId: string): ApiOperation<TaskVe
 }
 
 /** The execution kinds a live task declaration can name; a verdict does not carry one. */
-export type TaskWorkerKind = 'codex' | 'claude' | 'terminal' | 'compact';
+export type TaskWorkerKind = 'agent' | 'codex' | 'claude' | 'terminal' | 'compact';
 
 /**
  * One row of the panel's task inventory. The declaration word, status and kind travel separately
@@ -530,6 +538,10 @@ export type ReportTaskRow = Readonly<{
   statusDetail: string | null;
   /** The worker kind, off the *declaration*; a withdrawn or unreadable block has none. */
   kind: TaskWorkerKind | null;
+  /** Normalized provider; absent on old synthetic rows and non-agent declarations. */
+  provider?: AgentProvider | null;
+  requestedModel?: string | null;
+  requestedEffort?: string | null;
   /** The worker card this task is running on, or `null`. */
   workerCardId: string | null;
   /** A server-rendered, actionable pending/admission explanation. */
@@ -679,6 +691,11 @@ export function deriveReportTasks(
       /* Gated on `status`: the detail is a qualifier on the status word and has nowhere to attach without one. */
       statusDetail: status === null ? null : boundedStatusDetail(verdict?.statusDetail),
       kind,
+      ...(isReadable && !('tombstoned_by' in block.payload) && 'goal' in block.payload && ('provider' in block.payload || 'model' in block.payload || 'reasoning_effort' in block.payload) ? {
+        provider: taskProvider(kind, 'provider' in block.payload ? block.payload.provider : undefined),
+        requestedModel: 'model' in block.payload ? block.payload.model ?? null : null,
+        requestedEffort: 'reasoning_effort' in block.payload ? block.payload.reasoning_effort ?? null : null,
+      } : {}),
       /* `''` is not a card id. */
       workerCardId: verdict?.workerCardId === undefined || verdict.workerCardId === null
         || verdict.workerCardId === '' ? null : verdict.workerCardId,

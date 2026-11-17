@@ -379,6 +379,22 @@ async fn mint_token(params: &SessionParams) -> Result<String> {
         )
         .await
 }
+async fn mint_token_with_cleanup(
+    params: &SessionParams,
+    cleanup: &crate::acp_session::attachment::MintCleanup,
+) -> Result<String> {
+    let cleanup = cleanup.clone();
+    params
+        .host
+        .managed_tokens
+        .ensure_with_hash_observer(
+            params.repo.as_ref(),
+            &crate::model::CardId(params.card_id.clone()),
+            &WorkerSessionId(params.worker_session_id.clone()),
+            move |hash| cleanup.register_hash(hash),
+        )
+        .await
+}
 async fn revoke(params: &SessionParams) -> Result<()> {
     // Planner policy revokes the session-wide grant; shared-generation cleanup below
     // instead uses the hash captured when that generation minted its attachment.

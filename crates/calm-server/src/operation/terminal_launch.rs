@@ -57,7 +57,9 @@ pub(crate) fn fresh_state() -> Value {
 /// Only callers transitioning from a recorded pre-spawn phase may initialize
 /// a legacy output. Missing state at SpawnStarted remains permanently unknown.
 pub(crate) fn initialize_prestart(kind: &str, output: &mut super::TxOutput) -> Result<()> {
-    if matches!(kind, "codex-worker" | "claude-worker" | "terminal-worker") {
+    if calm_types::provider_worker::WorkerOperationKind::parse(kind)
+        .is_some_and(|kind| kind.takes_terminal())
+    {
         let data = output
             .data
             .as_object_mut()
@@ -74,8 +76,12 @@ pub(crate) enum TerminalStart {
 }
 
 /// The worker operations that own card `?1`'s terminal launch.
-const WORKER_OPS_OF_CARD: &str = "FROM operations WHERE target_type='card' AND target_id=?1 \
-     AND kind IN ('codex-worker','claude-worker','terminal-worker')";
+fn worker_ops_of_card() -> String {
+    format!(
+        "FROM operations WHERE target_type='card' AND target_id=?1 AND kind IN ({})",
+        calm_types::provider_worker::WorkerOperationKind::sql_list()
+    )
+}
 
 /// Whether a spawn with no task launch of its own starts `card_id`'s terminal: neither a worker
 /// operation nor a task owns it, so [`resolve`] answers `Unbound`; otherwise it only attaches.
@@ -83,11 +89,11 @@ pub(crate) async fn card_launch_unbound_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     card_id: &str,
 ) -> Result<bool> {
-    let worker_owned: bool =
-        sqlx::query_scalar(&format!("SELECT EXISTS(SELECT 1 {WORKER_OPS_OF_CARD})"))
-            .bind(card_id)
-            .fetch_one(&mut **tx)
-            .await?;
+    let worker_ops = worker_ops_of_card();
+    let worker_owned: bool = sqlx::query_scalar(&format!("SELECT EXISTS(SELECT 1 {worker_ops})"))
+        .bind(card_id)
+        .fetch_one(&mut **tx)
+        .await?;
     if worker_owned {
         return Ok(false);
     }
@@ -115,8 +121,9 @@ pub(crate) async fn resolve(
         let card: String = sqlx::query_scalar("SELECT card_id FROM terminals WHERE id=?1")
             .bind(&terminal_id).fetch_optional(&mut **tx).await?
             .ok_or_else(|| CalmError::NotFound(format!("terminal {terminal_id}")))?;
+        let worker_ops=worker_ops_of_card();
         let rows: Vec<(String,String,Option<String>,String)> = sqlx::query_as(&format!(
-            "SELECT id,phase,lease_owner,tx_output_json {WORKER_OPS_OF_CARD} LIMIT 2"
+            "SELECT id,phase,lease_owner,tx_output_json {worker_ops} LIMIT 2"
         )).bind(&card).fetch_all(&mut **tx).await?;
         if rows.len() > 1 { return Err(CalmError::Conflict("terminal has conflicting worker operation ownership".into())); }
         let Some((op_id, phase, owner, output)) = rows.into_iter().next() else {
@@ -244,8 +251,7 @@ pub(crate) fn require_not_rejected(output: &Value, terminal_id: &str) -> Result<
 pub(crate) async fn rejected_for_terminal(repo: &dyn RouteRepo, terminal_id: &str) -> Result<bool> {
     let terminal_id = terminal_id.to_owned();
     write_in_tx_typed(repo, move |tx| Box::pin(async move {
-        let rows: Vec<String> = sqlx::query_scalar("SELECT o.tx_output_json FROM operations o JOIN terminals t ON t.card_id=o.target_id WHERE t.id=?1 AND \
-            o.target_type='card' AND o.kind IN ('terminal-worker','claude-worker','codex-worker') LIMIT 2")
+        let rows: Vec<String> = sqlx::query_scalar(&format!("SELECT o.tx_output_json FROM operations o JOIN terminals t ON t.card_id=o.target_id WHERE t.id=?1 AND o.target_type='card' AND o.kind IN ({}) LIMIT 2",calm_types::provider_worker::WorkerOperationKind::sql_list()))
             .bind(&terminal_id).fetch_all(&mut **tx).await?;
         if rows.len() > 1 { return Err(CalmError::Conflict("conflicting launch ownership; retain resources".into())); }
         match rows.first() {

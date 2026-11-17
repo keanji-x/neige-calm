@@ -3,6 +3,8 @@ id = "investigation"
 title = "Investigation"
 description = "Investigate a question and produce findings without changing the repository."
 instructions = """
+Declare in-track AI workers with kind="agent" and provider="codex"|"claude"|"antigravity". Optional model/reasoning_effort freeze per attempt; omission uses provider defaults. Review workers require read_only and review-v1 without a Gate. Use message_read for durable corrections, kernel Gate/checkpoint/finalize for verification, and stop work after reporting; the kernel owns Git delivery and native cleanup.
+
 Read the relevant code, documentation and history.
 Separate observed facts from inference and identify unresolved questions.
 Report sources and recommended next steps. Do not open or merge a PR.

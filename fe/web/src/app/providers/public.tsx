@@ -20,7 +20,7 @@ import { LiveConnectionProvider } from './connection-status.tsx';
 // #3279: negotiated run reads require nullable exact current terminal evidence.
 // #3423: objective approvals carry complete frozen question details.
 // Track template selection and workspace isolation upgrades require compatible clients.
-export const WEB_COMPAT_VERSION = 72;
+export const WEB_COMPAT_VERSION = 73;
 /** `databaseId` is optional in the type so an older kernel still parses before the curtain decides; absent means a `null` database scope, under which no per-database choice applies. */
 export type ServerVersionInfo = Readonly<{ assistantProviders?: boolean; conversationCreateModel?: boolean; conversationInitialInput?: boolean; conversationSide?: boolean; webCompatVersion: number; minWebCompatVersion: number; syncEventVersion: number; dbInstanceId: string; databaseId?: string }>;
 export interface ProviderRuntime {

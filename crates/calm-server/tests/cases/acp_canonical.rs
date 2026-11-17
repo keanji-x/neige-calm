@@ -356,3 +356,124 @@ async fn canonical_antigravity_ask_approval_continues_and_cancel_stays_interrupt
     }
     stack.shutdown().await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn canonical_antigravity_selection_refusal_preserves_attachment_and_sibling_process() {
+    let root = Root::new("unused");
+    let stack = boot_as(
+        &root,
+        "antigravity",
+        json!({
+            "ACP_FIXTURE_AGENT_NAME": "Antigravity ACP Server",
+            "ACP_FIXTURE_VERSION": "1.5.0",
+            "ACP_FIXTURE_CAPTURE_SHARED_TOKEN": "1"
+        }),
+        "1.5.0",
+    )
+    .await;
+    let (_, first) = stack
+        .create_canonical_track_with(json!({"planner_provider":"antigravity"}))
+        .await;
+    let (_, second) = stack
+        .create_canonical_track_with(json!({"planner_provider":"antigravity"}))
+        .await;
+    for card in [&first, &second] {
+        let (status, body) = stack.post_input(card, "initial turn").await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(stack.wait_outcomes(card, 1).await[0]["status"], "completed");
+        wait_phase(&stack, &stack.runtime(card).await.id, "turn_completed").await;
+    }
+    let init_before = requests(&root, "initialize").len();
+    let first_native = stack.runtime(&first).await.session_id.unwrap();
+    let first_token =
+        std::fs::read_to_string(root.path().join(format!("{first_native}.test-token"))).unwrap();
+    assert!(stack.token_authenticates(&first_token).await);
+
+    let (status, body) = stack
+        .send(
+            "PUT",
+            &format!("/api/cards/{first}/planner/model"),
+            Some(json!({"model": "nonexistent-model", "reasoning_effort": null})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let (status, body) = stack.post_input(&first, "rejected selection").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let refused_entry = body["entry_id"].as_str().unwrap().to_owned();
+    let (first_runtime, frame) = tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            let runtime = stack.runtime(&first).await;
+            let frame: calm_types::harness::snapshot::CanonicalHarnessSnapshot =
+                serde_json::from_value(runtime.handle_state_json.clone().unwrap()).unwrap();
+            if frame.canonical_inputs.attempts.iter().any(|attempt| {
+                matches!(
+                    attempt.delivery,
+                    calm_types::conversation::InputDeliveryFact::NotDispatched { .. }
+                )
+            }) {
+                break (runtime, frame);
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("canonical NotDispatched refusal");
+    assert!(frame.canonical_inputs.active.is_none());
+    let revision = frame
+        .canonical_inputs
+        .pending
+        .iter()
+        .find_map(|pending| match pending {
+            calm_types::conversation::PendingInput::Human { message, .. }
+                if message.message_id.as_str() == refused_entry =>
+            {
+                Some(message.revision.get())
+            }
+            _ => None,
+        })
+        .expect("refused Human input remains pending");
+    assert!(
+        stack.token_authenticates(&first_token).await,
+        "active credential must survive deterministic selection refusal"
+    );
+
+    let (status, body) = stack.post_input(&second, "sibling turn").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        stack.wait_outcomes(&second, 2).await[1]["status"],
+        "completed"
+    );
+    wait_phase(&stack, &stack.runtime(&second).await.id, "turn_completed").await;
+    assert_eq!(
+        requests(&root, "initialize").len(),
+        init_before,
+        "sibling turn must reuse the same resident ACP process"
+    );
+
+    let (status, body) = stack
+        .send(
+            "DELETE",
+            &format!("/api/cards/{first}/conversation/messages/{refused_entry}"),
+            Some(json!({"carrier_id": first_runtime.id, "if_revision": revision})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = stack
+        .send(
+            "PUT",
+            &format!("/api/cards/{first}/planner/model"),
+            Some(json!({"model": "fixture/model-b", "reasoning_effort": null})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = stack.post_input(&first, "valid selection").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        stack.wait_outcomes(&first, 2).await[1]["status"],
+        "completed"
+    );
+    wait_phase(&stack, &stack.runtime(&first).await.id, "turn_completed").await;
+    assert_eq!(requests(&root, "initialize").len(), init_before);
+    stack.shutdown().await;
+}

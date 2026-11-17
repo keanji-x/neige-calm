@@ -4,6 +4,7 @@ use crate::error::CalmError;
 pub(crate) enum SetupFailure {
     Failed(CalmError),
     LoadUnsupported,
+    Refused(String),
 }
 impl From<CalmError> for SetupFailure {
     fn from(error: CalmError) -> Self {
@@ -17,6 +18,7 @@ impl From<SetupFailure> for CalmError {
             SetupFailure::LoadUnsupported => {
                 CalmError::Conflict("ACP agent cannot load or resume the native session".into())
             }
+            SetupFailure::Refused(message) => CalmError::Conflict(message),
         }
     }
 }

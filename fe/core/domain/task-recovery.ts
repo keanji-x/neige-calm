@@ -1,5 +1,6 @@
 import { z } from 'zod';
-import type { ApiOperation } from '../api/types.js';
+import { workerSelectionSchema } from './task-selection.js';
+import type { ApiAbortSignal, ApiOperation } from '../api/types.js';
 
 /** Gate-free summaries of a task's execution history. Nullable fields are required. */
 export const taskAttemptSchema = z.object({
@@ -11,6 +12,7 @@ export const taskAttemptSchema = z.object({
   worker_card_id: z.string().nullable(),
   created_at_ms: z.number(),
   finished_at_ms: z.number().nullable(),
+  worker_selection: workerSelectionSchema.optional(),
 });
 export const taskRecoveryViewSchema = z.object({
   key: z.string().min(1),
@@ -24,10 +26,10 @@ export const taskRecoveryViewSchema = z.object({
 export type TaskAttempt = z.infer<typeof taskAttemptSchema>;
 export type TaskRecoveryView = z.infer<typeof taskRecoveryViewSchema>;
 
-export function taskAttemptsOperation(trackId: string, key: string): ApiOperation<TaskRecoveryView> {
+export function taskAttemptsOperation(trackId: string, key: string, signal?: ApiAbortSignal): ApiOperation<TaskRecoveryView> {
   return { method: 'GET', path: `/api/tracks/${encodeURIComponent(trackId)}/tasks/${encodeURIComponent(key)}/attempts`,
     responseSchema: taskRecoveryViewSchema.refine((view) => view.key === key,
-      { message: 'Task history belongs to a different task' }),
+      { message: 'Task history belongs to a different task' }), ...(signal === undefined ? {} : { signal }),
   };
 }
 

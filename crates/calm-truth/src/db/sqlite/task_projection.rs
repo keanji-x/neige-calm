@@ -23,6 +23,9 @@ use crate::model::now_ms;
 /// (resolved through the frozen context) and `no_gate_reason` are excluded.
 pub const PROJECTION_DRIFT_TASK_FIELDS: &[&str] = &[
     "kind",
+    "provider",
+    "model",
+    "reasoning_effort",
     "goal",
     "command",
     "context",
@@ -38,9 +41,29 @@ fn declaration_field_changed(
     declaration: &TaskDeclaration,
     expected_context: &str,
 ) -> Result<bool> {
-    let (_, _, kind, goal, context, acceptance, cwd, depends, _, gate, _, _, _) = row;
+    let (
+        _,
+        _,
+        kind,
+        goal,
+        context,
+        acceptance,
+        cwd,
+        depends,
+        _,
+        gate,
+        _,
+        _,
+        _,
+        provider,
+        model,
+        effort,
+    ) = row;
     Ok(match field {
         "kind" => kind != &declaration.kind,
+        "provider" => provider != &declaration.provider,
+        "model" => model != &declaration.model,
+        "reasoning_effort" => effort != &declaration.reasoning_effort,
         // Both public instruction spellings lower into the frozen `tasks.goal` column.
         "goal" | "command" => goal != &declaration.goal,
         "context" => !context_eq(context, expected_context),
@@ -77,6 +100,9 @@ type FrozenDeclarationRow = (
     String,
     i64,
     i64,
+    Option<String>,
+    Option<String>,
+    Option<String>,
 );
 
 /// Which declaration edge was withdrawn. `Ready` outranks `ReleasedByUser`,
@@ -798,7 +824,7 @@ async fn track_projection_state(
                    (SELECT json_group_array(json_array(
                         t.status,t.key,t.kind,t.goal,t.context_json,
                         t.acceptance_criteria,t.cwd,t.depends_on_json,t.priority,
-                        t.gate_json,t.declared_by,t.decl_ready,t.decl_released_by_user))
+                        t.gate_json,t.declared_by,t.decl_ready,t.decl_released_by_user,t.provider,t.model,t.reasoning_effort))
                       FROM current_tasks t
                      WHERE t.track_id = w.id AND t.status != 'pending') AS frozen_json,
                    (SELECT json_group_array(json_object(
@@ -1213,6 +1239,9 @@ async fn evaluate_schedulability_with_tree_term_after_snapshot(
             _declared_by,
             decl_ready,
             decl_released_by_user,
+            _provider,
+            _model,
+            _effort,
         )) = frozen_by_key.get(&declaration.key)
         else {
             continue;
@@ -1679,6 +1708,16 @@ async fn project_tasks_from_verdicts_tx(
             .await?
             .map(|allocation| allocation.attempt_id)
             .unwrap_or_else(|| format!("{track_id}:{}", declaration.key));
+        // A released recovery allocation inherits its predecessor's request, even when today's
+        // Report adds selection fields excluded from the historical task-root hash.
+        let frozen_selection = super::task_attempt::task_recovery_selection_tx(tx, &id).await?;
+        let (provider, model, effort) = frozen_selection.unwrap_or_else(|| {
+            (
+                declaration.provider.clone(),
+                declaration.model.clone(),
+                declaration.reasoning_effort.clone(),
+            )
+        });
         let context = serde_json::to_string(&declaration.context)
             .map_err(|e| CalmError::Internal(format!("serialize task context: {e}")))?;
         let depends = serde_json::to_string(&declaration.depends_on)
@@ -1694,13 +1733,14 @@ async fn project_tasks_from_verdicts_tx(
                    id,track_id,key,kind,goal,context_json,acceptance_criteria,cwd,
                    depends_on_json,priority,gate_json,status,declared_by,spawn,
                    decl_ready,decl_released_by_user,created_at_ms,updated_at_ms,access,head,base,
-                   start,result_contract,child_track_json
+                   start,result_contract,child_track_json,provider,model,reasoning_effort
                ) VALUES(
                    ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,'pending',?12,?13,
-                   ?14,?15,?16,?16,?17,?18,?19,?20,?21,?22
+                   ?14,?15,?16,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25
                )
                ON CONFLICT(id) DO UPDATE SET
                    kind=excluded.kind,
+                   provider=excluded.provider, model=excluded.model, reasoning_effort=excluded.reasoning_effort,
                    goal=excluded.goal,
                    context_json=excluded.context_json,
                    acceptance_criteria=excluded.acceptance_criteria,
@@ -1722,6 +1762,9 @@ async fn project_tasks_from_verdicts_tx(
                WHERE tasks.status='pending'
                  AND (
                      tasks.kind IS NOT excluded.kind
+                     OR tasks.provider IS NOT excluded.provider
+                     OR tasks.model IS NOT excluded.model
+                     OR tasks.reasoning_effort IS NOT excluded.reasoning_effort
                      OR tasks.goal IS NOT excluded.goal
                      OR tasks.context_json IS NOT excluded.context_json
                      OR tasks.acceptance_criteria IS NOT excluded.acceptance_criteria
@@ -1769,6 +1812,9 @@ async fn project_tasks_from_verdicts_tx(
                 .map(serde_json::to_string)
                 .transpose()?,
         )
+        .bind(&provider)
+        .bind(&model)
+        .bind(&effort)
         .execute(&mut **tx)
         .await?;
         if result.rows_affected() != 0 {
@@ -2761,7 +2807,7 @@ mod tests {
     async fn a_pending_tasks_result_contract_follows_its_block_and_reprojection_is_idempotent() {
         let (repo, track) = setup().await;
         let block = |contract: Option<&str>| {
-            let mut payload = json!({"key": "review", "kind": "claude", "goal": "review",
+            let mut payload = json!({"key": "review", "kind": "claude", "goal": "review", "access":"read_only",
                 "ready": true, "no_gate_reason": "fixture",
                 "declared_by": calm_types::report_blocks::tasks::PLANNER_DECLARATION_AUTHOR});
             if let Some(contract) = contract {

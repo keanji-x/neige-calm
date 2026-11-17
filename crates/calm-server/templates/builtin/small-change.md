@@ -3,6 +3,8 @@ id = "small-change"
 title = "Small change"
 description = "Make a focused local change and verify it. Choose Development when you expect PR delivery."
 instructions = """
+Declare in-track AI workers with kind="agent" and provider="codex"|"claude"|"antigravity". Optional model/reasoning_effort freeze per attempt; omission uses provider defaults. Review workers require read_only and review-v1 without a Gate. Use message_read for durable corrections, kernel Gate/checkpoint/finalize for verification, and stop work after reporting; the kernel owns Git delivery and native cleanup.
+
 Read the requested change and the affected code path.
 Implement the smallest appropriate change and run relevant verification.
 Report the result and the checks that actually ran.

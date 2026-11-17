@@ -40,7 +40,6 @@ use crate::event::{Event, EventBus, EventScope};
 use crate::ids::{ActorId, TrackId};
 use crate::model::{Task, TaskKind, TaskStart, TaskStatus, Track, new_id, now_ms};
 use crate::operation::child_track_adapter::{CHILD_TRACK_KIND, ChildTrackOperationPayload};
-use crate::operation::claude_adapter::ClaudeWorkerOperationPayload;
 use crate::operation::codex_adapter::CodexWorkerOperationPayload;
 use crate::operation::planner_harness_start_adapter::PlannerHarnessStartOperationPayload;
 use crate::operation::planner_start_fence::CardStartFence;
@@ -166,59 +165,32 @@ async fn refresh_catch_up_upstream(track: &Track) {
 /// Build the worker-operation payload as a pure function of the frozen task row, so a
 /// post-crash resubmit idempotency-matches the original instead of conflicting on payload hash.
 pub fn build_worker_payload(task: &Task) -> Result<(&'static str, Value)> {
-    match task.kind {
-        TaskKind::Compact => Err(CalmError::Internal(
-            "compact tasks have no worker payload".into(),
-        )),
-        TaskKind::Codex => {
-            let payload = serde_json::to_value(CodexWorkerOperationPayload {
-                actor: ActorId::KernelDispatcher,
-                track_id: task.track_id.clone(),
-                idempotency_key: task.id.clone(),
-                goal: task.goal.clone(),
-                // The lease path from `prepare_tx` is the authoritative cwd; serializing `task.cwd`
-                // would change `stable_payload_hash` for in-flight tasks created by older builds.
-                cwd: None,
-                context: serde_json::from_str(&task.context_json).unwrap_or(Value::Null),
-                acceptance_criteria: task.acceptance_criteria.clone(),
-            })?;
-            Ok((
-                task.kind.worker_operation_kind().expect("checkout worker"),
-                payload,
-            ))
-        }
-        TaskKind::Claude => {
-            let payload = serde_json::to_value(ClaudeWorkerOperationPayload {
-                actor: ActorId::KernelDispatcher,
-                track_id: task.track_id.clone(),
-                idempotency_key: task.id.clone(),
-                goal: task.goal.clone(),
-                // Same as codex-worker: keep `task.cwd` out of the payload hash.
-                cwd: None,
-                context: serde_json::from_str(&task.context_json).unwrap_or(Value::Null),
-                acceptance_criteria: task.acceptance_criteria.clone(),
-            })?;
-            Ok((
-                task.kind.worker_operation_kind().expect("checkout worker"),
-                payload,
-            ))
-        }
-        TaskKind::Terminal => {
-            let payload = serde_json::to_value(TerminalWorkerOperationPayload {
+    if task.kind == TaskKind::Terminal {
+        return Ok((
+            calm_types::provider_worker::WorkerOperationKind::TerminalWorker.as_str(),
+            serde_json::to_value(TerminalWorkerOperationPayload {
                 actor: ActorId::KernelDispatcher,
                 track_id: task.track_id.clone(),
                 idempotency_key: task.id.clone(),
                 cmd: task.goal.clone(),
-                // Row value AS-IS: materializing `default_cwd()` here would make `stable_payload_hash`
-                // depend on process env, so a restart under a different HOME would fail the task.
                 cwd: task.cwd.clone(),
-            })?;
-            Ok((
-                task.kind.worker_operation_kind().expect("checkout worker"),
-                payload,
-            ))
-        }
+            })?,
+        ));
     }
+    let operation = task
+        .worker_operation_kind()
+        .ok_or_else(|| CalmError::BadRequest("task has no registered Worker capability".into()))?;
+    // Requests remain frozen on the row. Preserve the historical payload bytes and hashes.
+    let payload = serde_json::to_value(CodexWorkerOperationPayload {
+        actor: ActorId::KernelDispatcher,
+        track_id: task.track_id.clone(),
+        idempotency_key: task.id.clone(),
+        goal: task.goal.clone(),
+        cwd: None,
+        context: serde_json::from_str(&task.context_json).unwrap_or(Value::Null),
+        acceptance_criteria: task.acceptance_criteria.clone(),
+    })?;
+    Ok((operation, payload))
 }
 
 /// Child creation identity is a pure function of the post-claim row. Parent
@@ -241,17 +213,17 @@ pub fn build_child_track_payload(task: &Task) -> Result<Value> {
 }
 
 fn task_kind_str(kind: TaskKind) -> &'static str {
-    match kind {
-        TaskKind::Codex => "codex",
-        TaskKind::Claude => "claude",
-        TaskKind::Terminal => "terminal",
-        TaskKind::Compact => "compact",
-    }
+    kind.as_str()
 }
 
 pub(crate) fn task_has_running_liveness_deadline(task: &Task) -> bool {
     task.spawn != calm_types::task_recovery::TASK_CHILD_TRACK_ROUTE
-        && matches!(task.kind, TaskKind::Codex | TaskKind::Claude)
+        && task
+            .agent_provider()
+            .ok()
+            .flatten()
+            .and_then(calm_types::provider_worker::ProviderWorkerCapabilities::for_provider)
+            .is_some()
 }
 
 /// RAII guard for the per-task single-flight map. Losing a slot is always safe — the

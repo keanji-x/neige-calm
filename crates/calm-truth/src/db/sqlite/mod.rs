@@ -498,8 +498,8 @@ mod track_detail_sort_precision_tests;
 
 mod task_planner_messages;
 pub use task_planner_messages::{
-    planner_message_insert_tx, planner_messages_for_attempt, planner_messages_for_attempt_tx,
-    planner_messages_read_tx, planner_messages_unread_tx,
+    planner_message_insert_tx, planner_message_insert_with_source_tx, planner_messages_for_attempt,
+    planner_messages_for_attempt_tx, planner_messages_read_tx, planner_messages_unread_tx,
 };
 
 #[cfg(test)]

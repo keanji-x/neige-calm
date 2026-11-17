@@ -1,7 +1,7 @@
 //! Codex worker native liveness, strict timeout and best-effort settled cleanup integration.
 use super::PlannerFactory;
 use crate::error::{CalmError, Result};
-use crate::model::{Task, TaskKind, now_ms};
+use crate::model::{Task, now_ms};
 use provider::control::NativeInterruptOutcome;
 use provider::worker::{
     CodexDaemonProbe, CodexDaemonRoute, CodexLivenessFacts, FixedCodexDaemon, ThreadStatusLite,
@@ -120,9 +120,10 @@ impl PlannerFactory<'_> {
         task: &Task,
         card_id: &str,
     ) -> Option<TurnEnd> {
-        match task.kind {
-            TaskKind::Codex => idle.observe(pool, task, card_id).await,
-            TaskKind::Claude | TaskKind::Terminal | TaskKind::Compact => None,
+        if task.agent_provider().ok().flatten() == Some(calm_types::runtime::AgentProvider::Codex) {
+            idle.observe(pool, task, card_id).await
+        } else {
+            None
         }
     }
 }

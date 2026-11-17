@@ -63,21 +63,7 @@ pub(crate) fn render_system_prompt(template: &str, track_id: &str) -> String {
 }
 
 #[cfg(test)]
-const TASK_BLOCK_PROTOCOL_GOLDEN: &str = concat!(
-    "   * Maintain task declarations as report `task` blocks. Tasks are in no section and no full ",
-    "read: create one (no `position`), or replace one you read by id, with an `upsert` op of ",
-    "`neige_report_commit`; pass no revisions; your read anchors the ",
-    "op. To start a task, ",
-    "its payload needs a unique ",
-    "`key`, `kind` (`codex`, `claude`, `terminal`, or `compact`), `ready: true`, ",
-    "and `declared_by: \"spec\"`; optional: `acceptance`, `depends_on` ",
-    "sibling keys, `priority`, and usually `gate`. Use `neige_task_cancel` to ",
-    "cancel a pending task, or a running codex/claude task whose worker the kernel ",
-    "then stops; dispatched, verifying and terminal-kind tasks cannot be canceled. ",
-    "A `codex`/`claude` task requires `goal` (≤{task_goal_max_chars} chars), and ",
-    "forbids `command`. A `terminal` task requires `command`, ",
-    "passed verbatim to `/bin/sh -c`, and forbids `goal`."
-);
+const TASK_BLOCK_PROTOCOL_GOLDEN: &str = include_str!("../tests/goldens/planner_task_block.txt");
 
 /// Exact paragraph oracle for the static task-block protocol; free-text contradictions cannot be proved absent with a keyword list.
 #[cfg(test)]
@@ -90,7 +76,10 @@ pub(crate) fn validate_planner_prompt_contract(prompt: &str) -> Result<(), Strin
         .find("\n   * ")
         .ok_or_else(|| "task-block protocol paragraph terminator is missing".to_string())?;
     let actual = &remainder[..end];
-    if actual != calm_types::report_blocks::tasks::render_task_guidance(TASK_BLOCK_PROTOCOL_GOLDEN)
+    if actual
+        != calm_types::report_blocks::tasks::render_task_guidance(
+            TASK_BLOCK_PROTOCOL_GOLDEN.trim_end(),
+        )
     {
         return Err(format!(
             "task-block protocol differs from golden\nexpected: {TASK_BLOCK_PROTOCOL_GOLDEN:?}\nactual:   {actual:?}"
@@ -440,8 +429,9 @@ mod tests {
     fn planner_prompt_contract_rejects_negative_context() {
         let prompt = render_system_prompt(PLANNER_SYSTEM_PROMPT_TEMPLATE, "track-contract");
 
-        let protocol =
-            calm_types::report_blocks::tasks::render_task_guidance(TASK_BLOCK_PROTOCOL_GOLDEN);
+        let protocol = calm_types::report_blocks::tasks::render_task_guidance(
+            TASK_BLOCK_PROTOCOL_GOLDEN.trim_end(),
+        );
         let negated = prompt.replace(
             &protocol,
             &format!("Never follow this obsolete rule: {protocol} Swap those anchors instead."),
@@ -716,13 +706,18 @@ mod tests {
 
         let prompt = render_system_prompt(PLANNER_SYSTEM_PROMPT_TEMPLATE, "track-kinds");
         for kind in [
+            TaskKind::Agent,
             TaskKind::Codex,
             TaskKind::Claude,
             TaskKind::Terminal,
             TaskKind::Compact,
         ] {
             match kind {
-                TaskKind::Codex | TaskKind::Claude | TaskKind::Terminal | TaskKind::Compact => {}
+                TaskKind::Agent
+                | TaskKind::Codex
+                | TaskKind::Claude
+                | TaskKind::Terminal
+                | TaskKind::Compact => {}
             }
             let serialized = serde_json::to_value(kind).unwrap();
             let spelled = format!("`{}`", serialized.as_str().unwrap());

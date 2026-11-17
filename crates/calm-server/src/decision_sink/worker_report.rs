@@ -25,16 +25,18 @@ pub(super) async fn admit_worker_report_tx(
     let TaskReporter::Card { card_id, owns_key } = reporter else {
         return Err(CalmError::Forbidden("worker report requires a card".into()));
     };
-    let scheduled_keys: Vec<String> = sqlx::query_scalar(
+    let worker_kinds = calm_types::provider_worker::WorkerOperationKind::sql_list();
+    let sql = format!(
         "SELECT idempotency_key FROM operations WHERE target_type = 'card' \
-         AND target_id = ?1 AND kind IN ('codex-worker', 'claude-worker', 'terminal-worker') \
+         AND target_id = ?1 AND kind IN ({worker_kinds}) \
          AND json_extract(payload_json, '$.actor.kind') = 'KernelDispatcher' \
          AND idempotency_key IS NOT NULL \
          UNION SELECT id FROM tasks WHERE worker_card_id = ?1",
-    )
-    .bind(card_id)
-    .fetch_all(&mut **tx)
-    .await?;
+    );
+    let scheduled_keys: Vec<String> = sqlx::query_scalar(&sql)
+        .bind(card_id)
+        .fetch_all(&mut **tx)
+        .await?;
     if let Some(expected) = scheduled_keys.iter().find(|key| key.as_str() != task_id) {
         return Err(CalmError::Conflict(format!(
             "worker card {card_id} belongs to attempt_id {expected}; report with that attempt_id"
@@ -158,7 +160,7 @@ impl WorkerTaskReport {
 }
 
 /// Worker stamping and reporting must re-prove the same session/card/role admission.
-pub(crate) async fn admit_worker_write_tx(
+pub(super) async fn admit_worker_identity_tx(
     tx: &mut Transaction<'_, Sqlite>,
     identity: &ToolCallIdentity,
     track: &TrackId,
@@ -185,4 +187,20 @@ pub(crate) async fn admit_worker_write_tx(
             "worker write denied: {reason}"
         ))),
     }
+}
+
+/// Side-effect tools stop admitting writes as soon as an ACP report records release intent.
+pub(crate) async fn admit_worker_write_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    identity: &ToolCallIdentity,
+    track: &TrackId,
+) -> Result<(), CalmError> {
+    admit_worker_identity_tx(tx, identity, track).await?;
+    let pending:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM worker_sessions WHERE id=?1 AND json_extract(handle_state_json,'$.release_intent')=1)").bind(&identity.session_id).fetch_one(&mut **tx).await?;
+    if pending {
+        return Err(CalmError::Conflict(
+            "ACP Worker report is awaiting round settlement".into(),
+        ));
+    }
+    Ok(())
 }
