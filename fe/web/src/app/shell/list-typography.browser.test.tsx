@@ -25,6 +25,7 @@ function draw(selected = false) {
     pinnedAt: null, closedAt: null, createdAt: 1, updatedAt: 1, ...NEUTRAL_ACTIVITY,
   }));
   const view = deriveTrackPageView({
+    existingCardIds: new Set(['card-0', 'card-1']),
     cards: ['Card first', 'Card second'].map((title, i) => ({
       id: `card-${i}`, track_id: 'track-0', title, kind: 'terminal', sort: i, payload: { terminal_presentation: { source: 'manual', in_workbench: true } },
       deletable: true, created_at: 1, updated_at: 1,

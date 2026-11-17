@@ -188,9 +188,11 @@ function taskRow(task: ReportTaskRow, activity: TrackPageActivity, openableCards
   };
 }
 
-/** The track page's row modules; order is part of the view model: Tasks before Tools on both surfaces. */
+/** Tasks retain their report sources; desktop Progress omits workers absent from the full card inventory. */
 export function deriveTrackPageView(input: Readonly<{
   cards: readonly CardWire[];
+  /** Full Track card identities, including headless cards excluded from the panel. */
+  existingCardIds: ReadonlySet<string>;
   tasks: readonly ReportTaskRow[];
   /** See `TrackPageActivity`; a `Track` satisfies it, and so does `NEUTRAL_ACTIVITY`. */
   activity: TrackPageActivity;
@@ -248,8 +250,12 @@ export function deriveTrackPageView(input: Readonly<{
     absorbed.add(worker.id);
     return { ...row, actions: [...row.actions, ...worker.actions.filter(action => action.kind === 'delete-card')] };
   });
-  // Keep time evidence local to sorting: a task is not given a fabricated updated timestamp.
-  const taskEntries = workRows.map(row => {
+  // The report and attempt history outlive a deleted worker; Progress follows current resources.
+  const taskEntries = workRows.filter(row => {
+    const workerId = workerCardByBlock.get(row.id) ?? null;
+    return workerId === null || input.existingCardIds.has(workerId);
+  }).map(row => {
+    // Keep time evidence local to sorting: a task is not given a fabricated updated timestamp.
     const task = tasksByBlock.get(row.id)!;
     const execution = task.execution;
     const workerId = workerCardByBlock.get(row.id) ?? null;

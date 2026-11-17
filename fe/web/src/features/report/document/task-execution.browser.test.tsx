@@ -63,7 +63,7 @@ it.each(['codex', 'claude'] as const)('keeps a completed %s review readable in t
     blockId: 'b-review', key: 'independent-review', schedulable: true,
     status: 'done', workerCardId: 'review-worker',
   }]);
-  const inventory = deriveTrackPageView({ cards: [], tasks, activity: NEUTRAL_ACTIVITY,
+  const inventory = deriveTrackPageView({ existingCardIds: new Set<string>(), cards: [], tasks, activity: NEUTRAL_ACTIVITY,
     openableCards: new Set(['review-worker']) }).rowModules.find(module => module.key === 'tasks')!;
   expect(groupPanelRows(inventory.rows, 'tasks').map(group => [group.key, group.rows.length]))
     .toEqual([['done', 1]]);

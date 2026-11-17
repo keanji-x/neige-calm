@@ -1284,8 +1284,9 @@ function TrackRouteBody({
       }));
   }, [cardRegistry, cards, track, notices]);
   const openableCards = useMemo(() => new Set(gridItems.map((item) => item.card.id)), [gridItems]);
-  const defaultTerminalIds = useMemo(() => workbenchTerminalCardIds({ cards: panelCards, tasks,
-    activity: track, openableCards }), [panelCards, tasks, track, openableCards]);
+  const existingCardIds = useMemo(() => new Set(cards.map(card => card.id)), [cards]);
+  const defaultTerminalIds = useMemo(() => workbenchTerminalCardIds({ cards: panelCards, existingCardIds, tasks,
+    activity: track, openableCards }), [panelCards, existingCardIds, tasks, track, openableCards]);
   /* `'rows'` unconditionally: an empty list with a `+` over it is the whole feature. */
   const trackViews = useTrackViews();
   if (trackViews === null) throw new Error('Terminal workbench requires TrackViewProvider');
@@ -1572,6 +1573,7 @@ function TrackRouteBody({
          cannot disagree about what tasks exist. */
       tasks={tasks}
       openableCards={openableCards}
+      existingCardIds={existingCardIds}
       outlineItems={outline}
       /* Tasks and the mobile Outline share one anchor landing. The URL carries
          it too, so the reader can hand the destination to somebody else. */

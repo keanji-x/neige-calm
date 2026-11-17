@@ -44,7 +44,7 @@ function mobilePanel(container: Element): Element {
 /* `openableCards` mirrors `renderPage`'s default so the two sides of each
    comparison below derive from one and the same input. */
 const cardsModule = (cards: readonly CardWire[]) =>
-  deriveTrackPageView({ cards, tasks: [], activity: NEUTRAL_ACTIVITY, openableCards: openableCardsOf(cards, []) }).rowModules.filter((module) => module.key === 'cards');
+  deriveTrackPageView({ existingCardIds: new Set(cards.map(card => card.id)), cards, tasks: [], activity: NEUTRAL_ACTIVITY, openableCards: openableCardsOf(cards, []) }).rowModules.filter((module) => module.key === 'cards');
 
 /* The Tasks fixture, written as `deriveReportTasks` produces its rows; the shape guard re-reads the clauses off the derived rows. */
 const TASKS: readonly ReportTaskRow[] = [
@@ -77,7 +77,7 @@ const TASKS: readonly ReportTaskRow[] = [
 ];
 
 const tasksModule = (tasks: readonly ReportTaskRow[]): readonly RowModuleView[] =>
-  deriveTrackPageView({ cards: [], tasks, activity: NEUTRAL_ACTIVITY, openableCards: openableCardsOf([], tasks) }).rowModules.filter((module) => module.key === 'tasks');
+  deriveTrackPageView({ existingCardIds: new Set<string>(), cards: [], tasks, activity: NEUTRAL_ACTIVITY, openableCards: openableCardsOf([], tasks) }).rowModules.filter((module) => module.key === 'tasks');
 
 const ROWS: readonly PanelRow[] = cardsModule(CARDS).flatMap((module) => [...module.rows]);
 
