@@ -357,7 +357,9 @@ async fn retained_loss_for(case: LossCase, grok: bool) {
                     }
                 })
                 .count();
-            assert_eq!(compact_prompts, 1, "lost maintenance is never resent");
+            // Submission proves a pipe write, not peer consumption. Aborting
+            // the driver may retire the peer before it records that request.
+            assert!(compact_prompts <= 1, "lost maintenance is never resent");
             return;
         }
         let retained =
