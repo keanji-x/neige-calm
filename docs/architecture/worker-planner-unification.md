@@ -151,22 +151,38 @@ AgentWorkerAdapter + WorkerTurnRunner (新增精简执行器，无 Terminal / �
 
 ---
 
-## 5. 推荐实施拆分顺序（4 个可独立合入的 PR）
+## 5. 推荐推进节奏：纵向端到端闭环优先（避免按模块横切 4 个半成品 PR）
 
-为降低单次变更半径并满足仓库审查分级要求，建议按以下 4 个阶段推进：
+第 4 节表格中的 4 个模块是代码职责分区，**不应按“数据库层 -> 后端层 -> 调度层 -> 前端层”横向拆成 4 个孤立 PR**（横向拆会导致前几个 PR 无法真实端到端跑任务，却要重复走多轮 L2 审查与 CI）。
 
-1. **PR 1 — 任务契约、存储迁移与 Worker 卡片绑定（审查级别：L2，涉及数据库迁移与持久化契约）**
-   - 落地 SQLite 迁移（`tasks` 新增 `provider` / `model` / `reasoning_effort`）、`TaskKind::Agent` 与声明校验诊断（含拒绝 `claude` Worker 的清晰诊断）、`HarnessProfile::TaskWorker`、`WorkerSessionKind::ManagedWorker` 与 `PlannerBinding` 扩展，同步更新 OpenAPI 与前端生成类型。
-   - *阶段产物*：前后端契约与存储就绪，现有运行行为零变化。
-2. **PR 2 — 共享 `AgentBackend` 泛化与 ACP/Codex 无人值守执行配置（审查级别：L2，涉及工具权限与隔离边界）**
-   - 解耦 `PlannerFactory` 与 `acp_planner` 中的 Planner 专属假设，加入 `TaskWorker` 系统指令渲染与无人值守权限审批器（含只读任务与写任务的边界单测及变异验证）。
-   - *阶段产物*：`Codex` 与三类 `ACP` Provider 均可通过统一后端接口以 `Executor` 角色跑通单测会话。
-3. **PR 3 — `AgentWorkerAdapter`、`WorkerTurnRunner` 调度切流与运行期消息（审查级别：L2，涉及调度、租约释放与 MCP 工具面）**
-   - 实现 `AgentWorkerAdapter` 与 `WorkerTurnRunner`，接管 `kind: "agent"` 与 `kind: "codex"` 调度分发；接入 `CatalogAccess` 模型校验、对话转录落库、Turn 结束即时收敛与 `neige_task_message`；同步放开子 Track 任务的 Provider/模型指定。
-   - *阶段产物*：后端全链路跑通四类 Provider 的无终端 Worker 执行与模型选择。
-4. **PR 4 — 前端无头 Worker 对话视图接入与旧栈彻底清理（审查级别：L1）**
-   - 前端落地 `WORKER_CARD_ENTRY` 与任务对话抽屉跳转，完成真实浏览器预览验证；随后在同一或紧随的清理提交中整体移除 `worker_flow`、`claude_worker`、旧 PTY Worker 启动器与括号粘贴逻辑。
-   - *阶段产物*：端到端体验闭环，净删约 2,500+ 行历史代码。
+更高效的推进方式是**纵向切一刀：第一个 PR 直接打通从任务声明到前端会话展示的最小端到端闭环（MVP），把锦上添花的细节和大面积旧代码清理留到闭环跑稳之后**（整体仅需 **1 个核心闭环 PR + 1 个纯清理 PR + 按需小迭代**）：
+
+### 阶段一（PR 1）：最小端到端闭环 MVP（约 +1,100 ~ +1,350 行生产代码，审查级别：L2）
+
+**目标：合入当天即可在真实 Track 中派发 `codex` / `antigravity` / `opencode` / `grok` 无头 Worker、按任务选 `model`、在界面实时看对话流并跑通 Gate 与 Git 交付。**
+
+- **首版必做（构成闭环的最短路径）**：
+  1. **最小契约与迁移（~250 行）**：`tasks` 表增加 `provider` / `model` / `reasoning_effort`；支持 `kind: "agent"`（兼容 `kind: "codex"`，拒绝 `claude` Worker）；`HarnessProfile::TaskWorker` 接入 `PlannerBinding`。
+  2. **共享 `AgentBackend` 无人值守打开（~300 行）**：打通 `Codex` 与 `ACP` 的 `TaskWorker` 指令装填、模型参数注入（`CatalogAccess` -> `TurnModelSelection`）及只读/写权限自动裁决。
+  3. **单轮自主 `AgentWorkerAdapter` + `WorkerTurnRunner`（~450 行）**：复用现有 `workspace_lease::worker` 与 `CardDecisionSink`（`done/fail` + Gate + Git 候选交付）；无 PTY 启动，流式写入 `LiveReplies` 与 `conversation_v1` 转录；Turn 结束未交卷则立即结算 `worker-turn-ended` 并释放锁；支持 `neige_task_cancel` 原生中断。
+  4. **前端最薄无头卡片注册（~80~120 行）**：在 `fe/web/src/systems/cards/builtins/` 注册 `task_worker` 为 `headless: true` 并同步生成 API 类型 —— 因 `PlannerBinding` 已打通，现有会话面板可直接查看 Worker 实时输出，无需在首版手写新 UI 组件。
+- **首版刻意不做（为闭环减重，避免首版 Diff 膨胀）**：
+  - **暂不做运行期插话（`neige_task_message` / `steer` / 多轮续跑队列）**：首版聚焦 99% 场景的单轮自主执行（需要纠偏直接 `neige_task_cancel` 后声明新任务重派，符合现有标准范式），省去首版改动 MCP 字节预算与多轮并发状态机。
+  - **暂不改子 Track（`spawn: "sub-track"`）选模透传**与 **Report 任务块跳抽屉/模型徽标增强**。
+  - **首版只切调度入口、暂不物理删除旧文件**：避免同一 PR 混杂 1,200 行新核心逻辑与近 3,000 行旧文件删除，大幅降低 L2 审查负担与回滚成本。
+- **Track 内开发节奏**：可在同一分支上分 2~3 个小步实现任务连续推进（① 契约+后端 Runner 跑通集成测试 -> ② 补齐 80 行前端卡片并做真实浏览器预览 -> ③ 跑通门禁与 L2 双通道审查后一次性提交 PR 1）。
+
+### 阶段二（PR 2）：旧双栈与私有日志抓取纯清理（净删约 -2,550 ~ -3,200 行，审查级别：L1）
+
+待 PR 1 合入并在实际使用中验证稳定后，单独提交一个**纯删除清理 PR**：一次性移除 `CodexWorkerAdapter` PTY Viewer、`ClaudeWorkerAdapter`、未接线的 `claude_worker/`（WA2）、`worker_flow/` 磁盘 JSONL 轮询器、括号粘贴发信及 300 秒空闲轮询。纯删死代码改动边界清晰、审查极快。
+
+### 阶段三（按需增量小 PR，审查级别：L1/L2）
+
+闭环跑通后，根据真实使用体感按需补齐细节，每项均可独立小步快跑：
+- **UI 体验补齐（~200 行，L1）**：Report 任务块展示实际运行的 `provider / model` 徽标，点击 Attempt 一键弹出对应 Worker 对话抽屉。
+- **子 Track 选模透传（~100 行，L1）**：放开 `spawn: "sub-track"` 对 `kind: "agent"` 及 `provider` / `model` 的透传。
+- **运行期消息 `neige_task_message`（~200 行，按需）**：若实测中发现 `cancel + 重派` 不够用、确需运行中插话纠偏，再单独补上 Codex `steer` 与 ACP 续跑队列（对应第 3.2 节 D5）。
+- **Claude Worker 回归（~150 行，远期按需）**：在 `claude_planner/role.rs` 增加 `WorkerRole` 即可接回。
 
 ---
 
