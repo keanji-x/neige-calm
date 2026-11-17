@@ -449,7 +449,7 @@ fn acceptance_23_sub_track_rejects_claude_and_terminal_at_common_write_validatio
 }
 
 /// #1917: `access` is `read_only` | `read_write` (absent and null = `read_write`); a read-only
-/// task is a codex/claude task in the track's checkout with no gate. Each refusal names the
+/// task is an agent task in the track's checkout with no gate. Each refusal names the
 /// valid choices.
 #[test]
 fn task_access_rules_name_the_valid_choices() {
@@ -506,7 +506,7 @@ fn task_access_rules_name_the_valid_choices() {
     terminal["command"] = json!("cargo test");
     let error = validate_payload(KIND_TASK, &terminal).unwrap_err();
     assert!(
-        error.contains("access: \"read_only\" requires kind \"codex\" or \"claude\""),
+        error.contains("access: \"read_only\" requires an agent task"),
         "{error}"
     );
     let mut child = reader();
@@ -531,7 +531,7 @@ fn task_access_rules_name_the_valid_choices() {
 fn task_head_and_base_apply_only_to_read_only_tasks() {
     const HEAD: &str = "d448361faad48153dd02494d8acd2d7ad791634d";
     const BASE: &str = "a4a16f1406e7ac9134338823332a2097af0c612e";
-    const WHERE: &str = "applies only to a codex or claude task with access: \"read_only\"";
+    const WHERE: &str = "applies only to an agent task with access: \"read_only\"";
     let reader = || {
         let mut payload = valid_task();
         payload.as_object_mut().unwrap().remove("gate");
@@ -603,7 +603,7 @@ fn task_head_and_base_apply_only_to_read_only_tasks() {
 }
 
 /// C5 (#2058 D4): `start` is `checkout` | `upstream` (absent and null = `checkout`); an upstream
-/// start is a codex/claude task on the in-track route that changes the checkout. Each refusal
+/// start is an agent task on the in-track route that changes the checkout. Each refusal
 /// names the valid choices.
 #[test]
 fn task_start_rules_name_the_valid_choices() {
@@ -638,7 +638,7 @@ fn task_start_rules_name_the_valid_choices() {
             p["kind"] = json!("terminal");
             p["command"] = json!("cargo test");
         },
-        "start: \"upstream\" requires kind \"codex\" or \"claude\"; a terminal task takes \
+        "start: \"upstream\" requires an agent task; a terminal task takes \
          \"checkout\"",
     );
     refused(
@@ -675,6 +675,8 @@ fn task_result_contract_must_name_a_registered_contract() {
         payload["kind"] = json!(kind);
         for contract in crate::task_result::RESULT_CONTRACTS {
             payload["result_contract"] = json!(contract.name);
+            payload["access"] = json!("read_only");
+            payload.as_object_mut().unwrap().remove("gate");
             assert_eq!(validate_payload(KIND_TASK, &payload), Ok(()));
         }
     }
@@ -703,15 +705,15 @@ fn task_result_contract_is_rejected_on_terminal_and_child_track_tasks() {
     terminal.as_object_mut().unwrap().remove("goal");
     terminal["kind"] = json!("terminal");
     terminal["command"] = json!("cargo test");
-    terminal["result_contract"] = json!("review-v1");
+    terminal["result_contract"] = json!("evaluation-v1");
     assert_eq!(
         validate_payload(KIND_TASK, &terminal).unwrap_err(),
-        "result_contract: requires kind \"codex\" or \"claude\"; only a worker reports a result \
+        "result_contract: requires an agent task; only a worker reports a result \
          through neige_task_done"
     );
     let mut child_track = valid_task();
     child_track["spawn"] = json!(TASK_CHILD_TRACK_ROUTE);
-    child_track["result_contract"] = json!("review-v1");
+    child_track["result_contract"] = json!("evaluation-v1");
     assert_eq!(
         validate_payload(KIND_TASK, &child_track).unwrap_err(),
         format!(
@@ -898,4 +900,33 @@ fn child_track_continue_declaration_accepts_only_exclusive_nonempty_target() {
         payload["child_track"] = serde_json::json!({"continue":target});
         assert!(super::validate_payload(super::KIND_TASK, &payload).is_err());
     }
+}
+
+#[test]
+fn pre_upgrade_legacy_codex_and_claude_review_v1_without_access_remains_valid() {
+    for kind in ["codex", "claude"] {
+        let legacy = serde_json::json!({
+            "key": "rev",
+            "kind": kind,
+            "goal": "review",
+            "ready": true,
+            "declared_by": crate::report_blocks::tasks::PLANNER_DECLARATION_AUTHOR,
+            "result_contract": "review-v1",
+        });
+        assert_eq!(validate_payload(KIND_TASK, &legacy), Ok(()), "{kind}");
+    }
+    let canonical_missing_access = serde_json::json!({
+        "key": "rev",
+        "kind": "agent",
+        "provider": "codex",
+        "goal": "review",
+        "ready": true,
+        "declared_by": crate::report_blocks::tasks::PLANNER_DECLARATION_AUTHOR,
+        "result_contract": "review-v1",
+    });
+    assert!(validate_payload(KIND_TASK, &canonical_missing_access).is_err());
+
+    let mut canonical_read_only = canonical_missing_access;
+    canonical_read_only["access"] = serde_json::json!("read_only");
+    assert_eq!(validate_payload(KIND_TASK, &canonical_read_only), Ok(()));
 }

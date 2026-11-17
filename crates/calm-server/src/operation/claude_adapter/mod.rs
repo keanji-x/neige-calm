@@ -381,7 +381,25 @@ pub async fn build_claude_env(
     Ok(Value::Object(env_map))
 }
 
+#[cfg(test)]
 fn build_claude_worker_command_line(
+    claude_bin: &str,
+    settings_path: &Path,
+    claude_session_id: &str,
+    track_id: &str,
+    prompt: &str,
+) -> Result<String> {
+    build_claude_worker_command_line_selected(
+        claude_bin,
+        settings_path,
+        claude_session_id,
+        track_id,
+        prompt,
+        &provider::TurnModelSelection::inherit(),
+    )
+}
+
+fn build_claude_worker_command_line_selected(
     claude_bin: &str,
     settings_path: &Path,
     claude_session_id: &str,

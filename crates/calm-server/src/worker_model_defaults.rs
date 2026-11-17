@@ -68,6 +68,31 @@ pub(crate) async fn snapshot_tx(
     })
 }
 
+/// Apply per-task selection on top of published defaults:
+/// per-task (`task.model` / `task.reasoning_effort`) > published defaults > server defaults.
+pub(crate) async fn snapshot_for_task_tx(
+    tx: &mut crate::operation::Tx<'_>,
+    provider: WorkerModelProvider,
+    task_id: &str,
+) -> Result<WorkerModelSelection> {
+    let mut snapshot = snapshot_tx(tx, provider).await?;
+    let Some(task) = crate::db::sqlite::task_get_tx(tx, task_id).await? else {
+        return Ok(snapshot);
+    };
+    if task.model.is_none() && task.reasoning_effort.is_none() {
+        return Ok(snapshot);
+    }
+    let (default_model, default_effort) = match snapshot.selection {
+        WorkerModelChoice::Inherit => (None, None),
+        WorkerModelChoice::Explicit(pair) => (pair.model, pair.effort),
+    };
+    snapshot.selection = WorkerModelChoice::Explicit(WorkerModelDefaults {
+        model: task.model.or(default_model),
+        effort: task.reasoning_effort.or(default_effort),
+    });
+    Ok(snapshot)
+}
+
 pub(crate) fn selection(snapshot: &WorkerModelSelection) -> TurnModelSelection {
     match &snapshot.selection {
         WorkerModelChoice::Inherit => TurnModelSelection::inherit(),

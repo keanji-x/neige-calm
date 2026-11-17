@@ -48,10 +48,14 @@ async fn read_messages(
             let messages: Vec<_> = messages
                 .into_iter()
                 .map(|m| {
-                    json!({
+                    let mut message = json!({
                         "message_id":m.message_id, "seq":m.seq, "text":m.text,
                         "read_at":crate::time_format::at_opt(m.read_at_ms)
-                    })
+                    });
+                    if let Some(source) = m.source {
+                        message["source"] = json!(source);
+                    }
+                    message
                 })
                 .collect();
             let mut result = json!({"messages":messages});

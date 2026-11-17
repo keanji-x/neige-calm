@@ -490,7 +490,7 @@ fn plan_task(track_id: &TrackId, key: &str, kind: TaskKind, deps: &[&str]) -> Ta
         key: key.into(),
         kind,
         goal: match kind {
-            TaskKind::Codex | TaskKind::Claude => format!("do {key}"),
+            TaskKind::Agent | TaskKind::Codex | TaskKind::Claude => format!("do {key}"),
             TaskKind::Terminal => "true".into(),
             TaskKind::Compact => String::new(),
         },
@@ -516,6 +516,9 @@ fn plan_task(track_id: &TrackId, key: &str, kind: TaskKind, deps: &[&str]) -> Ta
         start: calm_server::model::TaskStart::Checkout,
         result_contract: None,
         child_track_json: None,
+        provider: None,
+        model: None,
+        reasoning_effort: None,
         created_at_ms: now,
         updated_at_ms: now,
         finished_at_ms: None,

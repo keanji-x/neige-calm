@@ -308,4 +308,137 @@ mod tests {
             assert!(!guide.contains(gone), "still in guide/terminal.md: {gone}");
         }
     }
+
+    #[tokio::test]
+    async fn canonical_agent_task_has_running_liveness_deadline_and_resolves_target() {
+        use super::*;
+        use crate::db::prelude::*;
+        use crate::model::{CardRole, NewArea, NewCard, NewTerminal, NewTrack, TaskStatus, new_id};
+        use crate::session_projection_repo::{
+            AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
+        };
+        use calm_truth::db::RepoRead;
+        let repo = crate::db::sqlite::SqlxRepo::open("sqlite::memory:")
+            .await
+            .unwrap();
+        let area = repo
+            .area_create(
+                calm_types::organization::LEGACY_OWNER_USER_ID,
+                NewArea {
+                    name: "quiet-agent".into(),
+                    color: "#000".into(),
+                    sort: None,
+                },
+            )
+            .await
+            .unwrap();
+        let track = repo
+            .track_create(NewTrack {
+                template_input: None,
+                area_id: area.id,
+                title: "quiet-agent".into(),
+                sort: None,
+                cwd: String::new(),
+                template_id: None,
+                plugin_scope: None,
+                attach_folder: false,
+                theme: crate::routes::theme::RequestTheme::default_dark(),
+            })
+            .await
+            .unwrap();
+        let attempt_id = new_id();
+        let worker_session_id = new_id();
+        let op_id = new_id();
+        let (aid, wid, oid, tid) = (
+            attempt_id.clone(),
+            worker_session_id.clone(),
+            op_id.clone(),
+            track.id.clone(),
+        );
+        crate::db::write_in_tx_typed(&repo, move |tx| {
+            Box::pin(async move {
+                let card = crate::db::sqlite::card_create_with_id_tx(
+                    tx,
+                    new_id(),
+                    NewCard {
+                        track_id: tid.clone(),
+                        title: None,
+                        kind: "codex".into(),
+                        sort: None,
+                        payload: serde_json::json!({}),
+                    },
+                    CardRole::Worker,
+                    true,
+                    &crate::card_role_cache::CardRoleCache::new(),
+                )
+                .await?;
+                let term = crate::db::sqlite::terminal_create_tx(
+                    tx,
+                    NewTerminal {
+                        card_id: card.id.clone(),
+                        cwd: ".".into(),
+                        program: "codex".into(),
+                        env: serde_json::json!({}),
+                        theme: crate::routes::theme::RequestTheme::default_dark(),
+                    },
+                )
+                .await?;
+                sqlx::query(concat!(
+                    "INSERT INTO operations (id, operation_key, kind, idempotency_key, ",
+                    "payload_hash, target_type, target_json, payload_json, tx_output_json, ",
+                    "phase, created_at_ms, updated_at_ms) ",
+                    "VALUES (?1,?1,'codex-worker',?2,'hash','card','{}','{}','{}','succeeded',1,1)",
+                ))
+                .bind(&oid)
+                .bind(&aid)
+                .execute(&mut **tx)
+                .await?;
+                crate::db::sqlite::session_start_runtime_tx(
+                    tx,
+                    WorkerSessionInit {
+                        id: wid,
+                        card_id: card.id.to_string(),
+                        kind: WorkerSessionKind::CodexCard,
+                        agent_provider: Some(AgentProvider::Codex),
+                        status: WorkerSessionState::Running,
+                        terminal_run_id: Some(term.id.to_string()),
+                        thread_id: None,
+                        session_id: None,
+                        active_turn_id: None,
+                        handle_state_json: None,
+                        spawn_op_id: Some(oid),
+                        now_ms: 1,
+                    },
+                )
+                .await?;
+                sqlx::query(concat!(
+                    "INSERT INTO tasks (id, track_id, key, kind, provider, goal, context_json, ",
+                    "depends_on_json, priority, status, worker_card_id, declared_by, spawn, ",
+                    "access, start, created_at_ms, updated_at_ms) ",
+                    "VALUES (?1,?2,'k-agent','agent','codex','work','null','[]',0,",
+                    "'running',?3,'user','in-track','read_write','checkout',1,1)",
+                ))
+                .bind(&aid)
+                .bind(tid.as_str())
+                .bind(card.id.as_str())
+                .execute(&mut **tx)
+                .await?;
+                Ok::<_, crate::error::CalmError>(())
+            })
+        })
+        .await
+        .unwrap();
+
+        let task = repo.task_get(&attempt_id).await.unwrap().unwrap();
+        assert!(crate::scheduler::task_has_running_liveness_deadline(&task));
+        let resolved = TerminalInteraction::resolve_in_track(
+            &repo,
+            track.id.as_str(),
+            &Target::Attempt(attempt_id),
+        )
+        .await
+        .unwrap();
+        assert_eq!(resolved.task_status, Some(TaskStatus::Running));
+        assert!(resolved.session_active);
+    }
 }

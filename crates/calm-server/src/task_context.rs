@@ -42,6 +42,9 @@ enum RefsMatch {
 
 pub use calm_types::task_recovery::TASK_ROOT_HASH_FIELDS as ROOT_HASH_TASK_FIELDS;
 pub const ROOT_HASH_EXCLUDED_TASK_FIELDS: &[&str] = &[
+    "provider",
+    "model",
+    "reasoning_effort",
     "key",
     "priority",
     "declared_by",

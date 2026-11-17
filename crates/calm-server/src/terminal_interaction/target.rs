@@ -523,6 +523,30 @@ impl TerminalInteraction {
                 );
                 let expected = match latest.kind {
                     TaskKind::Compact => anyhow::bail!("compact tasks have no worker terminal"),
+                    TaskKind::Agent => {
+                        let provider = latest
+                            .agent_provider()
+                            .map_err(anyhow::Error::msg)?
+                            .ok_or_else(|| anyhow::anyhow!("Worker provider missing"))?;
+                        let capability =
+                            calm_types::provider_worker::ProviderWorkerCapabilities::for_provider(
+                                provider,
+                            )
+                            .ok_or_else(|| anyhow::anyhow!("Worker capability missing"))?;
+                        if capability.message_transport
+                            == calm_types::provider_worker::WorkerMessageTransport::NativeSession
+                        {
+                            anyhow::bail!(
+                                "native Worker has no PTY; use action message with attempt_id"
+                            );
+                        }
+                        match capability.operation {
+                            calm_types::provider_worker::WorkerOperationKind::ClaudeWorker => {
+                                "claude"
+                            }
+                            _ => "codex",
+                        }
+                    }
                     TaskKind::Terminal => "terminal",
                     TaskKind::Codex => "codex",
                     TaskKind::Claude => "claude",

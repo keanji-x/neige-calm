@@ -225,6 +225,135 @@ fn worker_model_defaults_bad_snapshot_is_not_inheritance_or_another_backend() {
     );
 }
 
+#[tokio::test]
+async fn task_selection_overrides_published_defaults_which_override_server_defaults() {
+    use crate::db::prelude::*;
+    use crate::model::{NewArea, NewTrack};
+    let repo = crate::db::sqlite::SqlxRepo::open("sqlite::memory:")
+        .await
+        .unwrap();
+    let area = repo
+        .area_create(
+            calm_types::organization::LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "precedence".into(),
+                color: "#000".into(),
+                sort: None,
+            },
+        )
+        .await
+        .unwrap();
+    let track = repo
+        .track_create(NewTrack {
+            template_input: None,
+            area_id: area.id,
+            title: "precedence".into(),
+            sort: None,
+            cwd: String::new(),
+            template_id: None,
+            plugin_scope: None,
+            attach_folder: false,
+            theme: crate::routes::theme::RequestTheme::default_dark(),
+        })
+        .await
+        .unwrap();
+    let tid = track.id.to_string();
+    crate::db::write_in_tx_typed(&repo, move |tx| {
+        Box::pin(async move {
+            for (id, model, effort) in [
+                ("t-both", Some("task-m"), Some("high")),
+                ("t-model", Some("task-m"), None),
+                ("t-none", None, None),
+            ] {
+                sqlx::query(concat!(
+                    "INSERT INTO tasks (id, track_id, key, kind, provider, model, ",
+                    "reasoning_effort, goal, context_json, depends_on_json, priority, ",
+                    "status, declared_by, spawn, access, start, created_at_ms, updated_at_ms) ",
+                    "VALUES (?1,?2,?3,'agent','codex',?4,?5,'work','null','[]',0,",
+                    "'pending','user','in-track','read_write','checkout',1,1)",
+                ))
+                .bind(id)
+                .bind(&tid)
+                .bind(id)
+                .bind(model)
+                .bind(effort)
+                .execute(&mut **tx)
+                .await?;
+            }
+            Ok::<_, CalmError>(())
+        })
+    })
+    .await
+    .unwrap();
+
+    // Without published defaults: unset task inherits server defaults; task selection wins.
+    let (s_none, s_both) = crate::db::write_in_tx_typed(&repo, |tx| {
+        Box::pin(async move {
+            let a = snapshot_for_task_tx(tx, WorkerModelProvider::Codex, "t-none").await?;
+            let b = snapshot_for_task_tx(tx, WorkerModelProvider::Codex, "t-both").await?;
+            Ok::<_, CalmError>((a, b))
+        })
+    })
+    .await
+    .unwrap();
+    assert_eq!(selection(&s_none), TurnModelSelection::inherit());
+    assert_eq!(
+        selection(&s_both),
+        TurnModelSelection {
+            model: Some("task-m".into()),
+            effort: Some("high".into()),
+        }
+    );
+
+    // With published defaults: per-task > published defaults > server defaults.
+    repo.settings_upsert(
+        "worker_model_defaults_codex",
+        r#"{"model":"pub-m","effort":"low"}"#,
+    )
+    .await
+    .unwrap();
+    let (s_none, s_model, s_both) = crate::db::write_in_tx_typed(&repo, |tx| {
+        Box::pin(async move {
+            let a = snapshot_for_task_tx(tx, WorkerModelProvider::Codex, "t-none").await?;
+            let b = snapshot_for_task_tx(tx, WorkerModelProvider::Codex, "t-model").await?;
+            let c = snapshot_for_task_tx(tx, WorkerModelProvider::Codex, "t-both").await?;
+            Ok::<_, CalmError>((a, b, c))
+        })
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        selection(&s_none),
+        TurnModelSelection {
+            model: Some("pub-m".into()),
+            effort: Some("low".into()),
+        }
+    );
+    assert_eq!(
+        selection(&s_model),
+        TurnModelSelection {
+            model: Some("task-m".into()),
+            effort: Some("low".into()),
+        }
+    );
+    assert_eq!(
+        selection(&s_both),
+        TurnModelSelection {
+            model: Some("task-m".into()),
+            effort: Some("high".into()),
+        }
+    );
+    // Recovery / later-input reads the frozen payload snapshot identically.
+    let frozen_payload = json!({ calm_types::worker_model::WORKER_MODEL_SELECTION_KEY: s_both });
+    assert_eq!(
+        from_payload(&frozen_payload, WorkerModelProvider::Codex).unwrap(),
+        Some(TurnModelSelection {
+            model: Some("task-m".into()),
+            effort: Some("high".into()),
+        })
+    );
+}
+
 /// These publication-only fixtures never run a worker or a delivery process. Retire
 /// their task and settle the unused delivery before publishing the next worker.
 pub(crate) async fn retire_publication_fixture(

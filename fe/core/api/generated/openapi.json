@@ -20234,6 +20234,41 @@
           "not_configured"
         ]
       },
+      "ProviderWorkerCapabilities": {
+        "type": "object",
+        "required": [
+          "provider",
+          "operation",
+          "message_transport",
+          "cancel_strategy",
+          "resumable",
+          "executor",
+          "validator"
+        ],
+        "properties": {
+          "cancel_strategy": {
+            "$ref": "#/components/schemas/WorkerCancelStrategy"
+          },
+          "executor": {
+            "type": "boolean"
+          },
+          "message_transport": {
+            "$ref": "#/components/schemas/WorkerMessageTransport"
+          },
+          "operation": {
+            "$ref": "#/components/schemas/WorkerOperationKind"
+          },
+          "provider": {
+            "$ref": "#/components/schemas/AgentProvider"
+          },
+          "resumable": {
+            "type": "boolean"
+          },
+          "validator": {
+            "type": "boolean"
+          }
+        }
+      },
       "QueuedMessageRequest": {
         "type": "object",
         "required": [
@@ -21818,8 +21853,25 @@
               "string",
               "null"
             ]
+          },
+          "worker_selection": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/TaskWorkerSelection"
+              }
+            ]
           }
         }
+      },
+      "TaskMessageSource": {
+        "type": "string",
+        "enum": [
+          "planner",
+          "user"
+        ]
       },
       "TaskPendingReason": {
         "oneOf": [
@@ -21929,6 +21981,16 @@
             "type": "integer",
             "format": "int64"
           },
+          "source": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/TaskMessageSource"
+              }
+            ]
+          },
           "text": {
             "type": "string"
           }
@@ -21961,6 +22023,80 @@
           },
           "key": {
             "type": "string"
+          }
+        }
+      },
+      "TaskWorkerSelection": {
+        "type": "object",
+        "description": "Frozen request plus provider-confirmed selection; absent actuals never imply an explicit default.",
+        "required": [
+          "mechanism",
+          "provider",
+          "requested_model",
+          "requested_effort",
+          "effective_model",
+          "effective_effort",
+          "selection_source",
+          "capabilities",
+          "turn_phase",
+          "cleanup_pending"
+        ],
+        "properties": {
+          "capabilities": {
+            "$ref": "#/components/schemas/ProviderWorkerCapabilities"
+          },
+          "cleanup_pending": {
+            "type": "boolean"
+          },
+          "effective_effort": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "effective_model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "mechanism": {
+            "type": "string"
+          },
+          "provider": {
+            "$ref": "#/components/schemas/AgentProvider"
+          },
+          "requested_effort": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "requested_model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "selection_source": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/WorkerSelectionSources"
+              }
+            ]
+          },
+          "turn_phase": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/WorkerTurnPhase"
+              }
+            ]
           }
         }
       },
@@ -23914,6 +24050,20 @@
           }
         }
       },
+      "WorkerCancelStrategy": {
+        "type": "string",
+        "enum": [
+          "provider_stop",
+          "acp_cancel"
+        ]
+      },
+      "WorkerMessageTransport": {
+        "type": "string",
+        "enum": [
+          "terminal",
+          "native_session"
+        ]
+      },
       "WorkerModelChoice": {
         "oneOf": [
           {
@@ -23996,6 +24146,39 @@
         },
         "additionalProperties": false
       },
+      "WorkerOperationKind": {
+        "type": "string",
+        "enum": [
+          "codex-worker",
+          "claude-worker",
+          "acp-worker",
+          "terminal-worker"
+        ]
+      },
+      "WorkerSelectionSource": {
+        "type": "string",
+        "enum": [
+          "explicit",
+          "provider_default_reported",
+          "provider_default_unreported"
+        ]
+      },
+      "WorkerSelectionSources": {
+        "type": "object",
+        "required": [
+          "model",
+          "effort"
+        ],
+        "properties": {
+          "effort": {
+            "$ref": "#/components/schemas/WorkerSelectionSource"
+          },
+          "model": {
+            "$ref": "#/components/schemas/WorkerSelectionSource"
+          }
+        },
+        "additionalProperties": false
+      },
       "WorkerSessionKind": {
         "type": "string",
         "enum": [
@@ -24017,6 +24200,15 @@
           "exited",
           "failed",
           "superseded"
+        ]
+      },
+      "WorkerTurnPhase": {
+        "type": "string",
+        "enum": [
+          "prepared",
+          "submitting",
+          "settled",
+          "unknown"
         ]
       },
       "WorkspaceIsolation": {

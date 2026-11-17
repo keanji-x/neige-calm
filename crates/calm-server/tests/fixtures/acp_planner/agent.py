@@ -496,6 +496,9 @@ for line in sys.stdin:
                 barrier.connect(str(root / 'prompt-consumption.sock'))
                 assert barrier.recv(1) == b'!'
     elif method == 'session/set_config_option':
+        if (root / 'scenario').read_text().strip() == 'reject-config-rpc':
+            emit({'jsonrpc': '2.0', 'id': request['id'], 'error': {'code': -32602, 'message': 'peer rejected config option'}})
+            continue
         if params['configId'] == 'declared-model-key':
             model = 'fixture/model-a' if (root / 'scenario').read_text().strip() == 'worker-config-mismatch' else params['value']
         elif params['configId'] == 'declared-effort-key':

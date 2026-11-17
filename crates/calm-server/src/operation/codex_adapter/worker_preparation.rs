@@ -14,9 +14,10 @@ impl crate::operation::workspace_lease::worker::preparation::WorkerAdmission
         let input = &op.payload;
         let payload: CodexWorkerOperationPayload = serde_json::from_value(input.clone())?;
         crate::operation::refuse_if_context_stale(tx, Some(&payload.idempotency_key)).await?;
-        let model_selection = crate::worker_model_defaults::snapshot_tx(
+        let model_selection = crate::worker_model_defaults::snapshot_for_task_tx(
             tx,
             calm_types::worker_model::WorkerModelProvider::Codex,
+            &payload.idempotency_key,
         )
         .await?;
         // Derived from the `tasks` row inside this tx (never carried on the payload, which would move `stable_payload_hash`); `None` leaves the card untitled.
@@ -119,6 +120,7 @@ impl crate::operation::workspace_lease::worker::preparation::WorkerAdmission
             "branch": plan.branch,
             "base_sha": plan.base.base_sha,
             "canonical_path": plan.base.canonical_path,
+            "git_common_dir": plan.base.git_common_dir,
             "terminal_launch": crate::operation::terminal_launch::fresh_state(),
             "runtime_started_event_persisted": false,
             "env": env,

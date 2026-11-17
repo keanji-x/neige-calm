@@ -1067,3 +1067,22 @@ describe('compact task declarations', () => {
     expect(taskBlockPayloadSchema.safeParse({ ...payload, goal: 'forbidden' }).success).toBe(false);
   });
 });
+
+
+it.each(['codex', 'claude', 'antigravity'] as const)('decodes canonical agent provider %s with explicit selection', (provider) => {
+  const report = readTrackReport([card({ payload: { blocks: [{ id: 'agent', kind: 'task', payload: {
+    key: 'canonical', kind: 'agent', provider, model: 'catalog-model', reasoning_effort: 'catalog-effort',
+    goal: 'Analyze', ready: true, declared_by: 'spec', access: 'read_only', result_contract: 'review-v1',
+  } }] } })]);
+  expect(report?.blocks?.[0]).toMatchObject({ kind: 'task', payload: { kind: 'agent', provider } });
+  expect(deriveReportTasks(report?.blocks ?? null)[0]).toMatchObject({ kind: 'agent', provider, requestedModel: 'catalog-model', requestedEffort: 'catalog-effort' });
+});
+it.each([
+  { kind: 'agent' }, { kind: 'codex', provider: 'claude' }, { kind: 'agent', provider: 'antigravity', model: ' ' },
+  { kind: 'agent', provider: 'antigravity', spawn: 'sub-track' },
+])('refuses inconsistent agent declaration %j', (selection) => {
+  const report = readTrackReport([card({ payload: { blocks: [{ id: 'invalid', kind: 'task', payload: {
+    key: 'invalid', goal: 'Analyze', ready: true, declared_by: 'spec', ...selection,
+  } }] } })]);
+  expect(report?.blocks?.[0]?.kind).toBe('unsupported');
+});

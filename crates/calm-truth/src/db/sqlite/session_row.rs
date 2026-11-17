@@ -523,15 +523,18 @@ pub async fn session_record_activity_by_thread_tx(
     Ok(())
 }
 
-/// An ACP agent runs only as a managed conversation: a Planner or Assistant resuming its native
-/// session. Migration 0163 pins this in the schema for `opencode` alone; every ACP provider's row
-/// is written here, so this keeps it for all of them.
+/// ACP conversation roles resume native sessions. Task roles additionally require an explicit
+/// Worker capability registration. The released OpenCode SQL restriction remains in force.
 fn acp_session_identity_allowed(session: &WorkerSession) -> bool {
     session.provider.protocol() != Some(AgentProtocol::Acp)
         || (matches!(
             session.contract,
             WorkerContract::Planner | WorkerContract::Assistant
         ) && session.mode == SessionMode::Resumable)
+        || calm_types::runtime::AgentProvider::try_from(session.provider)
+            .ok()
+            .and_then(calm_types::provider_worker::ProviderWorkerCapabilities::for_provider)
+            .is_some_and(|cap| cap.admits(session.contract, session.mode))
 }
 
 pub async fn session_insert_tx(
@@ -540,7 +543,7 @@ pub async fn session_insert_tx(
 ) -> Result<WorkerSession> {
     if !acp_session_identity_allowed(&session) {
         return Err(CalmError::BadRequest(format!(
-            "{} sessions are managed Planner or Assistant conversations that resume, not a {} {} session",
+            "{} does not admit a {} {} session under its conversation or Worker capabilities",
             session.provider.as_db_str(),
             session.mode.as_db_str(),
             session.contract.as_db_str()

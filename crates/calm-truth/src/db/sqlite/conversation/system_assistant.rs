@@ -331,13 +331,19 @@ async fn validate_quiet_fact_tx(
     let task = super::super::task_current_get_tx(tx, track, &observed.task_key)
         .await?
         .ok_or_else(conflict)?;
+    let provider = task.agent_provider().map_err(|_| conflict())?;
+    let (expected_kind, expected_card_kind) = match provider {
+        Some(calm_types::runtime::AgentProvider::Codex) => {
+            (calm_types::runtime::WorkerSessionKind::CodexCard, "codex")
+        }
+        Some(calm_types::runtime::AgentProvider::Claude) => {
+            (calm_types::runtime::WorkerSessionKind::ClaudeCard, "claude")
+        }
+        _ => return Err(conflict()),
+    };
     if task.id != observed.attempt_id
         || task.worker_card_id.as_deref() != Some(&observed.worker_card_id)
         || task.status != crate::model::TaskStatus::Running
-        || !matches!(
-            task.kind,
-            crate::model::TaskKind::Codex | crate::model::TaskKind::Claude
-        )
         || task.spawn == calm_types::task_recovery::TASK_CHILD_TRACK_ROUTE
     {
         return Err(conflict());
@@ -361,11 +367,6 @@ async fn validate_quiet_fact_tx(
         Some(op) => crate::worker_binding::operation_idempotency_key(&mut **tx, op).await?,
         None => None,
     };
-    let expected_kind = match task.kind {
-        crate::model::TaskKind::Codex => calm_types::runtime::WorkerSessionKind::CodexCard,
-        crate::model::TaskKind::Claude => calm_types::runtime::WorkerSessionKind::ClaudeCard,
-        _ => return Err(conflict()),
-    };
     if current.kind != expected_kind
         || terminal.id != observed.terminal_id
         || current.id != observed.worker_session_id
@@ -375,12 +376,7 @@ async fn validate_quiet_fact_tx(
         || session.track_id.as_str() != track
         || card.track_id.as_str() != track
         || role != "worker"
-        || card.kind
-            != match task.kind {
-                crate::model::TaskKind::Codex => "codex",
-                crate::model::TaskKind::Claude => "claude",
-                _ => return Err(conflict()),
-            }
+        || card.kind != expected_card_kind
         || !session.state.is_active_authority()
         || operation.as_deref() != Some(&observed.attempt_id)
     {

@@ -225,13 +225,16 @@ pub(super) async fn prepare_fixture_with_plan(
     let track_root = track_root(tmp.path());
     let workspace_root = tmp.path().join("workspaces");
     std::fs::create_dir_all(&workspace_root).unwrap();
-    let boot = crate::mcp_track_report::boot_with_workspace(
+    let mut boot = crate::mcp_track_report::boot_with_workspace(
         db_url,
         development,
         track_root.to_str().unwrap(),
         plan(&track_root, &workspace_root),
     )
     .await;
+    Arc::get_mut(&mut boot.ctx)
+        .expect("fixture context is not shared yet")
+        .gate_logs_dir = tmp.path().join("gate-logs");
     (
         boot,
         FixtureWorkspace {

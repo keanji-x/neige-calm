@@ -63,6 +63,19 @@ impl ManagedSessionTokens {
         card: &CardId,
         worker: &WorkerSessionId,
     ) -> Result<String> {
+        self.ensure_with_hash_observer(repo, card, worker, |_| {})
+            .await
+    }
+
+    /// Own the dedicated BEGIN IMMEDIATE transaction and notify `on_hash` with the active
+    /// token hash before commit becomes durable so callers can register exact-hash cleanup.
+    pub(crate) async fn ensure_with_hash_observer(
+        &self,
+        repo: &dyn RepoEventWrite,
+        card: &CardId,
+        worker: &WorkerSessionId,
+        on_hash: impl FnOnce(&str) + Send + 'static,
+    ) -> Result<String> {
         let (store, card, worker) = (self.clone(), card.clone(), worker.clone());
         write_in_tx_typed(repo, move |tx| {
             Box::pin(async move {
@@ -79,6 +92,7 @@ impl ManagedSessionTokens {
                     && cached.card == card
                     && stored.as_deref() == Some(hash_token(&cached.raw).as_str())
                 {
+                    on_hash(&hash_token(&cached.raw));
                     return Ok(cached.raw);
                 }
                 store.prune(tx).await?;
@@ -86,6 +100,7 @@ impl ManagedSessionTokens {
                 persist_card_mcp_token_hash(tx, card.as_str(), &hash).await?;
                 crate::db::sqlite::session_mcp_token_set_if_active_tx(tx, worker.as_str(), &hash)
                     .await?;
+                on_hash(&hash);
                 // A speculative candidate, not an authorization decision: only the successful
                 // commit returns raw to a provider. Keeping it here also recovers a committed token
                 // if the caller is cancelled before receiving the result. A rollback's candidate

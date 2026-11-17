@@ -15,7 +15,7 @@ fn wire_error(error: provider::acp::Error) -> CalmError {
     CalmError::Conflict(error.to_string())
 }
 fn refused(message: &str) -> StartFailure {
-    StartFailure::Failed(CalmError::Conflict(message.into()))
+    StartFailure::Refused(message.into())
 }
 pub(crate) fn attachment_request(
     capabilities: &protocol::AgentCapabilities,

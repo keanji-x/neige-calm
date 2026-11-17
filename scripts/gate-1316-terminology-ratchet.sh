@@ -1,4 +1,12 @@
 #!/usr/bin/env bash
+# #3679 PR2 bounded released-contract exception:
+# wave/crates 667 -> 668 preserves 0222_agent_task_workers.sql's historical in-wave spawn default.
+# spec/crates 533 -> 536 preserves 0222's historical declaration-author default and two
+# independent task-request fixture inputs (SQLite claim/recovery and canonical provider
+# declaration validation). spec/fe 65 -> 67 preserves that same released author in the
+# independent positive/negative declaration fixtures. No new domain identifier or scan rule
+# is added; ordinary tests/files need no roster entry. The existing scan and selftest each
+# run once per CI lint workflow.
 # #3633 scoped creation bounded contract exception: runtime_id/crates 1125 -> 1132.
 # All seven occurrences in 0219_share_creation_receipts.sql preserve the frozen
 # origin_runtime_id column and initialRuntimeId receipt key while replacing the

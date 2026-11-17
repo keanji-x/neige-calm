@@ -144,10 +144,33 @@ pub struct TrackFsHookEvent {
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema, TS)]
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub struct TaskPlannerMessage {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub source: Option<TaskMessageSource>,
     pub message_id: String,
     pub seq: i64,
     pub text: String,
     pub created_at_ms: i64,
     #[schema(nullable = true, required = true)]
     pub read_at_ms: Option<i64>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
+pub enum TaskMessageSource {
+    #[default]
+    Planner,
+    User,
+}
+impl TaskMessageSource {
+    pub fn is_planner(&self) -> bool {
+        *self == Self::Planner
+    }
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Planner => "planner",
+            Self::User => "user",
+        }
+    }
 }

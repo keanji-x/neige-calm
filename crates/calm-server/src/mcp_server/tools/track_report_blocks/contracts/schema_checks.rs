@@ -27,6 +27,18 @@ pub(super) fn accepts(schema: &Value, value: &Value, root: &Value) -> bool {
         "anyOf" => branches(rule).any(|branch| accepts(branch, value, root)),
         "allOf" => branches(rule).all(|branch| accepts(branch, value, root)),
         "oneOf" => branches(rule).filter(|b| accepts(b, value, root)).count() == 1,
+        "if" => {
+            if accepts(rule, value, root) {
+                schema
+                    .get("then")
+                    .is_none_or(|then_schema| accepts(then_schema, value, root))
+            } else {
+                schema
+                    .get("else")
+                    .is_none_or(|else_schema| accepts(else_schema, value, root))
+            }
+        }
+        "then" | "else" => true,
         "required" => value.as_object().is_none_or(|object| {
             rule.as_array()
                 .expect("required array")

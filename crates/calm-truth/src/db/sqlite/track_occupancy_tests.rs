@@ -242,7 +242,7 @@ async fn active_leases_count_with_their_own_access() {
 async fn an_in_flight_terminal_task_occupies_the_checkout() {
     let repo = SqlxRepo::open("sqlite::memory:").await.expect("open repo");
     let track_id = seed_track(&repo).await;
-    let child = task(&repo, &track_id, "child", "terminal", "read_write").await;
+    let child = task(&repo, &track_id, "child", "codex", "read_write").await;
     (repo.db())
         .writer()
         .execute(

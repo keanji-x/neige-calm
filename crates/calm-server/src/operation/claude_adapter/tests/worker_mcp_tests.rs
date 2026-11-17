@@ -94,7 +94,6 @@ fn claude_worker_command_line_makes_its_card_config_the_only_mcp_config() {
         "session-1",
         "track-1",
         "Goal:\ndo the work",
-        &provider::TurnModelSelection::inherit(),
     )
     .unwrap();
     let argv = shell_argv(&command);

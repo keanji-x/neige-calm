@@ -29,7 +29,6 @@ fn claude_worker_command_line_uses_appended_system_prompt() {
         "session-1",
         "track-1",
         "Goal:\ndo the work",
-        &provider::TurnModelSelection::inherit(),
     )
     .unwrap();
 
@@ -797,3 +796,65 @@ async fn worker_lease_is_kernel_policy() {
 }
 
 mod worker_model_defaults;
+
+#[test]
+fn worker_explicit_selection_is_argv_even_when_prompt_contains_separator_and_quotes() {
+    let prompt = "A prompt containing -- and 'quoted' content; keep --model=fake as text";
+    let selection = provider::TurnModelSelection {
+        model: Some("-model 'quoted'".into()),
+        effort: Some("--high".into()),
+    };
+    use std::os::unix::fs::PermissionsExt;
+    let root = tempfile::tempdir().unwrap();
+    let capture = root.path().join("capture-argv");
+    std::fs::write(&capture, b"#!/bin/sh\nprintf '%s\\0' \"$@\"\n").unwrap();
+    std::fs::set_permissions(&capture, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let line = build_claude_worker_command_line_selected(
+        capture.to_str().unwrap(),
+        std::path::Path::new("/tmp/settings.json"),
+        "session",
+        "track",
+        prompt,
+        &selection,
+    )
+    .unwrap();
+    // Observe the real shell's argv instead of parsing our own quoting back.
+    let observed = std::process::Command::new("/bin/sh")
+        .args(["-c", &line])
+        .output()
+        .unwrap();
+    assert!(
+        observed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&observed.stderr)
+    );
+    let words: Vec<String> = observed
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|part| !part.is_empty())
+        .map(|part| String::from_utf8(part.to_vec()).unwrap())
+        .collect();
+    assert_eq!(words.last().unwrap(), prompt);
+    let separator = words.iter().position(|word| word == "--").unwrap();
+    assert!(words[..separator].contains(&"--model=-model 'quoted'".to_string()));
+    assert!(words[..separator].contains(&"--effort=--high".to_string()));
+    assert_eq!(
+        build_claude_worker_command_line_selected(
+            "claude",
+            std::path::Path::new("/tmp/settings.json"),
+            "session",
+            "track",
+            prompt,
+            &provider::TurnModelSelection::inherit()
+        )
+        .unwrap(),
+        build_claude_worker_command_line(
+            "claude",
+            std::path::Path::new("/tmp/settings.json"),
+            "session",
+            "track",
+            prompt
+        )
+        .unwrap()
+    );
+}

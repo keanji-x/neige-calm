@@ -192,3 +192,96 @@ async fn compact_migration_preserves_rows_refs_schema_and_attempt_contract() {
             .is_empty()
     );
 }
+
+#[tokio::test]
+async fn agent_worker_migration_preserves_0217_tasks_refs_allocations_child_history_and_freezes_requests()
+ {
+    let mut db = SqliteConnection::connect_with(
+        &SqliteConnectOptions::new()
+            .in_memory(true)
+            .foreign_keys(true),
+    )
+    .await
+    .unwrap();
+    db.ensure_migrations_table().await.unwrap();
+    for migration in MIGRATOR
+        .iter()
+        .filter(|m| m.version <= 217 && !m.migration_type.is_down_migration())
+    {
+        db.apply(migration).await.unwrap();
+    }
+    for (id, kind, status) in [
+        ("old", "codex", "done"),
+        ("live", "claude", "running"),
+        ("child-a", "codex", "done"),
+        ("child-b", "codex", "done"),
+    ] {
+        insert(&mut db, id, kind, status).await.unwrap();
+    }
+    exec(&mut db,"UPDATE tasks SET spawn='sub-track',child_track_id='same-child' WHERE id IN ('child-a','child-b'); INSERT INTO task_ref_index VALUES('live','other','b_1234');").await;
+    let before: Vec<String> = sqlx::query_scalar(
+        "SELECT json_array(id,kind,status,spawn,child_track_id) FROM tasks ORDER BY id",
+    )
+    .fetch_all(&mut db)
+    .await
+    .unwrap();
+    let allocations: Vec<String> = sqlx::query_scalar("SELECT json_array(attempt_id,track_id,key,generation,origin_json) FROM task_attempt_allocations ORDER BY attempt_id").fetch_all(&mut db).await.unwrap();
+    for migration in MIGRATOR
+        .iter()
+        .filter(|m| m.version > 217 && !m.migration_type.is_down_migration())
+    {
+        db.apply(migration).await.unwrap();
+    }
+    assert_eq!(
+        sqlx::query_scalar::<_, String>(
+            "SELECT json_array(id,kind,status,spawn,child_track_id) FROM tasks ORDER BY id"
+        )
+        .fetch_all(&mut db)
+        .await
+        .unwrap(),
+        before
+    );
+    assert_eq!(sqlx::query_scalar::<_,String>("SELECT json_array(attempt_id,track_id,key,generation,origin_json) FROM task_attempt_allocations ORDER BY attempt_id").fetch_all(&mut db).await.unwrap(),allocations);
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM task_ref_index WHERE task_id='live'")
+            .fetch_one(&mut db)
+            .await
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM current_tasks")
+            .fetch_one(&mut db)
+            .await
+            .unwrap(),
+        4
+    );
+    assert_eq!(sqlx::query_scalar::<_,i64>("SELECT count(*) FROM tasks WHERE provider IS NULL AND model IS NULL AND reasoning_effort IS NULL").fetch_one(&mut db).await.unwrap(),4);
+    exec(&mut db,"INSERT INTO tasks(id,track_id,key,kind,provider,model,reasoning_effort,goal,context_json,created_at_ms,updated_at_ms) VALUES('agent','track','agent','agent','antigravity','m','high','g','{}',1,1); UPDATE tasks SET model='pending-update' WHERE id='agent'; UPDATE tasks SET status='dispatched' WHERE id='agent';").await;
+    assert!(
+        sqlx::query("UPDATE tasks SET model='late' WHERE id='agent'")
+            .execute(&mut db)
+            .await
+            .is_err()
+    );
+    assert!(
+        insert(&mut db, "missing-provider", "agent", "pending")
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM pragma_foreign_key_check")
+            .fetch_one(&mut db)
+            .await
+            .unwrap(),
+        0
+    );
+    exec(&mut db, "UPDATE tasks SET status='done' WHERE id='live'").await;
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM task_ref_index")
+            .fetch_one(&mut db)
+            .await
+            .unwrap(),
+        0
+    );
+}

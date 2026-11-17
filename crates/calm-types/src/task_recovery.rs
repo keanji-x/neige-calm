@@ -53,6 +53,9 @@ pub fn task_root_hash_preimage(payload: &serde_json::Value) -> String {
 #[derive(Debug, Clone, Serialize, ToSchema, TS)]
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub struct TaskAttemptView {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub worker_selection: Option<crate::provider_worker::TaskWorkerSelection>,
     pub attempt_id: String,
     pub generation: i64,
     pub status: String,
@@ -205,4 +208,29 @@ mod tests {
         };
         assert!(empty.validate("w").is_err());
     }
+}
+
+#[derive(Debug, Deserialize, ToSchema, TS)]
+#[serde(deny_unknown_fields)]
+#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
+pub struct TaskMessageRequest {
+    pub attempt_id: String,
+    pub idempotency_key: String,
+    pub text: String,
+}
+#[derive(Debug, Deserialize, ToSchema, TS)]
+#[serde(deny_unknown_fields)]
+#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
+pub struct TaskCancelRequest {
+    pub attempt_id: String,
+}
+#[derive(Debug, Serialize, ToSchema, TS)]
+#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
+pub struct TaskMessageResponse {
+    pub message_id: String,
+}
+#[derive(Debug, Serialize, ToSchema, TS)]
+#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
+pub struct TaskCancelResponse {
+    pub ok: bool,
 }

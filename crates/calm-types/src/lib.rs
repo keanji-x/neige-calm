@@ -61,3 +61,7 @@ pub mod report_knowledge;
 pub mod system_assistant;
 
 pub mod worker_model;
+
+pub mod provider_worker;
+
+pub mod acp_worker;

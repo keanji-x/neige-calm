@@ -325,7 +325,7 @@ pub(crate) async fn setup_request(
     let mut incoming_open = true;
     loop {
         tokio::select! {
-            result=&mut response=>return finish_setup(&connection.client,&mut connection.incoming,commands,result).await,
+            result=&mut response=>return finish_setup(&connection.client,&mut connection.incoming,commands,method,result).await,
             incoming=connection.incoming.recv(),if incoming_open=>match incoming {
                 Some(Incoming::Request{id,method,..})=>refuse(&connection.client,id,&method).await.map_err(|error| StartFailure::Failed(CalmError::Conflict(error.to_string())))?,
                 Some(frame @ Incoming::Notification{..})=>commands.observe(&frame), // Only the command catalog survives setup.
@@ -339,6 +339,7 @@ async fn finish_setup(
     client: &provider::acp::Client,
     incoming: &mut tokio::sync::mpsc::Receiver<Incoming>,
     commands: &Commands,
+    method: &str,
     result: std::result::Result<Value, provider::acp::Error>,
 ) -> std::result::Result<Value, StartFailure> {
     // The transport delivered these frames before the response. Drain replay at this boundary,
@@ -359,7 +360,16 @@ async fn finish_setup(
                 .map_err(|error| StartFailure::Failed(CalmError::Conflict(error.to_string())))?;
         }
     }
-    result.map_err(|error| StartFailure::Failed(CalmError::Conflict(error.to_string())))
+    result.map_err(|error| match error {
+        provider::acp::Error::Remote { code, message, .. }
+            if method == "session/set_config_option" =>
+        {
+            StartFailure::Refused(format!(
+                "ACP peer refused model or effort choice ({code}): {message}"
+            ))
+        }
+        other => StartFailure::Failed(CalmError::Conflict(other.to_string())),
+    })
 }
 
 #[cfg(test)]
@@ -408,6 +418,7 @@ mod setup_tests {
                 &connection.client,
                 &mut connection.incoming,
                 &Commands::default(),
+                "session/new",
                 Err(error),
             )
             .await;
@@ -460,6 +471,7 @@ mod setup_tests {
             &connection.client,
             &mut connection.incoming,
             &Commands::default(),
+            "session/new",
             result,
         )
         .await

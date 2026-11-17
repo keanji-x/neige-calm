@@ -69,15 +69,31 @@ pub(crate) fn validate_task_result_contract(map: &Map<String, Value>, errors: &m
             choices.join(" | ")
         ));
     }
-    if !matches!(
-        map.get("kind").and_then(Value::as_str),
-        Some("codex" | "claude")
-    ) {
+    if !map
+        .get("kind")
+        .and_then(Value::as_str)
+        .is_some_and(crate::provider_worker::is_agent_task_kind)
+    {
         errors.push(
-            "result_contract: requires kind \"codex\" or \"claude\"; only a worker reports a \
+            "result_contract: requires an agent task; only a worker reports a \
              result through neige_task_done"
                 .into(),
         );
+    }
+    if name.as_str() == Some("review-v1") {
+        // 3ab764f67 accepted legacy codex/claude declarations that omitted `access` with `review-v1`;
+        // keep admitting those pre-upgrade declarations during report reprojection.
+        let legacy_omitted_access = map
+            .get("kind")
+            .and_then(Value::as_str)
+            .is_some_and(|kind| matches!(kind, "codex" | "claude"))
+            && map.get("access").is_none();
+        if !legacy_omitted_access
+            && (map.get("access").and_then(Value::as_str) != Some("read_only")
+                || map.get("gate").is_some_and(|gate| !gate.is_null()))
+        {
+            errors.push("result_contract: review-v1 requires read_only and no gate".into());
+        }
     }
     if map.get("spawn").and_then(Value::as_str) == Some(TASK_CHILD_TRACK_ROUTE) {
         errors.push(format!(
