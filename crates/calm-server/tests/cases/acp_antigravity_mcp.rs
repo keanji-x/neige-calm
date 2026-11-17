@@ -72,8 +72,8 @@ async fn antigravity_mcp_rebind_and_rebuild_preserve_card_identity_and_rotate_cr
     );
     let rebound = rotated(&stack, &root, &native, &original).await;
     assert!(stack.token_authenticates(&sibling_token).await);
-    // Retire only the provider attachment through its production lifecycle owner.
-    // Keep the live canonical Harness required by the human compact route.
+    // Drain the resident before releasing the workspace. The live Harness can
+    // still resume the same native session for the human compact route.
     calm_server::acp_planner::config::sweep_track(
         stack.repo(),
         &stack.state.planner_wiring().acp,
@@ -81,6 +81,7 @@ async fn antigravity_mcp_rebind_and_rebuild_preserve_card_identity_and_rotate_cr
     )
     .await
     .unwrap();
+    assert!(!stack.token_authenticates(&sibling_token).await);
     compact_completed(&stack, &root, &first).await;
     let compact_token = rotated(&stack, &root, &native, &rebound).await;
     let setups: Vec<_> = requests(&root, "session/new")
@@ -95,10 +96,16 @@ async fn antigravity_mcp_rebind_and_rebuild_preserve_card_identity_and_rotate_cr
     assert_eq!(setups.len(), 2);
     let first_pid = setups[0]["_pid"].clone();
     assert!(setups.iter().all(|r| r["_pid"] == first_pid));
-    assert!(
-        requests(&root, "session/resume")
-            .iter()
-            .all(|r| r["_pid"] == first_pid)
+    let resumes = requests(&root, "session/resume");
+    assert_eq!(resumes.len(), 2);
+    assert_eq!(
+        resumes[0]["_pid"], first_pid,
+        "native detach keeps the resident"
+    );
+    let compact_pid = resumes[1]["_pid"].clone();
+    assert_ne!(
+        compact_pid, first_pid,
+        "workspace release drains the resident"
     );
     stack.shutdown().await;
 
@@ -124,7 +131,7 @@ async fn antigravity_mcp_rebind_and_rebuild_preserve_card_identity_and_rotate_cr
         3,
         "each detached attachment must actually resume"
     );
-    assert_ne!(resumes.last().unwrap()["_pid"], first_pid);
+    assert_ne!(resumes.last().unwrap()["_pid"], compact_pid);
     let setups: Vec<_> = setups.into_iter().chain(resumes).collect();
     let sibling_key = setups[1]["params"]["mcpServers"][0]["name"]
         .as_str()

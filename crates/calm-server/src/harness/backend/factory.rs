@@ -61,12 +61,13 @@ impl<'a> PlannerFactory<'a> {
         &self,
         runtime: &calm_types::runtime::WorkerSessionProjection,
     ) -> Result<()> {
-        if runtime
+        if let Some(provider) = runtime
             .agent_provider
             .as_ref()
-            .is_some_and(|provider| provider.protocol() == AgentProtocol::Acp)
+            .filter(|provider| provider.protocol() == AgentProtocol::Acp)
         {
-            crate::acp_planner::session::detach_worker(self.acp, &runtime.id).await?;
+            crate::acp_planner::session::detach_worker(self.acp, &runtime.id, Some(provider))
+                .await?;
         }
         Ok(())
     }

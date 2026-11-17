@@ -32,7 +32,7 @@ impl Process {
         worker: &str,
         cwd: &std::path::Path,
     ) -> Result<Self> {
-        Self::spawn_control(host, registration, worker, cwd, false)
+        Self::spawn_control(host, registration, worker, cwd)
             .await
             .map_err(Into::into)
     }
@@ -42,24 +42,20 @@ impl Process {
         registration: Registration<'_>,
         cwd: &std::path::Path,
     ) -> std::result::Result<Self, StartFailure> {
-        if registration.profile.supervise_resident {
-            let (execution, io) = ResidentExecution::start(host, registration, cwd).await?;
-            let restart_owner = AcpSharedRestartOwner::Execution {
-                execution_id: execution.id().clone(),
-            };
-            let (reader, writer) = tokio::io::split(io);
-            return Self::initialize(
-                host,
-                registration,
-                Connection::new_shared(reader, writer),
-                ProcessOwner::Supervised(execution),
-                Some(restart_owner),
-                true,
-            )
-            .await;
-        }
-        let worker = registration.config.provider.wire_name();
-        Self::spawn_control(host, registration, worker, cwd, true).await
+        let (execution, io) = ResidentExecution::start(host, registration, cwd).await?;
+        let restart_owner = AcpSharedRestartOwner::Execution {
+            execution_id: execution.id().clone(),
+        };
+        let (reader, writer) = tokio::io::split(io);
+        Self::initialize(
+            host,
+            registration,
+            Connection::new_shared(reader, writer),
+            ProcessOwner::Supervised(execution),
+            Some(restart_owner),
+            true,
+        )
+        .await
     }
 
     /// Spawn the registered agent, `initialize` it, admit its reported identity, and
@@ -70,14 +66,12 @@ impl Process {
         registration: Registration<'_>,
         worker: &str,
         cwd: &std::path::Path,
-        boot_swept: bool,
     ) -> std::result::Result<Self, StartFailure> {
         let Registration { config, profile } = registration;
-        let resident = if boot_swept { profile.resident } else { None };
         let mut command = Command::new(&config.command);
         command
             .args(&config.args)
-            .args(profile.argv(resident))
+            .args(profile.argv(None))
             .current_dir(cwd)
             .env_clear()
             .envs(&config.env)
@@ -91,10 +85,6 @@ impl Process {
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .kill_on_drop(true);
-        if let Some(launch) = resident {
-            command.envs(launch.env.iter().copied());
-            command.env(super::config::MARKER_KEY, host.instance.marker(worker));
-        }
         set_process_group_leader(&mut command);
         let mut child = spawn_within(
             command,
@@ -105,18 +95,8 @@ impl Process {
             StartFailure::Failed(CalmError::Conflict("ACP process spawn timed out".into()))
         })?
         .map_err(|error| StartFailure::Failed(error.into()))?;
-        let restart_owner = if boot_swept {
-            shared_restart_identity(&child).map(AcpSharedRestartOwner::Process)
-        } else {
-            None
-        };
         keep_stderr(child.stderr(), stderr_log(host, worker));
-        let connect = if resident.is_some() {
-            Connection::new_shared
-        } else {
-            Connection::new
-        };
-        let connection = connect(
+        let connection = Connection::new(
             child
                 .stdout()
                 .ok_or_else(|| CalmError::Internal("ACP stdout missing".into()))?,
@@ -129,8 +109,8 @@ impl Process {
             registration,
             connection,
             ProcessOwner::Native(child),
-            restart_owner,
-            resident.is_some(),
+            None,
+            false,
         )
         .await
     }
@@ -170,10 +150,6 @@ impl Process {
         }
     }
 
-    pub(super) fn is_supervised(&self) -> bool {
-        matches!(self.owner, ProcessOwner::Supervised(_))
-    }
-
     pub(super) fn supervision_id(&self) -> Option<&workspace_runtime::execution::ExecutionId> {
         match &self.owner {
             ProcessOwner::Native(_) => None,
@@ -186,24 +162,15 @@ impl Process {
         match &mut self.owner {
             ProcessOwner::Native(child) => {
                 child.start_kill()?;
-                #[cfg(all(test, feature = "fixtures"))]
-                crate::test_seams::operation_fault("acp-control-reap", &self.stop_scope)?;
                 reap(child).await
             }
-            ProcessOwner::Supervised(execution) => execution.stop().await,
+            ProcessOwner::Supervised(execution) => {
+                #[cfg(all(test, feature = "fixtures"))]
+                crate::test_seams::operation_fault("acp-resident-stop", &self.stop_scope)?;
+                execution.stop().await
+            }
         }
     }
-}
-
-fn shared_restart_identity(
-    child: &GroupChild,
-) -> Option<crate::db::sqlite::AcpSharedProcessIdentity> {
-    let pid = i32::try_from(child.id()?).ok()?;
-    Some(crate::db::sqlite::AcpSharedProcessIdentity {
-        pid,
-        start_time: crate::proc_identity::read_proc_start_time(pid)?,
-        boot_id: crate::proc_identity::read_boot_id()?,
-    })
 }
 
 /// The most of one agent process's stderr that is kept; the rest is read and dropped, so the agent

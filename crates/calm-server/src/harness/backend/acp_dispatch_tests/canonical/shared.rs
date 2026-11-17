@@ -123,6 +123,9 @@ async fn canonical_antigravity_late_background_tool_update_preserves_next_turn()
 #[tokio::test]
 async fn canonical_antigravity_confirmed_close_allows_keep_and_same_process_continuation() {
     let fx = Fixture::with_provider(AgentProvider::Antigravity, "shared-unknown", false).await;
+    crate::acp_planner::config::boot(fx.owner.repo.as_ref(), fx.session.host())
+        .await
+        .unwrap();
     fx.dispatch().await.unwrap();
     fx.wait_idle().await;
     let before = fx.receipt_bytes(&fx.submission).await;
@@ -149,7 +152,43 @@ async fn canonical_antigravity_confirmed_close_allows_keep_and_same_process_cont
     );
     assert!(requests.iter().any(|r| r["method"] == "session/close"
         && r["params"]["sessionId"] == prompts[0]["params"]["sessionId"]));
+    let pool = fx.owner.repo.db();
+    let scopes =
+        calm_truth::db::sqlite::acp_resident::for_worker(pool.read_pool(), &fx.owner.worker)
+            .await
+            .unwrap();
+    let [id] = scopes.as_slice() else {
+        panic!("Antigravity attachment must have one supervised workspace owner");
+    };
+    let generation = workspace_runtime::execution::ExecutionId::try_from(id.clone()).unwrap();
     fx.session.shutdown().await.unwrap();
+    // Closing one native session leaves the resident available and keeps its workspace pinned.
+    assert_eq!(
+        calm_truth::db::sqlite::acp_resident::for_worker(pool.read_pool(), &fx.owner.worker)
+            .await
+            .unwrap(),
+        scopes,
+    );
+    crate::acp_planner::config::sweep_track(
+        fx.owner.repo.as_ref(),
+        fx.session.host(),
+        &fx.owner.track,
+    )
+    .await
+    .unwrap();
+    assert!(
+        crate::provider_execution::settlement(pool, &generation)
+            .await
+            .unwrap()
+            .unwrap()
+            .descendants_complete()
+    );
+    assert!(
+        calm_truth::db::sqlite::acp_resident::for_worker(pool.read_pool(), &fx.owner.worker)
+            .await
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[tokio::test]
@@ -187,7 +226,7 @@ async fn canonical_antigravity_unconfirmed_revocation_cannot_manufacture_keep_cl
 async fn canonical_antigravity_failed_stop_retains_the_owner_for_verified_retry() {
     let fx = Fixture::with_provider(AgentProvider::Antigravity, "lost", false).await;
     let fired = crate::test_seams::install_operation_fault_for_test(
-        "acp-control-reap",
+        "acp-resident-stop",
         &fx.session.stop_fault_scope_for_test(),
     );
     fx.dispatch().await.unwrap();
@@ -195,8 +234,18 @@ async fn canonical_antigravity_failed_stop_retains_the_owner_for_verified_retry(
         .await
         .unwrap();
     fx.wait_idle().await;
-    fx.keep_unknown(&fx.submission, "keep-without-reap").await;
-    assert!(fx.backend.settle_kept_execution().await.unwrap().is_some());
+    fx.keep_unknown(&fx.submission, "keep-after-supervised-stop-retry")
+        .await;
+    tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            if fx.backend.settle_kept_execution().await.unwrap().is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("Keep settles after the original generation's verified stop retry");
     let joins: i64 =
         sqlx::query_scalar("SELECT count(*) FROM acp_normal_joins WHERE worker_session_id=?")
             .bind(&fx.owner.worker)
@@ -207,6 +256,26 @@ async fn canonical_antigravity_failed_stop_retains_the_owner_for_verified_retry(
     assert!(fx.complete().await.is_none());
     assert_eq!(fx.prompts(), 1);
     fx.session.shutdown().await.unwrap();
+}
+
+async fn recover_agy_fixture(
+    owner: &super::super::super::dispatch_fixture::Owner,
+    session: &crate::acp_planner::session::AcpPlannerSession,
+) {
+    let host = session.host();
+    crate::acp_planner::config::boot(owner.repo.as_ref(), host)
+        .await
+        .unwrap();
+    crate::acp_planner::resident_execution::stop_previous(
+        owner.repo.db(),
+        host.execution.engine(),
+        None,
+    )
+    .await
+    .unwrap();
+    crate::acp_planner::config::recover_residents_after_boot(owner.repo.as_ref(), host)
+        .await
+        .unwrap();
 }
 
 #[tokio::test]
@@ -264,9 +333,7 @@ async fn canonical_antigravity_restart_resumes_native_and_dispatches_only_pendin
     };
     let (backend, session, _held) =
         session_for_provider(&reopened, &fx.dir, AgentProvider::Antigravity);
-    crate::acp_planner::config::boot(reopened.repo.as_ref(), session.host())
-        .await
-        .unwrap();
+    recover_agy_fixture(&reopened, &session).await;
     backend.recover_retained().await.unwrap();
     let frame = runtime_frame_observation(reopened.repo.pool(), &reopened.card, &reopened.worker)
         .await
@@ -379,9 +446,7 @@ async fn canonical_antigravity_restart_resumes_native_and_dispatches_only_pendin
 async fn canonical_antigravity_restart_drops_initial_claim_before_native_attachment() {
     let fx = Fixture::with_provider(AgentProvider::Antigravity, "reply", true).await;
     let (_, session, _held) = session_for_provider(&fx.owner, &fx.dir, AgentProvider::Antigravity);
-    crate::acp_planner::config::boot(fx.owner.repo.as_ref(), session.host())
-        .await
-        .unwrap();
+    recover_agy_fixture(&fx.owner, &session).await;
     let frame = runtime_frame_observation(fx.owner.repo.pool(), &fx.owner.card, &fx.owner.worker)
         .await
         .unwrap();
@@ -441,9 +506,7 @@ async fn canonical_antigravity_restart_finishes_exact_completed_stop() {
         .unwrap();
 
     let (_, session, _held) = session_for_provider(owner, &fx.dir, AgentProvider::Antigravity);
-    crate::acp_planner::config::boot(owner.repo.as_ref(), session.host())
-        .await
-        .unwrap();
+    recover_agy_fixture(owner, &session).await;
     let frame = runtime_frame_observation(owner.repo.pool(), &owner.card, &owner.worker)
         .await
         .unwrap();
@@ -455,25 +518,32 @@ async fn canonical_antigravity_restart_finishes_exact_completed_stop() {
 }
 
 #[tokio::test]
-async fn canonical_antigravity_restart_keeps_fence_while_exact_process_is_live() {
+async fn canonical_antigravity_restart_keeps_fence_while_exact_generation_is_live() {
     let fx = Fixture::with_provider(AgentProvider::Antigravity, "shared-unknown", true).await;
     fx.dispatch().await.unwrap();
     fx.wait_idle().await;
-    let sql = "SELECT shared_restart_owner_json FROM acp_submissions WHERE worker_session_id=?1 AND client_id=?2";
-    let sqlx::types::Json(owner): sqlx::types::Json<crate::db::sqlite::AcpSharedProcessIdentity> =
-        sqlx::query_scalar(sql)
-            .bind(&fx.owner.worker)
-            .bind(fx.submission.as_str())
-            .fetch_one(fx.owner.repo.pool())
+    let ids =
+        calm_truth::db::sqlite::acp_resident::for_worker(fx.owner.repo.pool(), &fx.owner.worker)
             .await
             .unwrap();
-    assert!(crate::proc_identity::verify_owned_pid(
-        owner.pid,
-        owner.start_time,
-        &owner.boot_id
-    ));
+    let [id] = ids.as_slice() else {
+        panic!("one live AGY generation");
+    };
+    let id = workspace_runtime::execution::ExecutionId::try_from(id.clone()).unwrap();
+    assert!(
+        crate::provider_execution::settlement(fx.owner.repo.db(), &id)
+            .await
+            .unwrap()
+            .is_none()
+    );
     let (_, session, _held) = session_for_provider(&fx.owner, &fx.dir, AgentProvider::Antigravity);
     crate::acp_planner::config::boot_with_empty_marker_scan_for_test(
+        fx.owner.repo.as_ref(),
+        session.host(),
+    )
+    .await
+    .unwrap();
+    crate::acp_planner::config::recover_residents_after_boot(
         fx.owner.repo.as_ref(),
         session.host(),
     )

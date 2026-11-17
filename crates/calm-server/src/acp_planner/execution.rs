@@ -290,6 +290,11 @@ pub(super) fn process_launch(
     }
     let present = secrets.keys().map(String::as_str).collect::<Vec<_>>();
     let keys = PayloadKeys::new(&present, KeySource::Kernel)?;
+    let keys = if registration.profile.resident.is_some() {
+        keys.with_multiline()
+    } else {
+        keys
+    };
     let payload = keys
         .render(|key| secrets.get(key).cloned())
         .map_err(|_| CalmError::BadRequest("invalid ACP release payload".into()))?;
