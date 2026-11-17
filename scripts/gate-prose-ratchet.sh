@@ -1,4 +1,10 @@
 #!/usr/bin/env bash
+# ACP recovery bounded SQL exception: long_literal/crates/**/*.rs 220 -> 221.
+# conversation/u9_canonical_turn_owner_tests.rs seeds an orphan ACP journal
+# receipt to prove that active=None cannot bypass Sending/Unknown fencing.
+# SQL fixture edits touch their owner and this aggregate baseline only when
+# the count changes; ordinary tests need no inventory entry. The existing scan
+# and selftest each run once per CI lint workflow; no rule or exclusion changes.
 # #3633 bounded SQL exception: long_literal/crates/**/*.rs 208 -> 213.
 # Five SQL statements describe real storage contracts:
 # 1. conversation/messages.rs inserts explicit Human or LinkGuest attribution.

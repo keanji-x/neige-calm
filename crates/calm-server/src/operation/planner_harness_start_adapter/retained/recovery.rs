@@ -127,7 +127,25 @@ impl PlannerHarnessStartAdapter {
                 RetainedPreparation::Locator,
             )
             .await?;
-        let expected = self.retained_admit(wire).await?;
+        let this = self.clone();
+        let recovery_wire = wire.clone();
+        let expected = write_in_tx_typed(self.repo.as_ref(), move |tx| {
+            Box::pin(async move {
+                let target = this.retained_admit_tx(tx, &recovery_wire).await?;
+                if target.binding.provider.protocol() == calm_types::runtime::AgentProtocol::Acp
+                    && conversation::recover_released_acp_turn_tx(
+                        tx,
+                        &recovery_wire.card_id,
+                        &recovery_wire.worker_session_id,
+                    )
+                    .await?
+                {
+                    return this.retained_admit_tx(tx, &recovery_wire).await;
+                }
+                Ok(target)
+            })
+        })
+        .await?;
         require_restorable(&expected)?;
         self.require_retained_backend(&expected)?;
         if !workspace_runtime::recycle::workspace_allows_runtime_recovery(&track) {

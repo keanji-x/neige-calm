@@ -648,13 +648,16 @@ async fn dispatch_initial(
             });
         }
     }
-    if matches!(
-        committed.report.delivery(),
-        crate::harness::backend::InputDelivery::NotDispatched(_)
-    ) {
+    if let Some(delay) = inner
+        .inputs
+        .canonical()
+        .expect("canonical consumer")
+        .dispatch_retry_delay(committed.report.delivery())
+        .await
+    {
         // Only the settled proof released input. Pacing is independent of that
         // proof and must not spin the scheduler at its tick frequency.
-        *inner.issuance_retry_after.lock().await = Some(Instant::now() + TRANSIENT_RETRY_DELAY);
+        *inner.issuance_retry_after.lock().await = Some(Instant::now() + delay);
     }
     // A local write has no native receipt. Only the actual installed driver,
     // associated with the committed original target, proves it can be tracked.

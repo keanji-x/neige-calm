@@ -19,6 +19,7 @@ mod recovery;
 mod recovery_atomic;
 mod recovery_windows;
 mod resolution;
+mod retry_pacing;
 mod settlement;
 mod settlement_race;
 mod stop_deadline;

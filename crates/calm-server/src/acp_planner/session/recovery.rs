@@ -258,6 +258,9 @@ async fn recover_shared_claim(
                 {
                     return Ok(None);
                 }
+                if recover_released_acp_turn_tx(tx, &card, &worker).await? {
+                    return Ok(None);
+                }
                 let found = canonical_receipt_tx(tx, &card, &worker, &provider).await?;
                 let mut client = None;
                 if let Some((receipt, association)) = &found {
