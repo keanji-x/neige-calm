@@ -22,24 +22,6 @@ pub(crate) const WORKER_CODEX_SYSTEM_PROMPT: &str = concat!(
     include_str!("../prompts/worker/tail.md")
 );
 
-/// The track assistant's system prompt: ordinary head, the mechanics shared by both assistant identities, and the ordinary tail.
-/// Deliberately not a trimmed planner prompt: every close/plan tool rejects `CardRole::Assistant` at the handler. Pinned by `tests/goldens/assistant_prompt.txt`.
-pub(crate) const ASSISTANT_SYSTEM_PROMPT_TEMPLATE: &str = concat!(
-    include_str!("../prompts/assistant/ordinary-head.md"),
-    include_str!("../prompts/assistant/mechanics.md"),
-    include_str!("../prompts/assistant/ordinary-tail.md"),
-    include_str!("../prompts/tool-discovery.md")
-);
-
-/// The assistant on Today's launchpad track: same mechanics, inverted identity (this conversation is the report's writer). Selected by `routes::today::is_launchpad_track` at `thread/start`.
-/// `developer_instructions` are handed over at thread start, so an existing conversation keeps the identity it was started with. Pinned by `tests/goldens/assistant_prompt_launchpad.txt`.
-pub(crate) const LAUNCHPAD_ASSISTANT_SYSTEM_PROMPT_TEMPLATE: &str = concat!(
-    include_str!("../prompts/assistant/launchpad-head.md"),
-    include_str!("../prompts/assistant/mechanics.md"),
-    include_str!("../prompts/assistant/launchpad-tail.md"),
-    include_str!("../prompts/tool-discovery.md")
-);
-
 /// Render the report-edit authors that wake the planner, in the wire spelling the `track.report_edited` payload carries.
 fn planner_wake_authors_prose() -> String {
     crate::dispatcher::PLANNER_WAKE_AUTHORS
@@ -53,10 +35,6 @@ fn planner_wake_authors_prose() -> String {
 pub(crate) fn render_system_prompt(template: &str, track_id: &str) -> String {
     calm_types::observation::render_task_acceptance_guidance(
         &calm_types::report_blocks::tasks::render_task_guidance(template)
-            .replace(
-                "{assistant_tool_discovery}",
-                include_str!("../prompts/assistant/discovery-codex.md"),
-            )
             .replace("{track_id}", track_id)
             .replace("{planner_wake_authors}", &planner_wake_authors_prose()),
     )
@@ -104,20 +82,6 @@ pub(crate) fn validate_planner_prompt_contract(prompt: &str) -> Result<(), Strin
 #[doc(hidden)]
 pub fn render_worker_prompt_for_e2e(track_id: &str) -> String {
     render_system_prompt(SeededCardRole::WorkerCodex.prompt_template(), track_id)
-}
-
-/// Test-only seam: the exact `developer_instructions` string a track assistant's `thread/start` must carry, so the test asserts equality against production's own value.
-#[cfg(feature = "fixtures")]
-#[doc(hidden)]
-pub fn render_assistant_prompt_for_test(track_id: &str) -> String {
-    render_system_prompt(ASSISTANT_SYSTEM_PROMPT_TEMPLATE, track_id)
-}
-
-/// The same seam for the launchpad assistant's identity; its own function so a test asserts on which template shipped, not on a flag.
-#[cfg(feature = "fixtures")]
-#[doc(hidden)]
-pub fn render_launchpad_assistant_prompt_for_test(track_id: &str) -> String {
-    render_system_prompt(LAUNCHPAD_ASSISTANT_SYSTEM_PROMPT_TEMPLATE, track_id)
 }
 
 /// Roles that legitimately need role-specific Codex setup; carved out of `CardRole` so the seeding helper cannot be handed a role with no template.
@@ -255,64 +219,6 @@ mod tests {
         assert!(
             p.contains("You are never woken by your own (`author = \"planner\"`) edits."),
             "prompt must still state the self-edit exclusion; got: {p}"
-        );
-    }
-
-    const ASSISTANT_PROMPT_GOLDEN: &str = include_str!("../tests/goldens/assistant_prompt.txt");
-
-    const LAUNCHPAD_ASSISTANT_PROMPT_GOLDEN: &str =
-        include_str!("../tests/goldens/assistant_prompt_launchpad.txt");
-
-    fn assert_assistant_prompt_golden(file: &str, rendered: &str, golden: &str) {
-        if std::env::var_os("REGEN_PROMPT_GOLDENS").is_some() {
-            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("tests/goldens")
-                .join(file);
-            std::fs::write(path, rendered).expect("write regenerated assistant prompt");
-            panic!(
-                "{file} regenerated from the current prompt; inspect and rerun without the flag"
-            );
-        }
-        assert_eq!(rendered, golden);
-    }
-
-    /// Whole-document equality: a stray newline at either seam is what a `contains` check cannot see.
-    #[test]
-    fn the_ordinary_assistant_prompt_matches_its_reviewed_golden() {
-        assert_assistant_prompt_golden(
-            "assistant_prompt.txt",
-            &render_system_prompt(ASSISTANT_SYSTEM_PROMPT_TEMPLATE, "track-golden-1189"),
-            ASSISTANT_PROMPT_GOLDEN,
-        );
-    }
-
-    /// `assert_ne!` against the ordinary prompt rules out a golden regenerated from a launchpad template that had quietly become the ordinary one.
-    #[test]
-    fn the_launchpad_assistant_prompt_owns_the_report_and_keeps_the_mechanics() {
-        let launchpad = render_system_prompt(
-            LAUNCHPAD_ASSISTANT_SYSTEM_PROMPT_TEMPLATE,
-            "track-golden-1189",
-        );
-        assert_assistant_prompt_golden(
-            "assistant_prompt_launchpad.txt",
-            &launchpad,
-            LAUNCHPAD_ASSISTANT_PROMPT_GOLDEN,
-        );
-
-        let ordinary = render_system_prompt(ASSISTANT_SYSTEM_PROMPT_TEMPLATE, "track-golden-1189");
-        assert_ne!(
-            launchpad, ordinary,
-            "the launchpad identity has to differ from the ordinary one; if it \
-             does not, nothing about #1343 shipped"
-        );
-        let mechanics = render_system_prompt(
-            include_str!("../prompts/assistant/mechanics.md"),
-            "track-golden-1189",
-        );
-        assert!(!mechanics.is_empty(), "the shared mechanics file is empty");
-        assert!(
-            ordinary.contains(&mechanics) && launchpad.contains(&mechanics),
-            "both assistant identities must embed prompts/assistant/mechanics.md"
         );
     }
 
@@ -678,32 +584,6 @@ mod tests {
                 &[],
                 &["neige_task_accept", "neige_task_reject"],
                 true,
-                3,
-            );
-        }
-    }
-
-    /// Every tool the Assistant prompts name, `neige_report_read` included (#2289), is listed for the Assistant.
-    /// `neige` CLI mentions are not `neige_*` tokens and are pinned only by the goldens.
-    #[test]
-    fn assistant_prompts_name_only_tools_the_assistant_role_can_see() {
-        for (label, template) in [
-            (
-                "ordinary assistant prompt",
-                ASSISTANT_SYSTEM_PROMPT_TEMPLATE,
-            ),
-            (
-                "launchpad assistant prompt",
-                LAUNCHPAD_ASSISTANT_SYSTEM_PROMPT_TEMPLATE,
-            ),
-        ] {
-            assert_prompt_tool_names(
-                label,
-                &render_system_prompt(template, "track-registry"),
-                calm_types::model::CardRole::Assistant,
-                &[],
-                &[],
-                false,
                 3,
             );
         }

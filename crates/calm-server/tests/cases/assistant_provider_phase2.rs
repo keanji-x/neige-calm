@@ -662,6 +662,15 @@ async fn raced_start(prepare_checkpoint: bool, postcommit_error: bool, crash: u8
             .shutdown_track(&track.id, state.thread_seals().clone())
             .await
             .unwrap();
+        let harvested: Option<i64> = sqlx::query_scalar(
+            "SELECT queue_harvested_at_ms FROM worker_sessions WHERE id=?1"
+        ).bind(&racer.id).fetch_one(repo.pool()).await.unwrap();
+        assert!(harvested.is_some(), "successful successor consumes the restored queue");
+        let settled = std::fs::read_to_string(&capture).unwrap();
+        let deliveries = settled.lines().filter_map(|line| serde_json::from_str::<Value>(line).ok())
+            .filter(|row| row["method"] == "turn/start" && row.to_string().contains("racer owed sentence"))
+            .count();
+        assert_eq!(deliveries, 1, "replay and shutdown must not deliver the harvested sentence again");
 
     })).await.expect("independent write operation")
 }

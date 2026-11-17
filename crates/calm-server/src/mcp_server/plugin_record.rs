@@ -10,7 +10,7 @@ pub(crate) fn record(
     args: &Value,
     result: Option<&CallToolResult>,
 ) {
-    if identity.role != CardRole::Planner {
+    if identity.role.capability_role() != CardRole::Planner {
         return;
     }
     let Some(track) = identity.track_id.as_deref() else {

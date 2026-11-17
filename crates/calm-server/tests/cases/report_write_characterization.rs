@@ -415,7 +415,7 @@ async fn mcp_claude_assistant_block_write_is_actored_to_the_claude_session() {
             title: None,
             kind: "codex".into(),
             sort: None,
-            payload: json!({"schemaVersion": 1, "harness_profile": "assistant", "assistant_provider":"claude"}),
+            payload: json!({"schemaVersion": 1, "harness_profile": "assistant", "assistant_provider":"claude","permission_mode":"never"}),
         })
         .await
         .expect("mint the claude assistant's card");

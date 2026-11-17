@@ -139,7 +139,7 @@ export type PlannerConversationScope = Readonly<{
 /** First-message creation, its deterministic identity and its recovery read. */
 export type ConversationCreationSource = Readonly<{
   derivedCardId: (idempotencyKey: string) => string;
-  create: (text: string, idempotencyKey: string, provider: AgentProvider, selection: ModelSelection, side: SideConversation | undefined,
+  create: (text: string, idempotencyKey: string, provider: AgentProvider, selection: ModelSelection, side: SideConversation | undefined, permissionMode: import('../../../../core/api/generated/wire.ts').PlannerPermissionMode | undefined,
     answered: (result: CreatedConversation) => void) => Promise<CreatedConversation>;
   inspect: (cardId: string, idempotencyKey: string) => Promise<import('../../../../core/api/generated/wire.ts').ConversationInitialInputObservation>;
   refresh: (beforePublish: (rows: readonly Conversation[]) => void) => Promise<readonly Conversation[]>;

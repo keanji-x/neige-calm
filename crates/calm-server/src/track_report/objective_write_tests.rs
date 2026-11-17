@@ -330,7 +330,7 @@ async fn objective_evaluator_report_intent_refuses_non_planner_roles() {
         .1
         .payload;
     let log = repo.events_latest_id().await.unwrap();
-    for role in [CardRole::Assistant, CardRole::Worker, CardRole::ReportCard] {
+    for role in [CardRole::Worker, CardRole::ReportCard] {
         // Role rejection needs no session lookup or Report write.
         let identity = ToolCallIdentity {
             card_id: "non-planner".into(),

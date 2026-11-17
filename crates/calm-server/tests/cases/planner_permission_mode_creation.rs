@@ -56,13 +56,16 @@ async fn child_track_config_rest_new_track_starts_never() {
 
 /// A create naming a mode is refused whole: nothing is minted, so it cannot yield an `ask` Planner.
 #[tokio::test]
-async fn a_create_cannot_ask_for_a_mode() {
+async fn an_agent_create_cannot_ask_for_a_mode() {
     let b = boot().await;
     let area = create_area(&b, "Permissions").await;
     let tracks = "SELECT COUNT(*) FROM tracks";
     let cards = "SELECT COUNT(*) FROM cards";
     let before = (count(&b, tracks).await, count(&b, cards).await);
-    for actor in [None, Some("ai:codex")] {
+    for (actor, mode) in [Some("ai:codex"), Some("ai:claude")]
+        .into_iter()
+        .flat_map(|actor| ["never", "ask", "full"].map(|mode| (actor, mode)))
+    {
         let (status, body) = post(
             b.app.clone(),
             "/api/tracks",
@@ -71,19 +74,36 @@ async fn a_create_cannot_ask_for_a_mode() {
                 "planner_provider": "codex",
                 "area_id": area["id"],
                 "theme": {"fg": [255, 255, 255], "bg": [0, 0, 0]},
-                "permission_mode": "ask",
+                "permission_mode": mode,
             })),
         )
         .await;
-        assert_eq!(
-            status,
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "actor={actor:?} body={body}"
-        );
+        assert_eq!(status, StatusCode::FORBIDDEN, "actor={actor:?} body={body}");
     }
     assert_eq!(
         (count(&b, tracks).await, count(&b, cards).await),
         before,
         "a refused create mints nothing"
     );
+}
+
+#[tokio::test]
+async fn a_user_selects_the_mode_at_track_creation() {
+    for mode in ["never", "ask", "full"] {
+        let b = boot().await;
+        let area = create_area(&b, "Explicit permissions").await;
+        let (status, body) = post(
+            b.app.clone(),
+            "/api/tracks",
+            Some("user"),
+            Some(json!({
+                "planner_provider":"codex", "area_id":area["id"],
+                "theme":{"fg":[255,255,255],"bg":[0,0,0]}, "permission_mode":mode,
+            })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "mode={mode} body={body}");
+        let planner = planner_card_of(&b, body["id"].as_str().unwrap()).await;
+        assert_eq!(stored_mode(&b, &planner).await, json!(mode));
+    }
 }

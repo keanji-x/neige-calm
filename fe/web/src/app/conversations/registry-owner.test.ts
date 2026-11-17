@@ -7,7 +7,7 @@ import { sha256Hex } from '../../../../core/domain/sha256.ts';
 import { EMPTY_COMPOSER, isComposerEmpty } from '../../../../core/domain/conversation-composer.ts';
 
 const card = 'opaque:card';
-const draft: ConversationDraft = { scopeId: 'opaque:scope', provider: 'codex', model: { model: null, reasoning_effort: null },
+const draft: ConversationDraft = { scopeId: 'opaque:scope', permissionMode: 'never', provider: 'codex', model: { model: null, reasoning_effort: null },
   key: 'attempt', text: 'Hello', submitted: null, creating: false, error: null, remedy: null };
 const conversation: Conversation = { id: card, trackId: 'track', title: null, kind: 'track-assistant', provider: 'codex', state: 'idle', updatedAt: 1 };
 const sending = (key: string): SendOp => ({ key, phase: 'sending', unknown: false, fromComposer: true, replaces: null,

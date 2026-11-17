@@ -293,8 +293,8 @@ if open(os.path.join(os.path.dirname(sys.argv[1]), "scenario")).read().strip() =
         (2, "neige_report_read", {"with_markers": True}),
         (3, "neige_report_commit", {"message": "Claude Assistant prose", "ops": [
             {"op": "upsert", "kind": "prose", "markdown": "# Assistant note\n\nNative Claude prose.\n"}]}),
-        (4, "neige_task_done", {"attempt_id": "not-an-assistant-attempt"}),
-        (5, "neige_track_add", {"goal": "forbidden Assistant child"}),
+        (4, "neige_task_done", {}),
+        (5, "neige_track_add", {}),
     ]:
         f.write(json.dumps({"jsonrpc": "2.0", "id": number, "method": "tools/call",
                            "params": {"name": name, "arguments": arguments}}) + "\n")

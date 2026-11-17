@@ -209,7 +209,7 @@ pub(super) async fn send(
         .await;
     }
     // Admission and receipt are installed before any prompt reaches the writer.
-    let owner = shared.admission(thread, Some(permission), Some(&native), Some(&turn));
+    let owner = shared.admission(thread, Some(&native), Some(&turn));
     let admission = contract.admission(&owner);
     let pending = protocol::prompt(&client, &capabilities, &native, blocks, admission.gate()).await;
     let _ = send_pending.send(pending);

@@ -13,20 +13,20 @@ const WHY: AskQuestion = { title: 'Why?', options: [] };
 describe('openAsksOf', () => {
   it('keeps only the asks, oldest first, whatever order the overlay listed them in', () => {
     const items: ActivityItem[] = [
-      { source: 'ask', key: 'ask:30', text: 'Why?', atMs: 30, askId: 30, questions: [WHY], delivery: 'wake' },
+      { source: 'ask', key: 'ask:30', text: 'Why?', atMs: 30, askId: 30, cardId: 'planner', sessionId: 'session', questions: [WHY], delivery: 'wake' },
       { source: 'planner_down', key: 'planner_down:1', text: 'The Planner stopped.', atMs: 20 },
       { source: 'planner_turn_timeout', key: 'planner_turn_timeout:9', text: 'Turn timed out.', atMs: 30 },
-      { source: 'ask', key: 'ask:10', text: 'Which branch?', atMs: 10, askId: 10, questions: [BRANCH], delivery: 'hold' },
+      { source: 'ask', key: 'ask:10', text: 'Which branch?', atMs: 10, askId: 10, cardId: 'planner', sessionId: 'session', questions: [BRANCH], delivery: 'hold' },
     ];
     expect(openAsksOf(items)).toEqual([
-      { askId: 10, questions: [BRANCH], delivery: 'hold' },
-      { askId: 30, questions: [WHY], delivery: 'wake' },
+      { askId: 10, cardId: 'planner', sessionId: 'session', questions: [BRANCH], delivery: 'hold' },
+      { askId: 30, cardId: 'planner', sessionId: 'session', questions: [WHY], delivery: 'wake' },
     ]);
   });
 
   it('puts every paused request before the wake asks, oldest first within each (#2348)', () => {
     const ask = (askId: number, delivery: 'wake' | 'hold'): ActivityItem => ({
-      source: 'ask', key: `ask:${askId}`, text: 'Why?', atMs: askId, askId, questions: [WHY], delivery,
+      source: 'ask', key: `ask:${askId}`, text: 'Why?', atMs: askId, askId, cardId: 'planner', sessionId: 'session', questions: [WHY], delivery,
     });
     expect(openAsksOf([ask(40, 'hold'), ask(30, 'wake'), ask(20, 'hold'), ask(10, 'wake')]).map((open) => open.askId))
       .toEqual([20, 40, 10, 30]);
@@ -117,9 +117,9 @@ describe('answerAskFailureText', () => {
 
 describe('takesOptionsOnly', () => {
   it('holds a paused request (#2348) and an ask with an action (#2410) to their options, and nothing else', () => {
-    expect(takesOptionsOnly({ askId: 1, questions: [BRANCH], delivery: 'wake' })).toBe(false);
-    expect(takesOptionsOnly({ askId: 1, questions: [BRANCH], delivery: 'hold' })).toBe(true);
-    expect(takesOptionsOnly({ askId: 1, questions: [BRANCH], delivery: 'wake', action: { kind: 'reopen_track', closed_at: 42 } }))
+    expect(takesOptionsOnly({ askId: 1, cardId: 'planner', sessionId: 'session', questions: [BRANCH], delivery: 'wake' })).toBe(false);
+    expect(takesOptionsOnly({ askId: 1, cardId: 'planner', sessionId: 'session', questions: [BRANCH], delivery: 'hold' })).toBe(true);
+    expect(takesOptionsOnly({ askId: 1, cardId: 'planner', sessionId: 'session', questions: [BRANCH], delivery: 'wake', action: { kind: 'reopen_track', closed_at: 42 } }))
       .toBe(true);
   });
 });

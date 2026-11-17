@@ -173,9 +173,10 @@ type ConversationPanelSource = ConversationCreationSource & Readonly<{
     /** The row and Area supplying report mention candidates; null without an Area context.
      * Candidate inserts are server-owned and the composer sends them verbatim.
      * asks/answerAsk serve open asks above the composer; role supplies the Area admin state. */
+    asks: readonly OpenAsk[];
+    answerAsk: (askId: number, answers: readonly AskAnswer[]) => Promise<void>;
     planner: Readonly<{
-      cardId: string; areaId: string; asks: readonly OpenAsk[];
-      answerAsk: (askId: number, answers: readonly AskAnswer[]) => Promise<void>;
+      cardId: string; areaId: string;
       role: PlannerRoleControl;
       commands?: (stop: (() => void) | undefined) => CommandBindings;
     }> | null;
@@ -427,7 +428,7 @@ function useConversationPanel(
           if (saved !== undefined) { sideTarget[1]({ kind: 'row', id: saved.id }); return; }
         }
         registry.startDraft({ scopeId: sideSlot, key: mintIdempotencyKey(),
-          provider: parent.provider, side: sideConversationSnapshot(parent.id, entries), model: FOLLOW_INSTALLATION_DEFAULT,
+          provider: parent.provider, permissionMode: 'never', side: sideConversationSnapshot(parent.id, entries), model: FOLLOW_INSTALLATION_DEFAULT,
           text: question === '' ? null : question, autoSend: question !== '',
           submitted: null, creating: false, error: null, remedy: null });
         sideTarget[1]({ kind: 'draft' });
@@ -608,7 +609,7 @@ function useConversationPane(
   useConversationDraftRetention({ discardUnsentDraft, sourceScopeId });
 
   const { start, startWithMessage, withDraft, sendDraft, retryDraft, sendAsNewConversation, closeDrawer } = createConversationDraftActions({
-    registry, draft, creating, source, sourceScopeId, transport, supportsDraftModel,
+    registry, draft, creating, source, sourceScopeId, transport, supportsDraftModel, maySelectPermissions: shareAccess === null,
     supportsInitialInput: !draftCapabilities.isError && draftCapabilities.data?.conversationInitialInput === true,
     managedProviders: managed.answers,
     recheckManagedProviders: managed.recheck,
@@ -672,15 +673,15 @@ function useConversationPane(
     if (open === null || options?.onSide === undefined || !sideSourceReady) return false;
     return options.onSide(open, store.turns, question);
   });
-  const plannerAsks = plannerRow?.asks ?? NO_ASKS;
+  const plannerAsks = useMemo(() => openRowId === null ? NO_ASKS : source.asks.filter(ask => ask.cardId === openRowId), [source.asks, openRowId]);
   /* Read field by field: the control is rebuilt each render, and the composer's memo keys on what it shows. */
   const roleValue = plannerRow?.role.value ?? null;
   const roleDisabled = plannerRow?.role.isDisabled ?? true;
   const roleDisabledReason = plannerRow?.role.disabledReason;
   const roleChange = plannerRow?.role.onChange;
   /* Without a Planner row the drawer lists no ask, so nothing can be answered from here: nothing is sent. */
-  const answerAsk = useCommittedCallback(existingId, (askId: number, answers: readonly AskAnswer[]) => plannerRow === null
-    ? Promise.reject(new NotSentError()) : plannerRow.answerAsk(askId, answers));
+  const answerAsk = useCommittedCallback(existingId, (askId: number, answers: readonly AskAnswer[]) => plannerAsks.some(ask => ask.askId === askId)
+    ? source.answerAsk(askId, answers) : Promise.reject(new NotSentError()));
   const attach = useCommittedCallback(existingId, attachments.attach);
   const removeAttachment = useCommittedCallback(existingId, attachments.remove);
   const { items: attachmentItems, ids: attachmentIds, busy: attachmentBusy, error: attachmentError, atCapacity } = attachments;
@@ -798,8 +799,8 @@ function useConversationPane(
                     onChange={composerView.setModel}
                     isDisabled={!composerView.historyReady}
                   />
-                  {/* A Planner's only (#2348): any other conversation reads `null` and has no approvals to set. */}
-                  {composerView.permissionMode !== null && (
+                  {/* The server declares approval eligibility for bound Planner/Assistant conversations. */}
+                  {shareAccess === null && composerView.permissionMode !== null && (
                     <PermissionModePill mode={composerView.permissionMode} onChange={composerView.setPermissionMode}
                       isDisabled={!composerView.historyReady} />
                   )}
@@ -814,7 +815,7 @@ function useConversationPane(
   ), [existingId, compactComposer, panePresented, composerFocusFor, composerFocusRequest, changeComposer, composerView,
     paneCommands, composerStop, replacing, editingQueue, edit.queuedSaving, editingBar,
     sendText, composerAttachments, mentionTrigger, scopeProvider, plannerAsks, answerAsk,
-    roleValue, roleDisabled, roleDisabledReason, roleChange]);
+    roleValue, roleDisabled, roleDisabledReason, roleChange, shareAccess]);
 
   const renderDrawer = (resizeGroup: PaneResizeGroup | null = null) => (
       <ConversationSurface
@@ -859,11 +860,11 @@ function useConversationPane(
               mentionTrigger={mentionTrigger}
               changeText={setNewConversationText}
               /* Menu membership and readiness come from the managed backend declarations. */
-              footerActions={<ModelPill groups={managed.groups} provider={draft.provider} selection={draft.model}
+              footerActions={<><ModelPill groups={managed.groups} provider={draft.provider} selection={draft.model}
                 effortControl={compactComposer ? 'in-menu' : 'separate'}
                 onChange={(model, provider) => withDraft(draft, current => current.creating || current.submitted !== null
                   ? current : { ...current, model, provider })}
-                isDisabled={creating || draft.submitted !== null || !supportsDraftModel || !managed.supportsAssistantProviders} />} />
+                isDisabled={creating || draft.submitted !== null || !supportsDraftModel || !managed.supportsAssistantProviders} />{shareAccess === null && <PermissionModePill creating mode={draft.permissionMode} onChange={(permissionMode) => withDraft(draft, current => current.creating || current.submitted !== null ? current : { ...current, permissionMode })} isDisabled={creating || draft.submitted !== null} />}</>} />
           </>
         ) : open === null ? undefined : archived ? (
           <>{readError}<ArchivedConversationNotice key={open.id} conversation={open} onArchive={options?.onArchive} /></>
@@ -1007,13 +1008,13 @@ function useConversationPane(
   const receipts = useReadReceipts();
   const unreadIds = useMemo(() => new Set(rows.filter(row => receipts.isUnread('conversation', row.id,
     row.lastTurnCompletedAt ?? null)).map(row => row.id)), [rows, receipts]);
-  const pendingInputCardId = source.planner !== null && source.planner.asks.length > 0 ? source.planner.cardId : null;
+  const pendingInputCardIds = useMemo(() => new Set(source.asks.map(ask => ask.cardId)), [source.asks]);
   const listProps = useMemo(() => ({
     conversations: store.conversations, cards: source.cards, unreadIds, activeId: existingId,
-    awaitingInputIds: new Set(pendingInputCardId === null ? [] : [pendingInputCardId]),
+    awaitingInputIds: pendingInputCardIds,
     local: existingId === null ? null : { id: existingId, working: store.working, stalled: store.stalled || store.executionHeld },
     showTrack: options?.showTrack ?? true, onOpen: openConversation, onArchive: options?.onArchive,
-  }), [store.conversations, source.cards, unreadIds, pendingInputCardId, existingId, store.working, store.stalled, store.executionHeld, options?.showTrack, options?.onArchive, openConversation]);
+  }), [store.conversations, source.cards, unreadIds, pendingInputCardIds, existingId, store.working, store.stalled, store.executionHeld, options?.showTrack, options?.onArchive, openConversation]);
   const listNode = useMemo(() => <ChatList {...listProps} />, [listProps]);
   const contextList = useMemo(() => <ChatList {...listProps} context />, [listProps]);
 
@@ -1322,9 +1323,10 @@ function TrackRouteBody({
       create: conversationMutations.create,
       inspect: conversationMutations.inspect,
       refresh: conversationMutations.refresh,
+      asks: openAsks,
+      answerAsk: (askId, answers) => trackMutations.answerAsk(track.id, askId, answers),
       planner: plannerCard === undefined ? null : {
-        cardId: plannerCard.id, areaId: track.areaId, asks: openAsks,
-        answerAsk: (askId, answers) => trackMutations.answerAsk(track.id, askId, answers),
+        cardId: plannerCard.id, areaId: track.areaId,
         role: plannerRole,
         commands: plannerCommands,
       },
@@ -1683,11 +1685,14 @@ function TrackRouteBody({
       showConversationAction={!centerActive}
       conversationOpen={!centerActive && chat.isOpen}
       inputNotifications={inputNotifications}
-      /* Both kinds of item are the Planner's, so both reply to it: sending it a message is what
-         answers an ask and what makes a stopped Planner continue. */
-      onReply={plannerCard === undefined ? undefined : () => {
+      /* Ask provenance selects its conversation; Planner status keeps its existing owner. */
+      onReply={(key) => {
+        const item = track.attentionItems.find(item => item.key === key);
+        const cardId = item?.source === 'ask' ? item.cardId
+          : key === '' || item !== undefined ? plannerCard?.id : undefined;
+        if (cardId === undefined) return;
         center?.onOpenAssistant();
-        registry.requestOpen(plannerCard.id, { focusComposer: true });
+        registry.requestOpen(cardId, { focusComposer: true });
       }}
       onDismiss={(key) => trackMutations.dismissActivityItem(track.id, key)}
       onRenameTrack={(title) => trackMutations.patch(track.id, track.areaId, { title }).then(() => undefined)}

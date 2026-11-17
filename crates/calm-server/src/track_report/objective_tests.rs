@@ -24,16 +24,12 @@ fn doc() -> ReportDoc {
     ))
 }
 #[test]
-fn assistant_cannot_create_modify_or_delete_objective_blocks() {
+fn kernel_and_plugins_cannot_create_modify_or_delete_objective_blocks() {
     let original = doc();
     let block = original.blocks_snapshot().unwrap()[0].clone();
     let mut changed = payload();
     changed["title"] = json!("Changed");
-    for author in [
-        EditAuthor::Assistant,
-        EditAuthor::Kernel,
-        EditAuthor::Plugin,
-    ] {
+    for author in [EditAuthor::Kernel, EditAuthor::Plugin] {
         for op in [
             upsert(None, None, &payload()),
             upsert(Some(block.id.clone()), Some(block.rev), &changed),
@@ -88,7 +84,7 @@ fn assistant_cannot_create_modify_or_delete_objective_blocks() {
 fn objective_key_and_kind_are_immutable() {
     let original = doc();
     let block = original.blocks_snapshot().unwrap()[0].clone();
-    for author in [EditAuthor::Planner, EditAuthor::User] {
+    for author in [EditAuthor::Planner, EditAuthor::Assistant, EditAuthor::User] {
         let mut renamed = payload();
         renamed["key"] = json!("renamed");
         for op in [

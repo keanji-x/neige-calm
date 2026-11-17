@@ -5,4 +5,4 @@ Task {task_key} (attempt_id {attempt_id}): its worker has written no terminal ou
 3. A prompt to trust the task's own workspace or checkout: move the selection marker (❯) to "Yes, I trust this folder" with Up/Down keys (`neige_terminal_input` with `claim: true`, `read: true`), confirm on the readback that the marker is on that option, then press Enter (`release: true`). Read again to confirm the dialog is gone. Do not rely on the order of the options. Outcome `trust_accepted`.
 4. Idle at its input prompt: it finished a turn. Do not type. Outcome `idle_at_prompt`.
 5. Anything else, or you are unsure: do not type. Outcome `needs_owner` with a one-sentence `note` when the owner must act on the screen, otherwise `unclear`.
-6. Finish by calling `neige_worker_report` exactly once with this `attempt_id` and the outcome. Never call `neige_user_ask`: only the Planner asks the owner.
+6. Finish by calling `neige_worker_report` exactly once with this `attempt_id` and the outcome. For this watch, report `needs_owner` instead of asking the owner.

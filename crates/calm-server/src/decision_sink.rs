@@ -225,7 +225,7 @@ impl CardDecisionSink {
         identity: &ToolCallIdentity,
         event: Event,
     ) -> Result<(), CalmError> {
-        if identity.role != CardRole::Planner {
+        if identity.role.capability_role() != CardRole::Planner {
             return Err(CalmError::Forbidden(
                 "candidate verdict requires Planner identity".into(),
             ));

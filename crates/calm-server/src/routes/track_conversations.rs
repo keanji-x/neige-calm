@@ -105,6 +105,13 @@ pub struct NewTrackConversationBody {
     #[serde(default)]
     #[schema(value_type = crate::session_projection_repo::AgentProvider, required = false)]
     pub provider: AssistantProviderRequest,
+    /// Approval choice from first issuance; legacy omission selects Never independently.
+    #[serde(
+        default,
+        deserialize_with = "crate::planner_permission_mode::deserialize_creation_choice"
+    )]
+    #[schema(value_type = crate::planner_permission_mode::PlannerPermissionMode, required = false)]
+    pub permission_mode: Option<crate::planner_permission_mode::PlannerPermissionMode>,
     /// Optional discussion source and frozen text excerpt. Does not fork provider history.
     #[serde(default)]
     pub side: Option<crate::side_conversation::SideConversation>,
@@ -212,6 +219,18 @@ pub(crate) async fn create_track_conversation_inner(
     briefing: OpeningBriefing,
     entry: AssistantCreationEntry,
 ) -> Result<(StatusCode, Json<TrackConversationCreated>)> {
+    if body.permission_mode.is_some() {
+        let source = match &entry {
+            AssistantCreationEntry::Human(source) => source,
+            AssistantCreationEntry::Share(source) => source.human(),
+            AssistantCreationEntry::InternalHistorical => return Err(CalmError::Unauthorized),
+        };
+        crate::planner_permission_mode::require_explicit_selection(
+            &actor,
+            source,
+            matches!(&entry, AssistantCreationEntry::Share(_)),
+        )?;
+    }
     // Required, not optional: the card id and the operation idempotency key are both
     // derived from this header; without it a retried POST would mint a second conversation.
     let idempotency_key = parse_idempotency_key_header(&headers)?.ok_or_else(|| {
@@ -301,6 +320,7 @@ pub(crate) async fn create_track_conversation_inner(
             // The adapter re-derives the card id from this and refuses any id it did not compute
             // itself; a derived id sent along with itself would prove nothing.
             idempotency_key: Some(idempotency_key.clone()),
+            permission_mode: body.permission_mode,
             model: body.model,
             reasoning_effort: body.reasoning_effort,
             side: body.side,

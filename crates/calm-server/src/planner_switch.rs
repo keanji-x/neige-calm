@@ -408,8 +408,8 @@ async fn switch_owned(
                     .await
                     .map_err(PlannerSwitchError::from)?;
                     // This payload write is itself fenced ingress: perform it only after CAS,
-                    // and refresh the incoming event before publishing the committed pair.
-                    let incoming = crate::planner_permission_mode::inherit_for_switch_tx(
+                    // and refresh both card events before publishing the committed pair.
+                    let (outgoing, incoming) = crate::planner_permission_mode::inherit_for_switch_tx(
                         &mut tx,
                         ids[0].as_str(),
                         ids[1].as_str(),
@@ -428,10 +428,12 @@ async fn switch_owned(
                         }
                     })?;
                     for event in &mut receipt.events {
-                        if let crate::event::Event::CardUpdated(card) = event
-                            && card.id.as_str() == ids[1].as_str()
-                        {
-                            *card = incoming.clone();
+                        if let crate::event::Event::CardUpdated(card) = event {
+                            if card.id == outgoing.id {
+                                *card = outgoing.clone();
+                            } else if card.id == incoming.id {
+                                *card = incoming.clone();
+                            }
                         }
                     }
                     let scope = crate::event::EventScope::Track {

@@ -170,7 +170,7 @@ export function ModelPill<Provider extends string = AgentProvider>({
   const switchNote = currentGroup?.selectionProblem === undefined && legacyPresentation(provider)?.switchNote;
 
   return (
-    <HStack gap={1} align="center" wrap="wrap" className={styles.group}>
+    <HStack gap={1} align="center" wrap={effortControl === 'in-menu' ? 'nowrap' : 'wrap'} className={styles.group}>
       <AgentPill groups={shown} provider={provider} isDisabled={isDisabled} placement={placement}
         effortControl={effortControl} onChange={(next) => onChange({ model: null, reasoning_effort: null }, next)} />
       <span ref={hostRef} className={styles.host} onKeyDownCapture={closeOnEscape(open, setOpen, hostRef)}>
@@ -373,24 +373,27 @@ type SettingOption = Readonly<{ label: string; description: string; tone?: Setti
 
 /** Total over `PlannerPermissionMode`, in menu order, so a new mode is a compile error here rather than a missing row. */
 const PERMISSION_MODES: Readonly<Record<PlannerPermissionMode, SettingOption>> = Object.freeze({
-  never: Object.freeze({ label: 'Never', description: 'Sandbox only; never asks.' }),
-  ask: Object.freeze({ label: 'Ask me', description: 'Pauses the turn to ask you.', tone: 'warning' }),
-  full: Object.freeze({ label: 'Full access', description: "No sandbox; never asks. Runs with your account's access.", tone: 'danger' }),
+  never: Object.freeze({ label: 'Never', description: 'Never asks you for approval. Actions follow the provider’s policy; requests requiring approval are declined.' }),
+  ask: Object.freeze({ label: 'Ask me', description: 'Asks you when the provider requests approval.', tone: 'warning' }),
+  full: Object.freeze({ label: 'Full access', description: "Allows actions without asking you, within the provider’s limits. Actions may use your account’s access.", tone: 'danger' }),
 });
 
-/** The kernel reads the mode when it starts a turn, so a change never reaches the one already running. */
-const PERMISSION_NOTE = 'Applies from the next turn.';
+/** Issuance freezes the mode, so a change never reaches a running turn. */
+const PERMISSION_NOTE = 'Sandbox behavior depends on the provider. MCP role limits still apply. ';
 
-/** A Planner conversation's approval setting (#2348, #2441): whether its turns stay in the sandbox, may pause to ask before leaving it, or run without one. */
-export function PermissionModePill({ mode, onChange, isDisabled = false, placement = 'above' }: Readonly<{
-  /** What the card has stored. */
+/** A Planner or Assistant approval choice; each provider owns its sandbox and approval policy. */
+export function PermissionModePill({ mode, onChange, isDisabled = false, placement = 'above', creating = false, compactLabel = false }: Readonly<{
+  creating?: boolean;
+  /** Keep the value visible in a narrow footer; the accessible name stays complete. */
+  compactLabel?: boolean;
+  /** Saved value, or the explicit creation choice. */
   mode: PlannerPermissionMode;
   onChange: (mode: PlannerPermissionMode) => void;
   isDisabled?: boolean;
   placement?: 'above' | 'below';
 }>) {
-  return <SettingPill name="Approvals" options={PERMISSION_MODES} value={mode} onChange={onChange}
-    note={PERMISSION_NOTE} isDisabled={isDisabled} placement={placement} />;
+  return <SettingPill name="Approvals" options={PERMISSION_MODES} value={mode} onChange={onChange} compactLabel={compactLabel}
+    note={PERMISSION_NOTE + (creating ? 'Applies from the first turn.' : 'Applies to newly issued turns. Running turns and frozen retries keep their original setting.')} isDisabled={isDisabled} placement={placement} />;
 }
 
 /** What a Track's Planner may do in its Area: an ordinary Planner, or an Area admin (`admin` on `POST`/`PATCH /api/tracks`). */
@@ -419,7 +422,7 @@ export function PlannerRolePill({ value, onChange, isDisabled = false, disabledR
 
 /** A short fixed setting: the trigger names it and its value, and each row explains itself. */
 function SettingPill<Value extends string>({
-  name, options, value, onChange, note, isDisabled, tooltip, placement, alignment = 'start',
+  name, options, value, onChange, note, isDisabled, tooltip, placement, alignment = 'start', compactLabel = false,
 }: Readonly<{
   name: string;
   options: Readonly<Record<Value, SettingOption>>;
@@ -431,6 +434,7 @@ function SettingPill<Value extends string>({
   tooltip?: string;
   placement: 'above' | 'below';
   alignment?: 'start' | 'end';
+  compactLabel?: boolean;
 }>) {
   const [open, setOpen] = useState(false);
   const hostRef = useRef<HTMLSpanElement | null>(null);
@@ -449,7 +453,7 @@ function SettingPill<Value extends string>({
         button={{
           label,
           children: <Text type="inherit" color="inherit" maxLines={1}>
-            {`${name}: `}
+            {!compactLabel && `${name}: `}
             <span className={styles.settingValue} data-nc-tone={tone}>{current.label}</span>
           </Text>,
           'data-nc-tone': tone,

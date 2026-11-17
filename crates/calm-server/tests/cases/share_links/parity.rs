@@ -59,6 +59,17 @@ async fn assistant_creation_accepts_guest_and_replays_only_its_author() {
     let id = link["link"]["delegation"]["id"].as_str().unwrap();
     let cookie = super::tokens::unlock(&fx, &link).await;
     let path = format!("/api/tracks/{}/conversations?share_link={id}", fx.track);
+    for mode in ["never", "ask", "full"] {
+        let (status, body) = post(
+            &fx,
+            &path,
+            &cookie,
+            "guest-assistant",
+            json!({"provider":"codex","text":"Guest Assistant first input","permission_mode":mode}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    }
     let body = json!({"provider":"codex","text":"Guest Assistant first input"});
     let (status, created) = post(&fx, &path, &cookie, "guest-assistant", body.clone()).await;
     assert_eq!(status, StatusCode::CREATED, "{created}");
@@ -179,6 +190,9 @@ async fn area_creation_supports_both_routes_and_optional_guest_first_input() {
     for extra in [
         json!({"cwd":"/tmp"}),
         json!({"admin":true}),
+        json!({"permission_mode":"never"}),
+        json!({"permission_mode":"ask"}),
+        json!({"permission_mode":"full"}),
         json!({"allow_cross_area_cwd":{"area_id":fx.area,"folder_id":1}}),
         json!({"area_id":"foreign"}),
         json!({"fork_report_from":"outside"}),

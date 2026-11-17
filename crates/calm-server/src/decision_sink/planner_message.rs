@@ -17,7 +17,7 @@ impl CardDecisionSink {
         key: &str,
         text: &str,
     ) -> Result<String, CalmError> {
-        if identity.role != CardRole::Planner {
+        if identity.role.capability_role() != CardRole::Planner {
             return Err(CalmError::Forbidden(
                 "Planner message requires Planner identity".into(),
             ));

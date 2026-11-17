@@ -75,6 +75,10 @@ pub struct ApprovalRoutes {
 struct Route {
     owner: u64,
     sender: HeldRequestSender,
+    requests: Vec<(
+        Option<String>,
+        std::sync::Weak<std::sync::atomic::AtomicBool>,
+    )>,
 }
 
 impl ApprovalRoutes {
@@ -88,13 +92,25 @@ impl ApprovalRoutes {
     /// later route for the same thread takes over; dropping the earlier one then removes nothing.
     pub fn route(self: &Arc<Self>, thread_id: &str, sender: HeldRequestSender) -> ApprovalRoute {
         let owner = self.next_owner.fetch_add(1, Ordering::Relaxed);
-        self.lock()
-            .insert(thread_id.to_owned(), Route { owner, sender });
+        self.lock().insert(
+            thread_id.to_owned(),
+            Route {
+                owner,
+                sender,
+                requests: Vec::new(),
+            },
+        );
         ApprovalRoute {
             routes: Arc::clone(self),
             thread_id: thread_id.to_owned(),
             owner,
         }
+    }
+
+    pub(super) fn owns(&self, thread_id: &str, owner: u64) -> bool {
+        self.lock()
+            .get(thread_id)
+            .is_some_and(|route| route.owner == owner)
     }
 
     fn unroute(&self, thread_id: &str, owner: u64) {
@@ -107,8 +123,33 @@ impl ApprovalRoutes {
         }
     }
 
-    pub(super) fn sender(&self, thread_id: &str) -> Option<HeldRequestSender> {
-        self.lock().get(thread_id).map(|route| route.sender.clone())
+    pub(super) fn sender(
+        &self,
+        thread_id: &str,
+        turn_id: Option<&str>,
+    ) -> Option<(HeldRequestSender, u64, Arc<std::sync::atomic::AtomicBool>)> {
+        let mut threads = self.lock();
+        let route = threads.get_mut(thread_id)?;
+        route.requests.retain(|(_, live)| live.strong_count() > 0);
+        let live = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        route
+            .requests
+            .push((turn_id.map(str::to_owned), Arc::downgrade(&live)));
+        Some((route.sender.clone(), route.owner, live))
+    }
+
+    pub(super) fn revoke_turn(&self, thread_id: &str, turn_id: &str) {
+        if let Some(route) = self.lock().get_mut(thread_id) {
+            for (_, live) in route
+                .requests
+                .iter()
+                .filter(|(turn, _)| turn.as_deref().is_none_or(|turn| turn == turn_id))
+            {
+                if let Some(live) = live.upgrade() {
+                    live.store(false, Ordering::SeqCst);
+                }
+            }
+        }
     }
 }
 
@@ -139,6 +180,7 @@ pub(super) enum ApprovalKind {
 /// One approval request, read off its frame.
 pub(super) struct ApprovalRequest {
     pub(super) thread_id: String,
+    pub(super) turn_id: Option<String>,
     pub(super) kind: ApprovalKind,
     title: String,
 }
@@ -158,8 +200,13 @@ impl ApprovalRequest {
             _ => return None,
         };
         let thread_id = params.get("threadId")?.as_str()?.to_owned();
+        let turn_id = params
+            .get("turnId")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
         Some(Self {
             thread_id,
+            turn_id,
             kind,
             title: clip_ask_title(&kind.title(params)),
         })
@@ -250,17 +297,16 @@ impl ApprovalKind {
 
 /// Where a responder's answer goes: one JSON-RPC result frame for one request id.
 pub(super) trait ReplyPort: Send + 'static {
-    fn reply(&self, frame: Value);
+    fn reply(&self, frame: Value, affirmative: bool);
 }
 
-/// Answers one approval request; dropped unanswered, it denies it.
+/// Answers one request through its original native connection; drop keeps deny cleanup.
 pub(super) struct ApprovalResponder<P: ReplyPort> {
     port: P,
     id: Value,
     kind: ApprovalKind,
     answered: bool,
 }
-
 impl<P: ReplyPort> ApprovalResponder<P> {
     pub(super) fn new(port: P, id: Value, kind: ApprovalKind) -> Self {
         Self {
@@ -270,24 +316,23 @@ impl<P: ReplyPort> ApprovalResponder<P> {
             answered: false,
         }
     }
-
-    fn send(&self, result: Value) {
-        self.port
-            .reply(json!({ "jsonrpc": "2.0", "id": self.id, "result": result }));
+    fn send(&self, result: Value, affirmative: bool) {
+        self.port.reply(
+            json!({"jsonrpc":"2.0", "id":self.id, "result":result}),
+            affirmative,
+        );
     }
 }
-
 impl<P: ReplyPort> HeldResponder for ApprovalResponder<P> {
     fn respond(mut self: Box<Self>, option: usize) {
         self.answered = true;
-        self.send(self.kind.answer(option));
+        self.send(self.kind.answer(option), option < 2);
     }
 }
-
 impl<P: ReplyPort> Drop for ApprovalResponder<P> {
     fn drop(&mut self) {
         if !self.answered {
-            self.send(self.kind.deny());
+            self.send(self.kind.deny(), false);
         }
     }
 }
@@ -296,7 +341,7 @@ impl<P: ReplyPort> Drop for ApprovalResponder<P> {
 /// when the reader ends, aborted or not, every harness it handed a request is told.
 pub(super) struct HandedRequests {
     connection: ConnectionId,
-    open: HashMap<RequestKey, HeldRequestSender>,
+    open: HashMap<RequestKey, (HeldRequestSender, Arc<std::sync::atomic::AtomicBool>)>,
     told: Vec<HeldRequestSender>,
 }
 
@@ -325,6 +370,7 @@ impl HandedRequests {
         id: &Value,
         request: &ApprovalRequest,
         responder: Box<dyn HeldResponder>,
+        live: Arc<std::sync::atomic::AtomicBool>,
     ) {
         let request_key = self.key(id);
         let opened = sender.send(HeldRequestMessage::Open {
@@ -337,7 +383,9 @@ impl HandedRequests {
             if !self.told.iter().any(|told| told.same_channel(&sender)) {
                 self.told.push(sender.clone());
             }
-            self.open.insert(request_key, sender);
+            if let Some((_, previous)) = self.open.insert(request_key, (sender, live)) {
+                previous.store(false, Ordering::SeqCst);
+            }
         }
     }
 
@@ -347,7 +395,8 @@ impl HandedRequests {
             return;
         };
         let request_key = self.key(id);
-        if let Some(sender) = self.open.remove(&request_key) {
+        if let Some((sender, live)) = self.open.remove(&request_key) {
+            live.store(false, Ordering::SeqCst);
             let _ = sender.send(HeldRequestMessage::Gone { request_key });
         }
     }
@@ -355,6 +404,9 @@ impl HandedRequests {
 
 impl Drop for HandedRequests {
     fn drop(&mut self) {
+        for (_, live) in self.open.values() {
+            live.store(false, Ordering::SeqCst);
+        }
         for sender in self.told.drain(..) {
             let _ = sender.send(HeldRequestMessage::ConnectionLost {
                 connection: self.connection.clone(),

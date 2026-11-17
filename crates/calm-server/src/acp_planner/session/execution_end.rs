@@ -625,7 +625,7 @@ impl PreparedInterrupt {
         admission.check_local().await?;
         let owner = self
             .shared
-            .admission(&self.thread, None, Some(&self.native), Some(&self.turn));
+            .admission(&self.thread, Some(&self.native), Some(&self.turn));
         let combined = admission.combined(&owner);
         let gate = combined.gate_with_final_check(|| {
             // The native cancel is session-scoped: never let an old handle

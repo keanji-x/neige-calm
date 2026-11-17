@@ -138,7 +138,7 @@ async fn boot_with_role_and_daemon_token(role: CardRole, daemon_token: Option<St
         } else if role == CardRole::Assistant {
             calm_server::db::sqlite::card_create_with_id_tx(&mut tx, card_id.clone(), calm_server::model::NewCard {
                 track_id: track.id.clone(), title: None, kind: "codex".into(), sort: None,
-                payload: json!({"schemaVersion":1,"harness_profile":"assistant","assistant_provider":"codex"}),
+                payload: json!({"schemaVersion":1,"harness_profile":"assistant","assistant_provider":"codex","permission_mode":"never"}),
             },role,true,&card_role_cache).await.unwrap();
             session_start_runtime_tx(
                 &mut tx,

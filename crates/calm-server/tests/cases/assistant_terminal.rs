@@ -1,8 +1,7 @@
-//! #2492: every Assistant of a Track reaches that Track's task workers through the terminal tools,
-//! under the Planner's checks: same Track only, no typed keys into a codex task worker, a finished
-//! task not writable, and no terminal card of its own. Unlike the Planner it reaches task workers
-//! only: a manual Terminal card or a task-less agent card is refused. Driven over the production
-//! MCP socket.
+//! Assistants share Planner terminal tools on the same Track, including manual
+//! terminals and task-less agent cards. Managed Codex task workers still reject
+//! typed keys, finished tasks remain read-only, and observations belong to the
+//! caller that read them. Driven over the production MCP socket.
 use super::task_terminal::{ECHO_WORKER, Worker, spawn_viewer, stop, worker_running};
 use super::terminal_support::Harness;
 use calm_server::card_role_cache::CardRoleCache;
@@ -43,7 +42,7 @@ async fn agent_token_provider(
         let token = if role == CardRole::Assistant {
             calm_server::db::sqlite::card_create_with_id_tx(&mut tx, card.clone(), calm_server::model::NewCard {
                 track_id:track.into(),title:None,kind:"codex".into(),sort:None,
-                payload:json!({"schemaVersion":1,"harness_profile":"assistant","assistant_provider":provider}),
+                payload:json!({"schemaVersion":1,"harness_profile":"assistant","assistant_provider":provider,"permission_mode":"never"}),
             },role,true,&CardRoleCache::new()).await.unwrap();
             calm_server::db::sqlite::session_start_runtime_tx(
                 &mut tx,
@@ -339,27 +338,15 @@ async fn an_assistant_reads_but_never_types_into_a_codex_task_worker_or_a_finish
         refused["error"]["data"]["refusal"], "worker_keys_refused",
         "{refused}"
     );
-    // `message` is the Planner's: its header names the Planner (#2493).
-    let message = h
-        .call_with_token(
-            &assistant,
-            "neige_terminal_input",
-            json!({"attempt_id":codex.task,"idempotency_key":"message",
-                "action":{"type":"message","text":"x"}}),
-        )
-        .await;
-    assert_eq!(message["error"]["code"], -32403, "{message}");
-    assert!(
-        message["error"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("action \"message\" is the Planner's"),
-        "{message}"
-    );
-    assert_eq!(
-        message["error"]["data"]["refusal"], "assistant_no_message",
-        "{message}"
-    );
+    let message = ok_as(
+        &h,
+        (&assistant, None),
+        "neige_terminal_input",
+        json!({"attempt_id":codex.task,"idempotency_key":"message",
+            "action":{"type":"message","text":"x"}}),
+    )
+    .await;
+    assert!(message["message_id"].is_string(), "{message}");
 
     let finished = worker_running(&h, "claude", &h.track, Some(ECHO_WORKER)).await;
     let before = ok_as(
@@ -392,7 +379,7 @@ async fn an_assistant_reads_but_never_types_into_a_codex_task_worker_or_a_finish
 }
 
 #[tokio::test]
-async fn an_assistant_opens_no_terminal_card() {
+async fn an_assistant_opens_a_terminal_through_the_shared_contract() {
     let h = Harness::start().await;
     let (_, _, assistant) = agent_token(&h, &h.track, CardRole::Assistant).await;
     let cards = h.sql.cards_by_track(&h.track).await.unwrap().len();
@@ -403,15 +390,11 @@ async fn an_assistant_opens_no_terminal_card() {
             json!({"idempotency_key":"assistant-open"}),
         )
         .await;
-    assert_eq!(open["error"]["code"], -32403, "{open}");
-    assert!(
-        open["error"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("got=Assistant"),
-        "{open}"
+    assert!(open.get("error").is_none(), "{open}");
+    assert_eq!(
+        h.sql.cards_by_track(&h.track).await.unwrap().len(),
+        cards + 1
     );
-    assert_eq!(h.sql.cards_by_track(&h.track).await.unwrap().len(), cards);
 }
 
 /// A same-Track claude Worker card that no task owns, as the owner opens one; returns its terminal.
@@ -452,11 +435,10 @@ async fn manual_claude_card(h: &Harness) -> String {
         .expect("independent write operation")
 }
 
-/// The Planner drives a manual Terminal card or a task-less claude Worker card
-/// (`manual_codex_and_claude_workers_are_controllable_without_a_task`); an Assistant reaches
-/// neither, even with a live view: they run outside its sandbox.
+/// Manual terminals share the Planner contract; each caller reads its own
+/// observation before writing, even when it may access the same terminal.
 #[tokio::test]
-async fn an_assistant_reaches_no_terminal_without_a_current_task() {
+async fn an_assistant_uses_manual_terminals_under_the_shared_track_contract() {
     let h = Harness::start().await;
     let (_, _, assistant) = agent_token(&h, &h.track, CardRole::Assistant).await;
     for terminal in [
@@ -471,33 +453,58 @@ async fn an_assistant_reaches_no_terminal_without_a_current_task() {
         assert_eq!(shown["available"], true, "the Planner control: {shown}");
         assert_eq!(shown["controllable"], true, "the Planner control: {shown}");
         let planner_view = h.observe_text(&terminal, "WORKER_READY").await;
-        for (tool, args) in [
-            ("neige_terminal_show", json!({"terminal_id":terminal})),
-            (
-                "neige_terminal_read",
-                json!({"terminal_id":terminal,"wait_ms":30}),
-            ),
-            (
-                "neige_terminal_control",
-                json!({"terminal_id":terminal,"action":"claim"}),
-            ),
-            (
+        let borrowed = h
+            .call_with_token(
+                &assistant,
                 "neige_terminal_input",
                 json!({"terminal_id":terminal,"observation_id":planner_view["observation_id"],
-                    "idempotency_key":"manual","claim":true,
-                    "action":{"type":"text","text":"x"}}),
-            ),
-        ] {
-            let refused = h.call_with_token(&assistant, tool, args).await;
-            assert_eq!(refused["error"]["code"], -32403, "{tool}: {refused}");
-            assert!(
-                refused["error"]["message"]
-                    .as_str()
-                    .unwrap()
-                    .contains("an Assistant reaches only task workers"),
-                "{tool}: {refused}"
-            );
-        }
+                "idempotency_key":format!("borrowed-{terminal}"),"claim":true,
+                "action":{"type":"text","text":"x"}}),
+            )
+            .await;
+        assert_eq!(borrowed["error"]["code"], -32403, "{borrowed}");
+        let caller = (assistant.as_str(), None);
+        let shown = ok_as(
+            &h,
+            caller,
+            "neige_terminal_show",
+            json!({"terminal_id":terminal}),
+        )
+        .await;
+        assert_eq!(shown["task"], Value::Null);
+        assert_eq!(shown["available"], true);
+        assert_eq!(shown["controllable"], true);
+        ok_as(
+            &h,
+            caller,
+            "neige_terminal_control",
+            json!({"terminal_id":terminal,"action":"claim"}),
+        )
+        .await;
+        let own_view = ok_as(
+            &h,
+            caller,
+            "neige_terminal_read",
+            json!({"terminal_id":terminal,"wait_ms":30}),
+        )
+        .await;
+        let written = ok_as(
+            &h,
+            caller,
+            "neige_terminal_input",
+            json!({"terminal_id":terminal,"observation_id":own_view["observation_id"],
+                "idempotency_key":format!("manual-{terminal}"),"claim":true,
+                "action":{"type":"text","text":"x"}}),
+        )
+        .await;
+        assert_eq!(written["outcome"], "written");
+        ok_as(
+            &h,
+            caller,
+            "neige_terminal_control",
+            json!({"terminal_id":terminal,"action":"release"}),
+        )
+        .await;
         h.state.terminal_renderer.drop_entry(&terminal).await;
     }
 }

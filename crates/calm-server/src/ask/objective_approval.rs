@@ -3,6 +3,7 @@ use super::{StoredAsk, forge_approval};
 use crate::error::{CalmError, Result};
 use crate::event::{AskAction, AskAnswer, AskDelivery, AskQuestion, Event, EventScope};
 use crate::ids::{CardId, TrackId};
+use crate::model::CardRole;
 use calm_truth::objective_host::{self, InputSource, ObjectiveInput};
 use objective::ids::ObjectiveKey;
 use objective::standard::{Approval, standard_hash};
@@ -17,24 +18,27 @@ pub(crate) enum ObjectiveApprovalRead {
 }
 
 /// Reuses the shared ask writer and open predicate, as forge approval does. The caller writes
-/// a new ask as this track's Planner in the same transaction; repeats reuse the open ask.
+/// a new ask with its real conversation/session author; repeats reuse its own open ask.
 pub(crate) async fn request_tx(
     tx: &mut Transaction<'_, Sqlite>,
     track: &TrackId,
     card: &CardId,
+    session: &str,
     key: &ObjectiveKey,
 ) -> Result<ObjectiveApprovalRead> {
     objective_host::capability::require_tx(tx, track).await?;
-    let planner: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM cards WHERE id=? AND track_id=? AND role='planner')",
-    )
-    .bind(card.as_str())
-    .bind(track.as_str())
-    .fetch_one(&mut **tx)
-    .await?;
-    if !planner {
+    let role: Option<String> =
+        sqlx::query_scalar("SELECT role FROM cards WHERE id=? AND track_id=?")
+            .bind(card.as_str())
+            .bind(track.as_str())
+            .fetch_optional(&mut **tx)
+            .await?;
+    if !role
+        .and_then(|role| CardRole::try_from(role).ok())
+        .is_some_and(|role| role.capability_role() == CardRole::Planner)
+    {
         return Err(CalmError::Forbidden(
-            "objective approval needs this track's Planner".into(),
+            "objective approval needs a conversation on this Track".into(),
         ));
     }
     let (_, state) = objective_host::load_state_tx(tx, track).await?;
@@ -46,23 +50,29 @@ pub(crate) async fn request_tx(
         return Ok(ObjectiveApprovalRead::Approved);
     }
     let hash = standard_hash(&objective.definition);
-    let pending: Option<i64> = sqlx::query_scalar(concat!(
-        "SELECT r.id FROM events r WHERE r.scope_track=?1 AND r.kind='ask.requested' \
+    let pending: Vec<(i64, String, Option<String>)> = sqlx::query_as(concat!(
+        "SELECT r.id,r.actor,ws.card_id FROM events r \
+           LEFT JOIN worker_sessions ws ON ws.id=json_extract(r.actor,'$.id') AND ws.track_id=r.scope_track \
+           WHERE r.scope_track=?1 AND r.kind='ask.requested' \
            AND json_extract(r.payload,'$.action.kind') IN ('objective_approval','objective_approval_v2') \
            AND json_extract(r.payload,'$.action.objective')=?2 \
            AND json_extract(r.payload,'$.action.standard_hash')=?3 \
-           AND json_extract(r.actor,'$.kind')='AiPlanner' \
-           AND json_extract(r.actor,'$.id')=?4 AND ",
+           AND ",
         super::ask_open_sql!(),
-        " ORDER BY r.id LIMIT 1"
+        " ORDER BY r.id"
     ))
     .bind(track.as_str())
     .bind(key.as_str())
     .bind(hash.as_str())
-    .bind(card.as_str())
-    .fetch_optional(&mut **tx)
+    .fetch_all(&mut **tx)
     .await?;
-    if let Some(id) = pending {
+    for (id, actor, source_card) in pending {
+        let actor = serde_json::from_str(&actor)?;
+        if !super::source_target(&actor, source_card.map(Into::into))
+            .is_some_and(|target| target.is_for(card, session))
+        {
+            continue;
+        }
         let ask = super::stored_ask_tx(tx, track, id).await?;
         require_contract(&ask)?;
         return Ok(ObjectiveApprovalRead::Awaiting(id));

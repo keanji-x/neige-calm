@@ -37,9 +37,7 @@ use crate::session_projection_lookup::project_runtime_into_cards_payload;
 use crate::session_projection_repo::AgentProvider;
 use crate::state::{AppState, CodexShellState, RouteState, WorkerState};
 use crate::templates::{Template, TemplateRoster};
-use crate::track_creation::{
-    TrackInitialization, initialize_track_tx, planner_harness_card_payload,
-};
+use crate::track_creation::{TrackInitialization, initialize_track_tx};
 use crate::track_fs_view::{TrackFsContent, TrackFsEntry, TrackFsView};
 use crate::track_report::{
     self, ReportBlock, TrackReportPayload, report_blocks_snapshot_tx,
@@ -340,6 +338,13 @@ pub struct CreateTrackRequest {
     /// (`GET /api/agent-providers`). Source, resource and authorization qualification still
     /// apply before fresh allocation; existing receipts retain their original storage contract.
     pub planner_provider: AgentProvider,
+    /// Approval choice applied atomically before first issuance. Omission retains the legacy default.
+    #[serde(
+        default,
+        deserialize_with = "crate::planner_permission_mode::deserialize_creation_choice"
+    )]
+    #[schema(value_type = crate::planner_permission_mode::PlannerPermissionMode, required = false)]
+    pub permission_mode: Option<crate::planner_permission_mode::PlannerPermissionMode>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
@@ -820,6 +825,13 @@ pub(crate) async fn create_track(
     JsonBody(request): JsonBody<CreateTrackRequest>,
 ) -> Result<Response> {
     let share = share.map(|share| share.0);
+    if request.permission_mode.is_some() {
+        crate::planner_permission_mode::require_explicit_selection(
+            &actor,
+            &source.as_ref().ok_or(CalmError::Unauthorized)?.0,
+            share.is_some(),
+        )?;
+    }
     if let Some(scope) = &share {
         scope.validate(s.repo.as_ref()).await?;
         if !matches!(&scope.read.link.delegation.scope, calm_types::share_links::ShareScope::Area(id) if id == request.area_id.as_str())
@@ -1297,6 +1309,7 @@ struct CreateTrackOptions {
     /// The audit note the creation `TrackUpdated` carries; only `neige_track_add` supplies one.
     creation_message: Option<String>,
     planner_provider: AgentProvider,
+    permission_source: crate::planner_permission_mode::CreationSource,
     model: Option<String>,
     reasoning_effort: Option<String>,
     folder_claim: FolderClaim,
@@ -1544,6 +1557,7 @@ fn managed_track_options(
         creator: None,
         creation_message: None,
         planner_provider: AgentProvider::Codex,
+        permission_source: crate::planner_permission_mode::CreationSource::Independent,
         model: None,
         reasoning_effort: None,
         folder_claim: FolderClaim::Skip,
@@ -1866,8 +1880,9 @@ fn planner_card_payload(
     goal: Option<String>,
     provider: AgentProvider,
     snapshot: Option<&InitialReportSnapshot>,
+    source: crate::planner_permission_mode::CreationSource,
 ) -> Result<serde_json::Value> {
-    let mut payload = planner_harness_card_payload(host, goal, provider);
+    let mut payload = crate::track_creation::planner_payload(host, goal, provider, source);
     if let Some(context) = snapshot.and_then(|snapshot| snapshot.template_context.as_ref()) {
         payload[crate::validation::PLANNER_TEMPLATE_CONTEXT_PAYLOAD_KEY] =
             serde_json::to_value(context)?;
@@ -1890,6 +1905,7 @@ pub fn template_planner_card_payload_for_test(
         goal,
         provider,
         Some(&snapshot),
+        crate::planner_permission_mode::CreationSource::Independent,
     )
 }
 

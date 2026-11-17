@@ -59,7 +59,7 @@ const WORKER_CARD = { ...PLANNER_CARD, id: 'card-worker', title: 'Worker', paylo
 /* The kernel's `kernel/track/activity` overlay: `items` are what the aside lists,
  * `cards` the per-card verdicts every row and card head reads. */
 type ActivityItemWire =
-  | { source: 'ask'; key: string; text: string; at_ms: number; ask_id: number; questions: { title: string; options: string[] }[]; delivery: 'wake' | 'hold' }
+  | { source: 'ask'; key: string; text: string; at_ms: number; ask_id: number; card_id: string; session_id: string | null; questions: { title: string; options: string[] }[]; delivery: 'wake' | 'hold' }
   | { source: 'planner_down' | 'planner_turn_timeout'; key: string; text: string; at_ms: number };
 type ActivityCardWire = { card_id: string; state: 'working' | 'input' | 'failed' };
 const trackActivityOverlay = (payload: Partial<{
@@ -67,12 +67,12 @@ const trackActivityOverlay = (payload: Partial<{
   items: ActivityItemWire[]; cards: ActivityCardWire[];
 }> = {}, trackId = 'w1') => ({
   id: `activity-${trackId}`, plugin_id: 'kernel', entity_kind: 'track', entity_id: trackId, kind: 'activity',
-  payload: { schemaVersion: 4, working: false, attention: 'none', activity_at_ms: null, items: [], cards: [], ...payload },
+  payload: { schemaVersion: 5, working: false, attention: 'none', activity_at_ms: null, items: [], cards: [], ...payload },
   updated_at: 3,
 });
 /** The Planner's ask, in its words, as the projector lists it. */
-const askItem = (text: string, atMs: number): ActivityItemWire =>
-  ({ source: 'ask', key: `ask:${atMs}`, text, at_ms: atMs, ask_id: atMs, questions: [{ title: text, options: [] }], delivery: 'wake' });
+const askItem = (text: string, atMs: number, owner: { card_id: string; session_id: string | null }): ActivityItemWire =>
+  ({ source: 'ask', key: `ask:${atMs}`, text, at_ms: atMs, ask_id: atMs, card_id: owner.card_id, session_id: owner.session_id, questions: [{ title: text, options: [] }], delivery: 'wake' });
 /** The Planner stopped: its failure reason, as the projector lists it. */
 const plannerDownItem = (text: string, atMs: number): ActivityItemWire =>
   ({ source: 'planner_down', key: `planner_down:${atMs}`, text, at_ms: atMs });
@@ -390,7 +390,7 @@ describe('track conversations', () => {
           cards: [PLANNER_CARD, ASSISTANT_CARD, WORKER_CARD],
           overlays: [trackActivityOverlay({ attention: 'failed', items: [
             plannerDownItem('400: The gpt-6-astra model requires a newer version of Codex.', 5),
-            askItem('Merge **PR #1811** now, or hold it?', 4),
+            askItem('Merge **PR #1811** now, or hold it?', 4, { card_id: PLANNER_CARD.id, session_id: 'r' }),
           ] })],
         })
       : undefined);
@@ -404,7 +404,7 @@ describe('track conversations', () => {
     expect(within(rows[1]).getByText('PR #1811').tagName).toBe('STRONG');
     expect(within(rows[1]).getByText('PR #1811').parentElement?.textContent).toBe('Merge PR #1811 now, or hold it?');
     /* Each row's click, on a fresh mount: the Planner's composer opens focused and the aside compacts beside it. */
-    for (const [index, [state, name]] of ([['planner-down', /^Open the Planner: /], ['ask', /^Answer the Planner: /]] as const).entries()) {
+    for (const [index, [state, name]] of ([['planner-down', /^Open the Planner: /], ['ask', /^Answer question: /]] as const).entries()) {
       if (index > 0) {
         cleanup();
         window.history.pushState({}, '', `${APP_BASEPATH}/track/w1`);
@@ -456,7 +456,7 @@ describe('track conversations', () => {
             cards: [PLANNER_CARD, ASSISTANT_CARD, WORKER_CARD],
             overlays: [trackActivityOverlay({ attention: 'failed', items: [
               plannerDownItem('unexpected status 403 Forbidden', 5),
-              ...(dismissed ? [] : [askItem('Merge PR #1811 now, or hold it?', 4)]),
+              ...(dismissed ? [] : [askItem('Merge PR #1811 now, or hold it?', 4, { card_id: PLANNER_CARD.id, session_id: 'r' })]),
             ] })],
           })
         : undefined;
@@ -489,7 +489,7 @@ describe('track conversations', () => {
           track: TRACK, planner_revision: 0, can_reopen: false, can_admin: false, can_close: true,
           cards: [PLANNER_CARD, ASSISTANT_CARD, WORKER_CARD],
           overlays: [trackActivityOverlay({ attention: 'failed',
-            items: [plannerDownItem('boom', 5), askItem('Which region?', 4)],
+            items: [plannerDownItem('boom', 5), askItem('Which region?', 4, { card_id: PLANNER_CARD.id, session_id: 'r' })],
             cards: [{ card_id: PLANNER_CARD.id, state: 'failed' }] })],
         })
       : undefined);
@@ -507,7 +507,7 @@ describe('track conversations', () => {
           cards: [PLANNER_CARD, ASSISTANT_CARD, WORKER_CARD],
           overlays: [
             cardStatusOverlay(WORKER_CARD.id, 'AwaitingInput', 5),
-            { ...trackActivityOverlay({ attention: 'input', items: [askItem('Which region?', 4)] }),
+            { ...trackActivityOverlay({ attention: 'input', items: [askItem('Which region?', 4, { card_id: PLANNER_CARD.id, session_id: 'r' })] }),
               plugin_id: 'third-party' },
           ],
         })
@@ -3110,7 +3110,7 @@ describe('track conversations', () => {
     await write('what is in this repo?');
     await waitFor(() => expect(creates(requests, BARE_CONVERSATIONS)).toHaveLength(1));
     const [post] = creates(requests, BARE_CONVERSATIONS);
-    expect(post?.body).toEqual({ text: 'what is in this repo?', provider: 'codex' });
+    expect(post?.body).toEqual({ text: 'what is in this repo?', provider: 'codex', permission_mode: 'never' });
     expect(post?.headers?.['Idempotency-Key']).toMatch(/[0-9a-f-]{36}/);
     /* The drawer moves off the draft onto the row the derived id names. */
     await screen.findByRole('complementary', { name: 'what is in this repo?' });
@@ -3156,8 +3156,8 @@ describe('track conversations', () => {
     expect(first?.headers?.['Idempotency-Key']).toBeDefined();
     expect(retry?.headers?.['Idempotency-Key']).toBe(first?.headers?.['Idempotency-Key']);
     expect([first?.body, retry?.body]).toEqual([
-      { text: 'words for track one', provider: 'codex' },
-      { text: 'words for track one', provider: 'codex' },
+      { text: 'words for track one', provider: 'codex', permission_mode: 'never' },
+      { text: 'words for track one', provider: 'codex', permission_mode: 'never' },
     ]);
 
     await act(async () => { await router.navigate({ to: '/track/w2' }); });
@@ -4073,7 +4073,7 @@ it.each([false, true])('selects a model before the first conversation message an
   expect(creates(requests, CONVERSATIONS)).toHaveLength(0);
   await write('Use this model from the start');
   await waitFor(() => expect(creates(requests, CONVERSATIONS)).toHaveLength(1));
-  expect(creates(requests, CONVERSATIONS)[0].body).toEqual({ text: 'Use this model from the start', provider: 'codex', model: 'gpt-5', reasoning_effort: 'high' });
+  expect(creates(requests, CONVERSATIONS)[0].body).toEqual({ text: 'Use this model from the start', provider: 'codex', permission_mode: 'never', model: 'gpt-5', reasoning_effort: 'high' });
   expect(requests.filter(request => request.method === 'PUT' && request.path.endsWith('/planner/model'))).toEqual([]);
 });
 

@@ -307,7 +307,7 @@ async fn assistant_turn_skips_the_transcript_refresh_but_still_reads_the_track_d
         &boot.area_id,
         "codex",
         CardRole::Assistant,
-        json!({"schemaVersion": 1, "harness_profile": "assistant", "assistant_provider":"codex"}),
+        json!({"schemaVersion": 1, "harness_profile": "assistant", "assistant_provider":"codex", "permission_mode":"never"}),
     )
     .await;
     // The baseline the assistant last saw…

@@ -22,7 +22,6 @@ pub(in crate::acp_planner::session) async fn compact(
         ));
     }
     let params = &shared.params;
-    let permission = PlannerPermissionMode::Never;
     let mut owned = params.host.shared_servers[params.provider.wire_name()]
         .lock()
         .await;
@@ -33,7 +32,6 @@ pub(in crate::acp_planner::session) async fn compact(
         Some(native.to_owned()),
         &target.thread_id,
         selection,
-        permission,
         admission,
     )
     .await
@@ -132,12 +130,7 @@ pub(in crate::acp_planner::session) async fn compact(
     );
     // Do not retain the global setup mutex during a card's command or its admission reads.
     drop(owned);
-    let owner = shared.admission(
-        &target.thread_id,
-        Some(permission),
-        Some(native),
-        Some(&turn),
-    );
+    let owner = shared.admission(&target.thread_id, Some(native), Some(&turn));
     let combined = admission.combined(&owner);
     let result = protocol::prompt(
         &client,

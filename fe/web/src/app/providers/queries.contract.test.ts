@@ -86,7 +86,7 @@ describe('writes never queue an offline submission, in either build', () => {
     ['card create', ({ track }) => track.createCard('w1', { kind: 'note', title: 'Offline note', payload: {} }, 'offline-card')],
     ['recipe create', ({ recipe }) => recipe.create({ title: 'Offline recipe', body: '' }, 'offline-recipe')],
     ['recipe save', ({ recipe }) => recipe.save('recipe-1', { title: 'Offline recipe', body: '', if_revision: 1 })],
-    ['conversation create', ({ conversation }) => conversation.create('Offline message', 'offline-key', 'codex', { model: null, reasoning_effort: null }, undefined, () => undefined)],
+    ['conversation create', ({ conversation }) => conversation.create('Offline message', 'offline-key', 'codex', { model: null, reasoning_effort: null }, undefined, 'never', () => undefined)],
     /* The writes that never had a guard of their own: in the web build they used to pause offline and fire on reconnect (#2131). */
     ['track rename', ({ track }) => track.patch('w1', 'c1', { title: 'Offline rename' })],
     ['track pin', ({ track }) => track.setPinned('w1', 'c1', true, 1)],

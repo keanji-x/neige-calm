@@ -215,7 +215,7 @@ pub(crate) async fn report_read(
         })
         .await
         .map_err(crate::mcp_server::framing::calm_error)?;
-    let task_diagnostics = if identity.role == CardRole::Planner {
+    let task_diagnostics = if identity.role.capability_role() == CardRole::Planner {
         let scope = match (&select, &text) {
             (ReadSelect::Full, _) => ReportReadScope::Full,
             (ReadSelect::Part(_), Some((_, ids))) => ReportReadScope::Part(ids),
@@ -252,7 +252,7 @@ pub(crate) async fn report_read(
         response["text"] = Value::String(text);
     }
     // Only the Planner sees actionable diagnostics; status is available through `neige_task_ls`.
-    if identity.role == CardRole::Planner {
+    if identity.role.capability_role() == CardRole::Planner {
         response["task_diagnostics"] = task_diagnostics_output(json!(task_diagnostics));
     }
     response["anchor_status"] = json!(crate::report_read_ledger::anchor_line(&response["anchor"]));

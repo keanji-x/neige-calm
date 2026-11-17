@@ -4,7 +4,7 @@ use crate::db::Repo;
 use crate::dispatcher;
 use crate::error::Result;
 use crate::event::Event;
-use crate::ids::TrackId;
+use crate::ids::{CardId, TrackId};
 use crate::model::CardRole;
 
 /// `through` bounds delivery to an already committed envelope. The existing
@@ -12,6 +12,7 @@ use crate::model::CardRole;
 pub(crate) async fn observations_since(
     repo: &dyn Repo,
     track_id: &TrackId,
+    card: &CardId,
     session: &str,
     watermark: i64,
     through: Option<i64>,
@@ -23,10 +24,22 @@ pub(crate) async fn observations_since(
             Some(watermark),
         )
         .await?;
+    let owns_track_notifications =
+        repo.card_role_get(card.as_str()).await? == Some(CardRole::Planner);
     let mut observations = Vec::new();
     for row in rows {
         if through.is_some_and(|last| row.id > last) {
             break;
+        }
+        if let Event::AskAnswered { ask_id, .. } = &row.event {
+            if !crate::ask::wake_target(repo, track_id, *ask_id)
+                .await?
+                .is_some_and(|target| target.is_for(card, session))
+            {
+                continue;
+            }
+        } else if !owns_track_notifications {
+            continue;
         }
         let role = role_needed_for_planner_push_filter(repo, &row.event).await?;
         if !dispatcher::event_warrants_planner_push_with_role(&row.event, &row.actor, |_| role) {

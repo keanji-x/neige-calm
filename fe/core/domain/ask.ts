@@ -11,7 +11,7 @@ import { writeClassOf, writeFailureText, type FailureTable, type WriteClass, typ
  * One open ask as the questions drawer shows it: the answer route's id, its questions in order, and
  * where the answer goes.
  */
-export type OpenAsk = Readonly<{ askId: number; questions: readonly AskQuestion[]; delivery: AskDelivery; action?: AskAction }>;
+export type OpenAsk = Readonly<{ askId: number; cardId: string; sessionId: string | null; questions: readonly AskQuestion[]; delivery: AskDelivery; action?: AskAction }>;
 
 /**
  * The track's open asks: every `hold` ask first, since each one blocks the running turn (#2348), then the
@@ -21,7 +21,7 @@ export type OpenAsk = Readonly<{ askId: number; questions: readonly AskQuestion[
 export function openAsksOf(items: readonly ActivityItem[]): readonly OpenAsk[] {
   const asks: OpenAsk[] = [];
   for (const item of items) {
-    if (item.source === 'ask') asks.push({ askId: item.askId, questions: item.questions, delivery: item.delivery,
+    if (item.source === 'ask') asks.push({ askId: item.askId, cardId: item.cardId, sessionId: item.sessionId, questions: item.questions, delivery: item.delivery,
       ...(item.action === undefined ? {} : { action: item.action }),
     });
   }

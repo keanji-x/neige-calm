@@ -97,7 +97,7 @@ async fn write_markdown(
 
 /// The one-call update: the whole op list lands as one [`ReportDocOp::Batch`] inside one persist
 /// transaction (one docRev bump, one event pair), anchored by what this session last read (#1877).
-/// Open to the assistant, whose task-block writes the task guard refuses.
+/// Assistant conversations share the Planner's task-declaration rules.
 async fn commit(
     ctx: Arc<AppContext>,
     identity: ToolCallIdentity,

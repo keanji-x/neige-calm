@@ -228,7 +228,7 @@ async fn guest_input_rejects_other_track_and_historical_card() {
             kind: "codex".into(),
             sort: None,
             title: None,
-            payload: json!({"harness_profile":"assistant","assistant_provider":"codex"}),
+            payload: json!({"harness_profile":"assistant","assistant_provider":"codex","permission_mode":"never"}),
         })
         .await
         .unwrap();

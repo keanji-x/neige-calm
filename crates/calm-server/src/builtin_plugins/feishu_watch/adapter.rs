@@ -76,7 +76,7 @@ impl Adapter {
             return Err("inspection configuration needs reload".into());
         }
         if let Some(caller) = &identity
-            && (caller.role != crate::model::CardRole::Planner
+            && (caller.role.capability_role() != crate::model::CardRole::Planner
                 || caller.track_id.as_deref() != Some(config.track_id.as_str()))
         {
             return Err("only the configured Track Planner may access inspection data".into());

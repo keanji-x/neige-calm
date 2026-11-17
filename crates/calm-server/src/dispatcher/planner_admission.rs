@@ -9,7 +9,7 @@ pub(crate) struct PlannerAdmission {
     pub card: CardId,
     pub track: TrackId,
     pub worker: String,
-    revision: i64,
+    revision: Option<i64>,
     pub baseline: i64,
 }
 
@@ -25,7 +25,8 @@ impl PlannerAdmission {
             .ok_or_else(|| CalmError::Internal("Planner admission requires SQLite".into()))?;
         let rows: Vec<(String, String)> = sqlx::query_as(
             "SELECT t.id,c.id FROM tracks t JOIN cards c ON c.track_id=t.id
-             WHERE t.closed_at IS NULL AND c.role='planner' AND c.session_id IS NOT NULL
+             WHERE t.closed_at IS NULL AND c.role IN ('planner','assistant') AND c.session_id IS NOT NULL
+             AND NOT EXISTS(SELECT 1 FROM conversation_system_assistant_entries e WHERE e.card_id=c.id)
              ORDER BY t.id,c.id",
         )
         .fetch_all(db.read_pool())
@@ -55,16 +56,17 @@ impl PlannerAdmission {
             card: card.into(),
             track: track.clone(),
             worker,
-            revision,
+            revision: Some(revision),
             baseline,
         }))
     }
 
     pub(super) async fn load_tx(tx: &mut Transaction<'_, Sqlite>, card: &str) -> Result<Self> {
-        let row: Option<(String, String, i64, i64)> = sqlx::query_as(
-            "SELECT c.track_id,c.session_id,t.planner_revision,t.planner_event_baseline
+        let row: Option<(String, String, Option<i64>, i64)> = sqlx::query_as(
+            "SELECT c.track_id,c.session_id,CASE WHEN c.role='planner' THEN t.planner_revision END,
+                    CASE WHEN c.role='planner' THEN t.planner_event_baseline ELSE 0 END
              FROM cards c JOIN tracks t ON t.id=c.track_id
-             WHERE c.id=?1 AND c.role='planner' AND c.session_id IS NOT NULL",
+             WHERE c.id=?1 AND c.role IN ('planner','assistant') AND c.session_id IS NOT NULL",
         )
         .bind(card)
         .fetch_optional(&mut **tx)
@@ -78,6 +80,10 @@ impl PlannerAdmission {
             revision,
             baseline,
         })
+    }
+
+    pub(super) fn owns_track_notifications(&self) -> bool {
+        self.revision.is_some()
     }
 
     pub(super) async fn authorize_tx(&self, tx: &mut Transaction<'_, Sqlite>) -> Result<()> {

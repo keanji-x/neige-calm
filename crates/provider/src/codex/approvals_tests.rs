@@ -415,3 +415,137 @@ fn a_long_command_title_is_cut_to_the_kernels_limit() {
     assert_eq!(title.chars().count(), ASK_MAX_TEXT_CHARS);
     assert!(title.ends_with('…'));
 }
+
+#[tokio::test]
+async fn approval_resolved_request_fences_queued_allow_on_the_shared_writer() {
+    let (mut rig, _route, mut rx) = routed().await;
+    send(&mut rig.server, command_request(json!(78), THREAD)).await;
+    let old = next_open(&mut rx).await;
+    let sink = rig.client.sink.clone();
+    let writer = sink.lock().await;
+    old.responder.respond(0);
+    send(
+        &mut rig.server,
+        json!({"method":"serverRequest/resolved", "params":{"requestId":78}}),
+    )
+    .await;
+    assert!(matches!(
+        next_message(&mut rx).await,
+        HeldRequestMessage::Gone { .. }
+    ));
+    send(
+        &mut rig.server,
+        json!({"id":"sentinel","method":"unsupported"}),
+    )
+    .await;
+    drop(writer);
+    assert_eq!(
+        recv(&mut rig.server).await["id"],
+        "sentinel",
+        "a resolved request cannot receive a queued Allow"
+    );
+}
+
+#[tokio::test]
+async fn approval_native_lifecycle_route_replacement_fences_queued_allow_and_reused_rpc_id() {
+    let (mut rig, route, mut rx) = routed().await;
+    send(&mut rig.server, command_request(json!(77), THREAD)).await;
+    let old = next_open(&mut rx).await;
+    let sink = rig.client.sink.clone();
+    let writer = sink.lock().await;
+    old.responder.respond(0);
+    let (sender, mut next) = held_requests::channel();
+    let _new_route = rig.routes.route(THREAD, sender);
+    drop(route);
+    let mut next_request = command_request(json!(77), THREAD);
+    next_request["params"]["turnId"] = json!("turn-b");
+    send(&mut rig.server, next_request).await;
+    let new = next_open(&mut next).await;
+    send(
+        &mut rig.server,
+        json!({"id":"sentinel","method":"unsupported"}),
+    )
+    .await;
+    drop(writer);
+    assert_eq!(
+        recv(&mut rig.server).await["id"],
+        "sentinel",
+        "obsolete reply must be suppressed even before RPC id reuse"
+    );
+    new.responder.respond(0);
+    assert_eq!(recv(&mut rig.server).await["result"]["decision"], "accept");
+}
+
+#[tokio::test]
+async fn approval_native_lifecycle_turn_completed_fences_queued_allow() {
+    let (mut rig, _route, mut rx) = routed().await;
+    send(&mut rig.server, command_request(json!(79), THREAD)).await;
+    let old = next_open(&mut rx).await;
+    let sink = rig.client.sink.clone();
+    let writer = sink.lock().await;
+    old.responder.respond(0);
+    send(&mut rig.server, json!({"method":"turn/completed", "params":{"threadId":THREAD,"turn":{"id":"turn-a","status":"completed"}}})).await;
+    assert!(matches!(
+        tokio::time::timeout(Duration::from_secs(1), rig._notifications.recv())
+            .await
+            .unwrap(),
+        Some(crate::codex::Notification::TurnCompleted { .. })
+    ));
+    send(
+        &mut rig.server,
+        json!({"id":"sentinel","method":"unsupported"}),
+    )
+    .await;
+    drop(writer);
+    assert_eq!(recv(&mut rig.server).await["id"], "sentinel");
+}
+
+#[tokio::test]
+async fn approval_native_lifecycle_interrupt_writer_precedes_queued_allow() {
+    let (mut rig, _route, mut rx) = routed().await;
+    send(&mut rig.server, command_request(json!(80), THREAD)).await;
+    let old = next_open(&mut rx).await;
+    let sink = rig.client.sink.clone();
+    let writer = sink.lock().await;
+    let mut interrupt = Box::pin(rig.client.interrupt_outcome(THREAD, "turn-a"));
+    assert!(futures_util::poll!(&mut interrupt).is_pending());
+    old.responder.respond(0);
+    drop(writer);
+    let peer = async {
+        let control = recv(&mut rig.server).await;
+        assert_eq!(control["method"], "turn/interrupt");
+        send(&mut rig.server, json!({"id":control["id"],"result":{}})).await;
+        send(
+            &mut rig.server,
+            json!({"id":"sentinel","method":"unsupported"}),
+        )
+        .await;
+        assert_eq!(recv(&mut rig.server).await["id"], "sentinel");
+    };
+    let (outcome, ()) = tokio::join!(interrupt, peer);
+    assert!(matches!(
+        outcome,
+        crate::control::NativeInterruptOutcome::NativeAck
+    ));
+}
+
+#[tokio::test]
+async fn approval_native_lifecycle_resolved_drop_preserves_original_decline_cleanup() {
+    let (mut rig, _route, mut rx) = routed().await;
+    send(&mut rig.server, command_request(json!(81), THREAD)).await;
+    let opened = next_open(&mut rx).await;
+    send(
+        &mut rig.server,
+        json!({"method":"serverRequest/resolved", "params":{"requestId":81}}),
+    )
+    .await;
+    assert!(matches!(
+        next_message(&mut rx).await,
+        HeldRequestMessage::Gone { .. }
+    ));
+    drop(opened);
+    assert_eq!(
+        recv(&mut rig.server).await,
+        json!({"jsonrpc":"2.0","id":81,"result":{"decision":"decline"}})
+    );
+}

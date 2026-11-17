@@ -36,10 +36,8 @@ pub(crate) async fn open_session(
         &row.binding,
     )
     .await?;
-    if row.binding.profile == crate::harness::profile::HarnessProfile::Planner {
-        instructions.push_str("\n\n");
-        instructions.push_str(CLAUDE_FRAGMENT.trim_end());
-    }
+    instructions.push_str("\n\n");
+    instructions.push_str(CLAUDE_FRAGMENT.trim_end());
     let settings = crate::routes::settings::load_settings(repo.as_ref()).await?;
     let proxy = crate::proxy_env::resolved_proxy_env_pairs(
         settings.http_proxy.as_deref(),

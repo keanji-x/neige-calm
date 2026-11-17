@@ -124,16 +124,13 @@ async fn request_approval(
         .ok_or_else(|| RpcError::invalid_params("key must be a nonempty string"))?;
     let key = objective::ids::ObjectiveKey::new(key);
     let call = ApprovalCall {
-        principal: identity
-            .to_principal()
-            .ok_or_else(|| RpcError::forbidden("objective approval needs a track-bound Planner"))?,
         track: crate::ids::TrackId::from(
             identity
                 .track_id
                 .clone()
                 .ok_or_else(|| RpcError::forbidden("objective approval needs a track"))?,
         ),
-        card: crate::ids::CardId::from(identity.card_id.clone()),
+        identity,
         key,
     };
     // The event writer requires a nonempty batch. As with forge approval, read recorded
@@ -158,8 +155,8 @@ async fn request_approval(
     if let Some(recorded) = recorded {
         return Ok(recorded);
     }
-    // Like forge approval, persist the Planner card author that the answer proof binds.
-    let actor = crate::ids::ActorId::AiPlanner(call.card.clone());
+    // Preserve the real conversation/session author, as the shared forge path does.
+    let actor = call.identity.to_actor_id();
     let (_, ids) = crate::db::write_with_actor_events_typed::<(), _>(
         ctx.repo.as_ref(),
         None,
@@ -191,9 +188,8 @@ async fn request_approval(
 
 #[derive(Clone)]
 struct ApprovalCall {
-    principal: calm_truth::worker::Principal,
+    identity: ToolCallIdentity,
     track: crate::ids::TrackId,
-    card: crate::ids::CardId,
     key: objective::ids::ObjectiveKey,
 }
 impl ApprovalCall {
@@ -201,11 +197,23 @@ impl ApprovalCall {
         &self,
         tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     ) -> crate::error::Result<crate::ask::objective_approval::ObjectiveApprovalRead> {
-        calm_truth::decision_gate::PrincipalDecisionGate::new(self.principal.clone())
-            .decide_card_write(tx, &self.track, &self.card, CardRole::Planner)
+        if !self
+            .identity
+            .session_is_active(tx, self.track.as_str())
             .await?
-            .into_result()?;
-        crate::ask::objective_approval::request_tx(tx, &self.track, &self.card, &self.key).await
+        {
+            return Err(crate::error::CalmError::Forbidden(
+                "objective approval needs an active conversation session on this Track".into(),
+            ));
+        }
+        crate::ask::objective_approval::request_tx(
+            tx,
+            &self.track,
+            &self.identity.card_id.clone().into(),
+            &self.identity.session_id,
+            &self.key,
+        )
+        .await
     }
 }
 

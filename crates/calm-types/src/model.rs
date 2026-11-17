@@ -21,11 +21,23 @@ pub enum CardRole {
     Worker,
     Planner,
     ReportCard,
-    /// A track-scoped assistant conversation with no lifecycle / plan / review / admin authority.
+    /// A managed conversation sharing Planner capabilities, with its own persisted identity.
     Assistant,
 }
 
 impl CardRole {
+    /// Execution capabilities are separate from the Track's unique scheduling role.
+    pub fn capability_role(self) -> Self {
+        match self {
+            Self::Assistant => Self::Planner,
+            role => role,
+        }
+    }
+
+    pub fn permits(self, roles: &[Self]) -> bool {
+        roles.contains(&self.capability_role())
+    }
+
     pub fn as_db_str(self) -> &'static str {
         match self {
             CardRole::Worker => "worker",

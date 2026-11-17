@@ -9,7 +9,11 @@
 //! last stdout line was read, so no `Open` of the spawn can follow it. Under `never` and `full`
 //! (`--permission-prompts none`) a `can_use_tool` is not expected and is refused where it is read.
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{
+    Arc, Mutex, Weak,
+    atomic::{AtomicBool, Ordering},
+};
 
 use serde_json::{Map, Value};
 
@@ -53,6 +57,7 @@ impl Approvals {
             PlannerPermissionMode::Ask => Self::Held(SpawnConnection {
                 sender: held.clone(),
                 connection: ConnectionId(spawn_id.to_string()),
+                requests: Mutex::new(HashMap::new()),
             }),
         }
     }
@@ -63,15 +68,27 @@ impl Approvals {
 pub(crate) struct SpawnConnection {
     sender: HeldRequestSender,
     connection: ConnectionId,
+    requests: Mutex<HashMap<String, Weak<AtomicBool>>>,
 }
 
 impl SpawnConnection {
     /// Put `request` to the person; the turn keeps reading while it waits. A harness that is gone
     /// drops the message, and with it the responder, which refuses the request.
     pub(crate) fn open(&self, slot: &Arc<TurnSlot>, request_id: &str, request: &CanUseTool) {
+        let live = Arc::new(AtomicBool::new(true));
+        let mut requests = self.requests.lock().expect("Claude approval requests");
+        requests.retain(|_, live| live.strong_count() > 0);
+        if let Some(previous) = requests
+            .insert(request_id.into(), Arc::downgrade(&live))
+            .and_then(|old| old.upgrade())
+        {
+            previous.store(false, Ordering::SeqCst);
+        }
+        drop(requests);
         let responder = ClaudeResponder {
             pending: Some(Pending {
                 slot: Arc::clone(slot),
+                live,
                 request_id: request_id.to_string(),
                 runtime: tokio::runtime::Handle::current(),
             }),
@@ -86,6 +103,15 @@ impl SpawnConnection {
 
     /// The CLI cancelled its request `request_id`.
     pub(crate) fn gone(&self, request_id: &str) {
+        if let Some(live) = self
+            .requests
+            .lock()
+            .expect("Claude approval requests")
+            .remove(request_id)
+            .and_then(|live| live.upgrade())
+        {
+            live.store(false, Ordering::SeqCst);
+        }
         let _ = self.sender.send(HeldRequestMessage::Gone {
             request_key: RequestKey(request_id.to_string()),
         });
@@ -94,6 +120,15 @@ impl SpawnConnection {
 
 impl Drop for SpawnConnection {
     fn drop(&mut self) {
+        for live in self
+            .requests
+            .get_mut()
+            .expect("Claude approval requests")
+            .values()
+            .filter_map(Weak::upgrade)
+        {
+            live.store(false, Ordering::SeqCst);
+        }
         let _ = self.sender.send(HeldRequestMessage::ConnectionLost {
             connection: self.connection.clone(),
         });
@@ -155,6 +190,7 @@ struct ClaudeResponder {
 
 struct Pending {
     slot: Arc<TurnSlot>,
+    live: Arc<AtomicBool>,
     request_id: String,
     /// The runtime of the read task that opened it; `respond` and `drop` are synchronous.
     runtime: tokio::runtime::Handle,
@@ -164,15 +200,45 @@ impl Pending {
     fn answer(self, decision: PermissionDecision) {
         let Self {
             slot,
+            live,
             request_id,
             runtime,
         } = self;
         runtime.spawn(async move {
-            // A spawn that already ended has closed its stdin; nothing is waiting on the answer.
-            if let Err(error) =
-                write_response(&slot, &permission_response(&request_id, &decision)).await
-            {
-                tracing::debug!(%error, request_id, "claude planner: approval answer not written");
+            let response = permission_response(&request_id, &decision);
+            if !matches!(decision, PermissionDecision::Allow) {
+                if let Err(error) = write_response(&slot, &response).await {
+                    tracing::debug!(%error, request_id, "Claude approval cleanup not written");
+                }
+                return;
+            }
+            let line = match serde_json::to_string(&response) {
+                Ok(line) => line,
+                Err(error) => {
+                    tracing::error!(%error, "Claude approval response cannot serialize");
+                    return;
+                }
+            };
+            let revoked = AtomicBool::new(false);
+            let gate = provider::send_boundary::PreSendGate::new(|| {
+                Box::pin(async {
+                    if !live.load(Ordering::SeqCst)
+                        || slot.cause().is_some()
+                        || *slot.settled.borrow()
+                    {
+                        revoked.store(true, Ordering::SeqCst);
+                        return Err(provider::send_boundary::SendRefusal(
+                            "native approval request ended".into(),
+                        ));
+                    }
+                    Ok(())
+                })
+            });
+            if let Err(error) = slot.write_line(&line, &gate).await {
+                if !revoked.load(Ordering::SeqCst) {
+                    slot.stdin_failed(&error);
+                }
+                tracing::debug!(%error, request_id, "Claude approval answer not written");
             }
         });
     }
@@ -273,5 +339,59 @@ mod tests {
                 }
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod lifecycle_tests {
+    use super::*;
+    use std::time::Duration;
+    use tokio::io::{AsyncBufReadExt, BufReader};
+
+    #[tokio::test]
+    async fn approval_cancel_fences_an_allow_waiting_for_the_original_stdin() {
+        let (stdin, output) = tokio::io::duplex(4096);
+        let slot = Arc::new(TurnSlot::new(stdin, Duration::from_secs(1)));
+        let (sender, mut held) = crate::harness::held_requests::channel();
+        let Approvals::Held(connection) =
+            Approvals::for_spawn(PlannerPermissionMode::Ask, &sender, "spawn")
+        else {
+            panic!("held");
+        };
+        let request = CanUseTool::from_request(&serde_json::json!({"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"echo test"}})).unwrap().unwrap();
+        connection.open(&slot, "rpc", &request);
+        let HeldRequestMessage::Open { responder, .. } = held.recv().await.unwrap() else {
+            panic!("open");
+        };
+        let writer = slot.stdin.lock().await;
+        responder.respond(0);
+        tokio::task::yield_now().await;
+        connection.gone("rpc");
+        drop(writer);
+        // The original response task was queued behind the writer above. Join
+        // its writer interval before the sentinel, using the FIFO writer lock.
+        drop(slot.stdin.lock().await);
+        write_response(
+            &slot,
+            &permission_response(
+                "sentinel",
+                &PermissionDecision::Deny {
+                    message: NOT_ANSWERED.into(),
+                },
+            ),
+        )
+        .await
+        .unwrap();
+        let mut line = String::new();
+        let mut reader = BufReader::new(output);
+        tokio::time::timeout(Duration::from_secs(1), reader.read_line(&mut line))
+            .await
+            .unwrap()
+            .unwrap();
+        let frame: Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(
+            frame["response"]["request_id"], "sentinel",
+            "a cancelled request cannot receive a queued Allow: {frame}"
+        );
     }
 }

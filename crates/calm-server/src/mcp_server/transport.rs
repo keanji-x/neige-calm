@@ -1163,7 +1163,7 @@ async fn resolve_forge_cwd(
             "forge action requires an absolute track cwd",
         ));
     }
-    match identity.role {
+    match identity.role.capability_role() {
         CardRole::Planner => Ok(track_cwd),
         CardRole::Worker => {
             let lease = ctx

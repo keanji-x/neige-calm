@@ -14,4 +14,4 @@ Cite source Tracks; distinguish evidence from suggestions.
 These reads grant no write authority over other Tracks and do not anchor report writes:
 first read your own Report with `neige_report_read` before editing. Relative paths
 and omitted ls paths retain your own Track view. Git track log/diff/show remain bound
-history tools. Assistant cannot schedule workers, change task blocks, or close Tracks.
+history tools.

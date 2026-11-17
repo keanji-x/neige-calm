@@ -61,14 +61,12 @@ pub(crate) struct ReadbackBaseline {
 pub const SIGNALS_PER_OBSERVATION: usize = 20;
 
 /// The card roles the terminal tools serve (#2492): the Track's Planner and its Assistants, under
-/// the same checks and inside their own Track only. An Assistant reaches task workers only
-/// (`resolve_target`), and opening a terminal card stays the Planner's (`neige_terminal_open`):
-/// the role gate keeps an Assistant's writes to its own card.
+/// the same capability contract and inside their own Track only.
 /// A client scope's predicate (`ClientInputScope::Bound`).
 pub(super) type ScopeCheck =
     Arc<dyn Fn() -> futures::future::BoxFuture<'static, bool> + Send + Sync>;
 
-pub const TERMINAL_ROLES: &[CardRole] = &[CardRole::Planner, CardRole::Assistant];
+pub const TERMINAL_ROLES: &[CardRole] = &[CardRole::Planner];
 
 /// Reason of an `open claim:true` whose granted claim was taken over before this connection observed the grant.
 pub const CONTROL_TAKEN_BY_ANOTHER_CLIENT: &str = "terminal control was taken by another client";
@@ -139,7 +137,7 @@ impl TerminalInteraction {
     /// role and Track it connected with. Every target resolves inside that Track only.
     pub async fn authorize(repo: &dyn RouteRepo, identity: &ToolCallIdentity) -> Result<String> {
         ensure!(
-            TERMINAL_ROLES.contains(&identity.role),
+            identity.role.permits(TERMINAL_ROLES),
             "terminal tools serve Planner and Assistant cards only"
         );
         let session = repo

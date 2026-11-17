@@ -241,7 +241,7 @@ def capture_shared_token(servers):
                         output.write(variable['value'])
 
 def check_mcp(servers):
-    if not servers or (root / 'scenario').read_text().strip() not in ['mcp', 'mcp-origin', 'assistant-mcp', 'assistant-canonical']:
+    if not servers or (root / 'scenario').read_text().strip() not in ['mcp', 'mcp-origin', 'assistant-mcp', 'assistant-canonical', 'assistant-approval-mcp', 'assistant-wake-mcp']:
         return
     server = servers[0]
     env = dict(os.environ)
@@ -276,7 +276,7 @@ def check_mcp(servers):
                     {'op': 'upsert', 'kind': 'prose', 'markdown': '# Assistant note\n\nNative ACP prose.\n'}]}),
                 (4, 'neige_task_accept', {}),
                 (5, 'neige_terminal_open', {}),
-                (6, 'neige_track_close', {})]:
+                (6, 'neige_track_status', {})]:
                 (root / 'assistant-mcp-progress').write_text(name)
                 child.stdin.write(json.dumps({'jsonrpc': '2.0', 'id': number, 'method': 'tools/call',
                     'params': {'name': name, 'arguments': arguments, '_meta': {'ai.opencode/sessionID': current}}}) + '\n')
@@ -284,6 +284,21 @@ def check_mcp(servers):
                 replies.append(json.loads(child.stdout.readline()))
                 (root / 'assistant-mcp-results.json').write_text(json.dumps(replies))
             (root / 'assistant-mcp-results.json').write_text(json.dumps(replies))
+        if (root / 'scenario').read_text().strip() in ['assistant-approval-mcp', 'assistant-wake-mcp']:
+            replies = []
+            question = {'questions': [{'title': 'Run?', 'options': ['Allow', 'Deny']}]}
+            for number, name, arguments in [
+                (2, 'neige_user_ask', question),
+                (3, 'neige_user_ask', dict(question, delivery='hold', actor='AiPlannerSession')),
+                (4, 'neige_task_accept', {}),
+                (5, 'neige_track_close', {'message': 'Fixture completed'})]:
+                if (root / 'scenario').read_text().strip() == 'assistant-wake-mcp' and number != 2:
+                    continue
+                child.stdin.write(json.dumps({'jsonrpc': '2.0', 'id': number, 'method': 'tools/call',
+                    'params': {'name': name, 'arguments': arguments, '_meta': {'ai.opencode/sessionID': current}}}) + '\n')
+                child.stdin.flush()
+                replies.append(json.loads(child.stdout.readline()))
+            (root / 'assistant-approval-mcp-results.json').write_text(json.dumps(replies))
     finally:
         child.stdin.close()
         child.wait(timeout=5)
@@ -585,11 +600,12 @@ for line in sys.stdin:
                     'rawInput': {'CommandLine': 'printf permission-probe', 'WaitMsBeforeAsync': 5000}},
                 'options': [{'optionId': 'allow', 'kind': 'allow_once', 'name': 'Allow'},
                             {'optionId': 'deny', 'kind': 'reject_once', 'name': 'Deny'}]}})
-        elif scenario in ['permission', 'assistant-canonical']:
+        elif scenario in ['permission', 'assistant-canonical', 'assistant-approval']:
             pending, permission = request, 'native-permission'
             emit({'jsonrpc': '2.0', 'id': permission, 'method': 'session/request_permission', 'params': {
                 'sessionId': current, 'toolCall': {'toolCallId': 'one', 'title': 'Fixture operation'},
-                'options': [{'optionId': 'yes', 'name': 'Allow', 'kind': 'allow_once'}]}})
+                'options': [{'optionId': 'yes', 'name': 'Allow', 'kind': 'allow_once'}] +
+                    ([{'optionId': 'no', 'name': 'Deny', 'kind': 'reject_once'}] if scenario == 'assistant-approval' else [])}})
         elif scenario in ['ask', 'ask-cancel', 'ask-exit', 'ask-settle']:
             pending, permission, cancel_seen = request, 0, False
             ask_permission(permission)
@@ -733,6 +749,8 @@ for line in sys.stdin:
         outcome = request['result']['outcome']
         if outcome == {'outcome': 'selected', 'optionId': 'yes'}:
             finish(pending, 'permission allowed')
+        elif scenario == 'assistant-approval' and outcome == {'outcome': 'selected', 'optionId': 'no'}:
+            finish(pending, 'permission declined')
         else:
             assert outcome == {'outcome': 'cancelled'}
             finish(pending, 'permission declined', 'cancelled')

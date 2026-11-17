@@ -163,7 +163,7 @@ pub fn planner_harness_card_payload(
     )
 }
 
-fn planner_payload(
+pub(crate) fn planner_payload(
     host: &crate::acp_planner::config::AcpPlannerHost,
     goal: Option<String>,
     provider: AgentProvider,

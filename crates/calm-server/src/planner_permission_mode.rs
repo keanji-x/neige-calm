@@ -1,4 +1,4 @@
-//! A Planner card's permission mode (#2348): its creation sources and stored value.
+//! A Planner or Assistant card's permission mode (#2348): its creation sources and stored value.
 //! The harness reads it when it issues a turn
 //! (`harness::run_loop::turn_permission`) and the provider adapter turns it into its own settings.
 //! After creation, the User-only PUT route edits the stored value; Planner switching
@@ -14,10 +14,33 @@ use crate::model::{Card, CardRole};
 use crate::session_projection_repo::AgentProvider;
 use crate::validation::PLANNER_PERMISSION_MODE_PAYLOAD_KEY;
 
+/// Explicit execution authority comes from the authenticated request, never actor attribution
+/// alone. Scope and credential checks are both necessary: a share session cannot shed its class.
+pub(crate) fn require_explicit_selection(
+    actor: &crate::actor::Actor,
+    source: &crate::auth::HumanInputSource,
+    share_scope: bool,
+) -> crate::error::Result<()> {
+    crate::routes::track_report_blocks::require_rest_user_actor_for(
+        actor,
+        "planner permission mode",
+        "What a conversation may do without asking is its person's choice; agents, \
+         the conversation itself included, have no write path to it.",
+    )?;
+    if share_scope || source.is_share_link() {
+        return Err(crate::error::CalmError::Forbidden(
+            "share cannot select execution approvals".into(),
+        ));
+    }
+    source.current_principal()?;
+    Ok(())
+}
+
 /// Independent tracks use their provider registration default. Delegation explicitly copies the
 /// parent's creation-time mode, including ask/full; later parent edits do not propagate.
 pub(crate) enum CreationSource {
     Independent,
+    Selected(PlannerPermissionMode),
     Inherited(PlannerPermissionMode),
 }
 
@@ -34,7 +57,7 @@ pub(crate) fn mint_at_creation(
             .ok()
             .and_then(|registration| registration.default_permission_mode)
             .unwrap_or(PlannerPermissionMode::Never),
-        CreationSource::Inherited(mode) => mode,
+        CreationSource::Inherited(mode) | CreationSource::Selected(mode) => mode,
     };
     payload.insert(
         PLANNER_PERMISSION_MODE_PAYLOAD_KEY.to_owned(),
@@ -42,11 +65,28 @@ pub(crate) fn mint_at_creation(
     );
 }
 
+/// An omitted creation field is a legacy-client fact; explicit null is invalid.
+pub(crate) fn deserialize_creation_choice<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<PlannerPermissionMode>, D::Error> {
+    use serde::Deserialize;
+    PlannerPermissionMode::deserialize(deserializer).map(Some)
+}
+
+/// Assistant creation never inherits a Planner or registration default.
+pub(crate) fn assistant_creation(selection: Option<PlannerPermissionMode>) -> CreationSource {
+    CreationSource::Selected(selection.unwrap_or(PlannerPermissionMode::Never))
+}
+
 /// Whether a card has a permission mode: exactly the cards [`PlannerBinding::from_card`] binds as
-/// a Planner. PlainChat and Assistant conversations never ask.
+/// a Planner or Assistant. PlainChat never asks.
 pub(crate) fn card_has_permission_mode(card: &Card, role: CardRole) -> bool {
-    PlannerBinding::from_card(card, role)
-        .is_some_and(|binding| binding.profile == HarnessProfile::Planner)
+    PlannerBinding::from_card(card, role).is_some_and(|binding| {
+        matches!(
+            binding.profile,
+            HarnessProfile::Planner | HarnessProfile::Assistant
+        )
+    })
 }
 
 /// A stored `permission_mode` that is not one of the modes, or no stored value at all.
@@ -71,8 +111,8 @@ impl std::fmt::Display for MalformedPermissionMode {
     }
 }
 
-/// Read a card payload's stored mode. An absent key is malformed too: every Planner card is
-/// created with a mode, and the backfill migration stamped the ones created before it.
+/// Read a saved conversation mode. An absent key is malformed: Planner and Assistant creation
+/// stamp their choice, and versioned migrations initialize conversations from older releases.
 pub fn read(payload: &Value) -> Result<PlannerPermissionMode, MalformedPermissionMode> {
     let stored = payload
         .get(PLANNER_PERMISSION_MODE_PAYLOAD_KEY)
@@ -82,14 +122,14 @@ pub fn read(payload: &Value) -> Result<PlannerPermissionMode, MalformedPermissio
     })
 }
 
-/// Inherit the Track's current permission choice, just as delegated creation does.
+/// Inherit the outgoing Planner choice, then reset the independent demoted Assistant to Never.
 /// Read and overwrite under the switch transaction, after its carrier CAS.
 /// The caller rolls back this write if any later switch check refuses.
 pub(crate) async fn inherit_for_switch_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     outgoing: &str,
     incoming: &str,
-) -> Result<Card, InheritanceError> {
+) -> Result<(Card, Card), InheritanceError> {
     let sqlx::types::Json(payload): sqlx::types::Json<Value> =
         sqlx::query_scalar("SELECT payload FROM cards WHERE id=?1")
             .bind(outgoing)
@@ -97,7 +137,16 @@ pub(crate) async fn inherit_for_switch_tx(
             .await
             .map_err(calm_truth::TruthError::from)?;
     let mode = read(&payload).map_err(InheritanceError::Malformed)?;
-    Ok(crate::db::sqlite::planner_permission_mode_set_tx(tx, incoming, mode, |_| Ok(())).await?)
+    let incoming =
+        crate::db::sqlite::planner_permission_mode_set_tx(tx, incoming, mode, |_| Ok(())).await?;
+    let outgoing = crate::db::sqlite::planner_permission_mode_set_tx(
+        tx,
+        outgoing,
+        PlannerPermissionMode::Never,
+        |_| Ok(()),
+    )
+    .await?;
+    Ok((outgoing, incoming))
 }
 
 pub(crate) enum InheritanceError {
@@ -217,6 +266,14 @@ mod tests {
                 crate::track_creation::planner_harness_card_payload(&host, None, provider);
             assert_eq!(payload["permission_mode"], json!(expected));
         }
+        for source in [
+            assistant_creation(None),
+            CreationSource::Selected(PlannerPermissionMode::Never),
+        ] {
+            let mut payload = Map::new();
+            mint_at_creation(&mut payload, source, &AgentProvider::OpenCode, &host);
+            assert_eq!(payload["permission_mode"], "never");
+        }
     }
 
     fn card(payload: Value) -> Card {
@@ -235,11 +292,11 @@ mod tests {
     }
 
     #[test]
-    fn only_a_planner_conversation_has_a_permission_mode() {
+    fn only_bound_planner_and_assistant_conversations_have_a_permission_mode() {
         let planner = card(json!({"planner_provider": "claude"}));
         assert!(card_has_permission_mode(&planner, CardRole::Planner));
-        let assistant = card(json!({"harness_profile": "assistant"}));
-        assert!(!card_has_permission_mode(&assistant, CardRole::Assistant));
+        let assistant = card(json!({"harness_profile": "assistant", "assistant_provider":"codex"}));
+        assert!(card_has_permission_mode(&assistant, CardRole::Assistant));
         let plain_chat = card(json!({"harness_profile": "plain_chat"}));
         assert!(!card_has_permission_mode(&plain_chat, CardRole::Worker));
         let unbound = card(json!({"planner_provider": "gpt"}));

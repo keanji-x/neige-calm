@@ -73,6 +73,11 @@ pub(super) async fn accept(
                 ).await?;
                 if let Some(side) = &seed.side { side.validate_tx(tx, &payload.track_id).await?; }
                 let mut card_payload = serde_json::json!({"schemaVersion":1,"harness_profile":binding.profile,"assistant_provider":binding.provider});
+                crate::planner_permission_mode::mint_at_creation(
+                    card_payload.as_object_mut().expect("object"),
+                    crate::planner_permission_mode::assistant_creation(seed.permission_mode),
+                    &binding.provider, &legacy_state.acp_planner,
+                );
                 if let Some(context) = context {
                     card_payload[crate::validation::ASSISTANT_OPENING_CONTEXT_PAYLOAD_KEY] = serde_json::json!(context);
                 }

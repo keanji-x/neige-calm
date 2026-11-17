@@ -101,7 +101,7 @@ impl ClaudePlannerSession {
             .await
             .map_err(CalmError::from)?
             .ok_or_else(|| CalmError::Conflict("Claude owner is missing".into()))?;
-        let binding = crate::harness::profile::local_binding(
+        crate::harness::profile::local_binding(
             params.repo.as_ref(),
             &live,
             &calm_types::runtime::AgentProvider::Claude,
@@ -111,11 +111,6 @@ impl ClaudePlannerSession {
         )
         .await?
         .ok_or_else(|| CalmError::Conflict("Claude live owner identity changed".into()))?;
-        if binding.profile == crate::harness::profile::HarnessProfile::Assistant
-            && mode != PlannerPermissionMode::Never
-        {
-            return Err(CalmError::Conflict("Claude live owner identity changed".into()).into());
-        }
         let host = &params.host;
         let config = host
             .configured()

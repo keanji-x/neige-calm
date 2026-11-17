@@ -161,6 +161,7 @@ impl CreateRequestShape {
             isolation: super::super::CreateIsolation::decode(&request.cwd, request.isolation)?,
             admin: request.admin,
             planner_provider: request.planner_provider.clone(),
+            permission_mode: request.permission_mode,
             model: request.model.clone(),
             reasoning_effort: request.reasoning_effort.clone(),
             title: request.title.clone(),
@@ -417,6 +418,10 @@ async fn blank_allocation(
         creator: None,
         creation_message: None,
         planner_provider: request.planner_provider,
+        permission_source: request
+            .permission_mode
+            .map(crate::planner_permission_mode::CreationSource::Selected)
+            .unwrap_or(crate::planner_permission_mode::CreationSource::Independent),
         model: request.model,
         reasoning_effort: request.reasoning_effort,
         folder_claim,

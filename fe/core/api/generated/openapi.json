@@ -4755,7 +4755,7 @@
           {
             "name": "id",
             "in": "path",
-            "description": "Planner card id",
+            "description": "Planner or Assistant card id",
             "required": true,
             "schema": {
               "type": "string"
@@ -4774,7 +4774,7 @@
         },
         "responses": {
           "200": {
-            "description": "Mode stored; the Planner's next turn runs with it",
+            "description": "Mode stored for newly issued conversation turns",
             "content": {
               "application/json": {
                 "schema": {
@@ -4804,7 +4804,7 @@
             }
           },
           "403": {
-            "description": "Not `X-Calm-Actor: user`, or the card is not a Planner card",
+            "description": "Not `X-Calm-Actor: user`, or the card is not a bound Planner or Assistant card",
             "content": {
               "application/json": {
                 "schema": {
@@ -17227,6 +17227,10 @@
             ],
             "description": "Model slug for the planner's first and subsequent turns (for a `claude` Planner, a value of\nthe Claude CLI's model list, `GET /api/models?provider=claude`). Omitted or null follows\ninstallation defaults, as on the conversation model endpoint."
           },
+          "permission_mode": {
+            "$ref": "#/components/schemas/PlannerPermissionMode",
+            "description": "Approval choice applied atomically before first issuance. Omission retains the legacy default."
+          },
           "planner_provider": {
             "$ref": "#/components/schemas/AgentProvider",
             "description": "The backend of the track's Planner, stamped on its card as the server-owned\n`planner_provider` and never changed afterwards. Canonical creation durably accepts\ninput while its provider is unavailable; execution waits for readiness\n(`GET /api/agent-providers`). Source, resource and authorization qualification still\napply before fresh allocation; existing receipts retain their original storage contract."
@@ -17765,7 +17769,7 @@
               },
               {
                 "$ref": "#/components/schemas/PlannerPermissionMode",
-                "description": "The Planner's permission mode, read off the card like `model`; set with\n`PUT /api/cards/{id}/planner/permission-mode`. `null` exactly when the card is not a\nPlanner (a PlainChat or Assistant conversation has no permission mode). A stored value that\ncannot be read is reported as `never`."
+                "description": "The bound Planner or Assistant permission mode, read off the card like `model`; set with\n`PUT /api/cards/{id}/planner/permission-mode`. `null` exactly when the card is not a\nbound Planner or Assistant (PlainChat has no permission mode). A stored value that\ncannot be read is reported as `never`."
               }
             ]
           },
@@ -19242,6 +19246,10 @@
             ],
             "description": "Explicit choice for the first turn; omitted/null follows the installation default."
           },
+          "permission_mode": {
+            "$ref": "#/components/schemas/PlannerPermissionMode",
+            "description": "Approval choice from first issuance; legacy omission selects Never independently."
+          },
           "provider": {
             "$ref": "#/components/schemas/AgentProvider",
             "description": "Omitted only by legacy clients; the API boundary explicitly selects Codex."
@@ -19594,7 +19602,7 @@
       },
       "PlannerPermissionMode": {
         "type": "string",
-        "description": "What a Planner card's provider may do outside its sandbox (#2348, #2441): nothing, what the\nperson allows when asked, or anything, with no sandbox at all. Stored on the card as the server-owned payload key `permission_mode`; new Planner\ncards use their ACP registration’s declared default, or `never` without one; delegated children inherit their parent’s mode. Only `PUT /api/cards/{id}/planner/permission-mode` changes it.",
+        "description": "Conversation approval choice for bound Planner and Assistant cards. Provider policy and\nsandbox behavior remain provider-owned; MCP role limits always apply. Creation stores a\nchoice atomically. Omitted Planner selection uses its registration default; Assistant uses\nNever independently. The user-only `PUT /api/cards/{id}/planner/permission-mode` changes the\nsaved choice for new issuance; running turns and frozen retries retain their original mode.",
         "enum": [
           "never",
           "ask",
@@ -19678,7 +19686,7 @@
                   },
                   {
                     "$ref": "#/components/schemas/PlannerPermissionMode",
-                    "description": "The Planner's permission mode, read off the card like `model`; set with\n`PUT /api/cards/{id}/planner/permission-mode`. `null` exactly when the card is not a\nPlanner (a PlainChat or Assistant conversation has no permission mode). A stored value that\ncannot be read is reported as `never`."
+                    "description": "The bound Planner or Assistant permission mode, read off the card like `model`; set with\n`PUT /api/cards/{id}/planner/permission-mode`. `null` exactly when the card is not a\nbound Planner or Assistant (PlainChat has no permission mode). A stored value that\ncannot be read is reported as `never`."
                   }
                 ]
               },
@@ -21146,7 +21154,7 @@
         "properties": {
           "permission_mode": {
             "$ref": "#/components/schemas/PlannerPermissionMode",
-            "description": "The mode the Planner's next turns run with."
+            "description": "The mode newly issued conversation turns run with."
           }
         },
         "additionalProperties": false

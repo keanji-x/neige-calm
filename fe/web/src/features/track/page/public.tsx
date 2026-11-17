@@ -81,7 +81,7 @@ const NOTIFICATION_DISMISSABLE = Object.freeze({ ask: true, approval: false, 'pl
  * accessible name. A Planner question and a paused turn's request are both answered in the Planner.
  */
 const NOTIFICATION_ACTION = Object.freeze({
-  answer: Object.freeze({ hint: 'Answer in Planner', name: 'Answer the Planner' }),
+  answer: Object.freeze({ hint: 'Answer in conversation', name: 'Answer question' }),
   open: Object.freeze({ hint: 'Open Planner', name: 'Open the Planner' }),
 } as const);
 
@@ -128,7 +128,7 @@ export type TrackPageProps = Readonly<{
    *  the route from the activity overlay's items (`attentionItems`). */
   inputNotifications?: readonly TrackInputNotification[];
   /** Opens the Planner's composer: what a click anywhere on a row does, an ask and planner down alike. */
-  onReply?: () => void;
+  onReply?: (key: string) => void;
   /** Dismiss the row's item by its kernel key. The row stays until the overlay no longer lists it. */
   onDismiss?: (key: string) => Promise<void>;
   /** The clock the rows' relative times read; the current time when omitted. */
@@ -397,7 +397,7 @@ export function TrackPage({ fillReading = false, mobileReportIntro, mobileChatCo
                 variant="ghost"
                 size="sm"
                 icon={<Icon name="chat" />}
-                onClick={onReply ?? onStartConversation}
+                onClick={onReply === undefined ? onStartConversation : () => onReply('')}
               />
             )}
             {trackMutationActions.length > 0 && <span ref={desktopSourceRef} className={styles.trackActions}>
@@ -627,7 +627,7 @@ export function TrackPage({ fillReading = false, mobileReportIntro, mobileChatCo
                         type="button"
                         className={notificationStyles.noticeOpen}
                         aria-label={`${notificationAction(notification.kind).name}: ${notificationGist(notification.text)}`}
-                        onClick={onReply}
+                        onClick={() => onReply?.(notification.key)}
                       />
                     )}
                     <span className={notificationStyles.noticeMeta}>

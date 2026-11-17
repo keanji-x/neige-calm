@@ -91,7 +91,9 @@ async fn report_tag(
     let remove = tag_list(obj, "remove")?;
     // Changing tags moves the report's update time, and the report is Planner-authored: the write
     // gate admits no Worker event outside the Worker's own card scope. Workers only list.
-    if !(add.is_empty() && remove.is_empty()) && identity.role != CardRole::Planner {
+    if !(add.is_empty() && remove.is_empty())
+        && identity.role.capability_role() != CardRole::Planner
+    {
         return Err(RpcError::forbidden(format!(
             "{tool}: only the Planner changes report tags; a {:?} may only list them",
             identity.role

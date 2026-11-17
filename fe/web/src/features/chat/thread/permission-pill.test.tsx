@@ -29,17 +29,25 @@ describe('PermissionModePill', () => {
     },
   );
 
+  it.each([['never', 'Never'], ['ask', 'Ask me'], ['full', 'Full access']] as const)(
+    'keeps the compact %s value visible with its complete accessible name', (mode, value) => {
+      render(<PermissionModePill mode={mode} compactLabel onChange={vi.fn()} />);
+      const button = screen.getByRole('button', { name: `Approvals: ${value}` });
+      expect(button.textContent).toBe(value);
+    },
+  );
+
   it('offers every mode, marks the stored one, and says when a change applies', () => {
     render(<PermissionModePill mode="never" onChange={vi.fn()} />);
     const menu = openMenu('Approvals: Never');
     const rows = within(menu).getAllByRole('menuitem');
     expect(rows.map((row) => row.textContent)).toEqual([
-      'NeverSandbox only; never asks.Selected',
-      'Ask mePauses the turn to ask you.',
-      'Full accessNo sandbox; never asks. Runs with your account\'s access.',
+      'NeverNever asks you for approval. Actions follow the provider’s policy; requests requiring approval are declined.Selected',
+      'Ask meAsks you when the provider requests approval.',
+      'Full accessAllows actions without asking you, within the provider’s limits. Actions may use your account’s access.',
     ]);
     expect(within(menu).getByRole('menuitem', { name: /^Full access/ }).getAttribute('data-variant')).toBe('destructive');
-    expect(within(menu).getByRole('note').textContent).toBe('Applies from the next turn.');
+    expect(within(menu).getByRole('note').textContent).toBe('Sandbox behavior depends on the provider. MCP role limits still apply. Applies to newly issued turns. Running turns and frozen retries keep their original setting.');
   });
 
   it('hands back the mode picked, and nothing for the one already stored', () => {

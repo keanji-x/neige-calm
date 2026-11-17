@@ -25,7 +25,7 @@ const row = (id: string, title: string) => ({ id, area_id: area.id, title, sort:
   pinned_at: null, closed_at: null, created_at: 1, updated_at: 2 });
 const tracks = [row('seen', 'Seen'), row('fresh', 'Fresh')];
 const activity = (id: string, at: number) => ({ id: `activity-${id}`, plugin_id: 'kernel', entity_kind: 'track', entity_id: id,
-  kind: 'activity', payload: { schemaVersion: 4, working: false, attention: 'none', activity_at_ms: at, items: [], cards: [] }, updated_at: at });
+  kind: 'activity', payload: { schemaVersion: 5, working: false, attention: 'none', activity_at_ms: at, items: [], cards: [] }, updated_at: at });
 const overlays = [activity('seen', 100), activity('fresh', 200)];
 
 function load(kernel: ReadReceiptsKernel, storage: Map<string, string>, initial: string) {

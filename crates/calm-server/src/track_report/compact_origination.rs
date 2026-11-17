@@ -9,7 +9,7 @@ pub(super) fn guard_compact_origination(
     after_blocks: &[ReportBlock],
     author: EditAuthor,
 ) -> Result<(), CalmError> {
-    if author != EditAuthor::Planner {
+    if !matches!(author, EditAuthor::Planner | EditAuthor::Assistant) {
         for block in task_block_changes(before_blocks, after_blocks)
             .into_iter()
             .filter_map(TaskBlockChange::authored_live)

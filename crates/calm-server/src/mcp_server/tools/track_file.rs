@@ -235,7 +235,7 @@ async fn track_cat(
 pub(super) fn own_view<'a>(ctx: &'a AppContext, identity: &ToolCallIdentity) -> TrackFsView<'a> {
     let view = TrackFsView::new(ctx.repo.as_ref(), &ctx.write)
         .with_gate_log_access(ctx.gate_logs_dir.clone());
-    if identity.role == CardRole::Planner {
+    if identity.role.capability_role() == CardRole::Planner {
         view.with_planner_run_summary()
     } else {
         view

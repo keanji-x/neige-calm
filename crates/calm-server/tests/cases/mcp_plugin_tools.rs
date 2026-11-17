@@ -245,9 +245,10 @@ async fn disabled_plugin_hints_require_an_eligible_planner_and_exact_tool() {
     );
     let unknown = call_expect_error(&mut rd, &mut wr, 11, SECRET_NAME, Some(&thread)).await;
     assert_eq!(unknown["code"], -32601, "undeclared tools remain unknown");
+    // An Assistant shares the Planner capability, so it receives the same hint.
     let (mut rd, mut wr) = connect(&fx.socket_path).await;
     handshake(&mut rd, &mut wr, &fx.assistant_raw_token).await;
-    let denied = call_expect_error(
+    let shared = call_expect_error(
         &mut rd,
         &mut wr,
         12,
@@ -255,20 +256,32 @@ async fn disabled_plugin_hints_require_an_eligible_planner_and_exact_tool() {
         Some(&fx.assistant_thread_id),
     )
     .await;
-    assert_eq!(
-        denied["code"], -32601,
-        "references cannot authorize Assistant calls"
+    assert_eq!(shared["code"], -32503, "{shared}");
+    assert!(
+        shared["message"]
+            .as_str()
+            .unwrap()
+            .contains("enable it in Settings")
     );
+    let unknown = call_expect_error(
+        &mut rd,
+        &mut wr,
+        13,
+        SECRET_NAME,
+        Some(&fx.assistant_thread_id),
+    )
+    .await;
+    assert_eq!(unknown["code"], -32601, "undeclared tools remain unknown");
     fx.plugin_host.stop(COLLIDING_PLUGIN_ID).await.unwrap();
     fx.plugin_host.stop(&fx.trusted_plugin_id).await.unwrap();
 }
 
 /// Dynamic `plugin_<id>_<tool>` names are not in the kernel registry, so the allow/deny
-/// partition meta-test cannot see them; only `require_role_any(&identity, PLUGIN_TOOL_ROLES)`
-/// in `transport.rs` keeps an assistant off plugin tools. The worker control proves the tool
-/// is genuinely reachable.
+/// partition meta-test cannot see them; `require_role_any(&identity, PLUGIN_TOOL_ROLES)` in
+/// `transport.rs` admits an Assistant through the shared Planner capability. The worker
+/// control proves the same tool is reachable on the same Track.
 #[tokio::test]
-async fn assistant_token_cannot_call_a_plugin_tool() {
+async fn assistant_token_calls_a_plugin_tool_with_planner_capability() {
     let fx = boot_fixture().await;
 
     let (mut rd, mut wr) = connect(&fx.socket_path).await;
@@ -283,21 +296,18 @@ async fn assistant_token_cannot_call_a_plugin_tool() {
         ),
     )
     .await;
-    let refused = recv_frame(&mut rd).await;
-    let error = refused
-        .get("error")
-        .unwrap_or_else(|| panic!("plugin tool must refuse an assistant: {refused:#?}"));
-    assert_eq!(
-        error["code"].as_i64(),
-        Some(-32403),
-        "plugin-tool role refusal is FORBIDDEN: {refused:#?}"
-    );
+    let shared = recv_frame(&mut rd).await;
     assert!(
-        error["message"]
-            .as_str()
-            .unwrap_or_default()
-            .contains("tool requires role"),
-        "the refusal must be the *role* decision, not scope/arguments: {refused:#?}"
+        shared.get("error").is_none(),
+        "an Assistant must reach the plugin tool: {shared:#?}"
+    );
+    assert_eq!(shared["result"]["isError"], false, "{shared:#?}");
+    assert_eq!(
+        shared["result"]["structuredContent"],
+        json!({
+            "echo": "through-kernel",
+            "tool": TOOL_NAME
+        })
     );
 
     // Control: same tool, same track, a Worker token.
@@ -927,7 +937,7 @@ async fn mint_card_with_thread(
                         title: None,
                         kind: "codex".into(),
                         sort: None,
-                        payload: json!({"harness_profile":"assistant","assistant_provider":"codex"}),
+                        payload: json!({"harness_profile":"assistant","assistant_provider":"codex","permission_mode":"never"}),
                     },
                     role,
                     false,

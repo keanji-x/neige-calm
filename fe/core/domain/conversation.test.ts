@@ -246,10 +246,10 @@ describe('track conversations', () => {
   });
 
   it('posts the first message to the track, carrying the key as a header', () => {
-    const operation = createTrackConversationOperation('track 1', 'hello', 'key-a', 'claude', { model: null, reasoning_effort: null });
+    const operation = createTrackConversationOperation('track 1', 'hello', 'key-a', 'claude', { model: null, reasoning_effort: null }, 'ask');
     expect(operation.method).toBe('POST');
     expect(operation.path).toBe('/api/tracks/track%201/conversations');
-    expect(operation.body).toEqual({ text: 'hello', provider: 'claude' });
+    expect(operation.body).toEqual({ text: 'hello', provider: 'claude', permission_mode: 'ask' });
     expect(operation.headers).toEqual({ 'Idempotency-Key': 'key-a' });
     expect(operation.responseSchema.parse({ ...row, initialInput: { kind: 'legacy-unavailable' } }).conversation.kind).toBe('track-assistant');
     expect(operation.responseSchema.safeParse(row).success).toBe(false);

@@ -352,6 +352,7 @@ async fn historical_summary_key_requires_explicit_migration_without_erasing_orig
         headers,
         track.into(),
         NewTrackConversationBody {
+            permission_mode: None,
             provider: AssistantProviderRequest::LegacyCodex,
             side: None,
             text: "legacy sentinel".into(),

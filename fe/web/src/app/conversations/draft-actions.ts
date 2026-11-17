@@ -16,6 +16,7 @@ type DraftEdit = Partial<Pick<ConversationDraft, 'text' | 'creating' | 'error' |
 export type ConversationDraftActionInput = Readonly<{
   registry: Pick<ConversationRegistry, 'editDraft' | 'startDraft' | 'acceptDraft' | 'discardDraft'>;
   draft: ConversationDraft | null;
+  maySelectPermissions: boolean;
   creating: boolean;
   source: ConversationCreationSource;
   sourceScopeId: string;
@@ -34,7 +35,7 @@ export type ConversationDraftActionInput = Readonly<{
 
 /** A command assembly for this render's draft. Construction has no side effects;
  * dispatched attempts retain their original scope/key and settle through Registry. */
-export function createConversationDraftActions({ registry, draft, creating, source, sourceScopeId, transport,
+export function createConversationDraftActions({ registry, draft, creating, source, sourceScopeId, transport, maySelectPermissions,
   supportsSideConversation, supportsDraftModel, supportsInitialInput, supportsAssistantProviders, managedProviders, recheckManagedProviders, openDraft, closeView, onGone, onAdopt,
 }: ConversationDraftActionInput) {
   /* Every draft write goes through one of these three, each a whole-object update,
@@ -56,7 +57,7 @@ export function createConversationDraftActions({ registry, draft, creating, sour
   };
   /** Records that a POST is going out under this key with these words. Called
    *  before the request, so a failure finds the right baseline. */
-  const markDraftSent = (from: ConversationDraft, submitted: SubmittedConversationInput) => {
+  const markDraftSent = (from: ConversationDraft, submitted: NonNullable<ConversationDraft['submitted']>) => {
     withDraft(from, (current) => ({ ...current, text: submitted.text, submitted }));
   };
 
@@ -72,7 +73,7 @@ export function createConversationDraftActions({ registry, draft, creating, sour
            retry is a different derived card. */
     registry.startDraft({
       scopeId: sourceScopeId,
-      provider: 'codex', model: FOLLOW_INSTALLATION_DEFAULT,
+      provider: 'codex', model: FOLLOW_INSTALLATION_DEFAULT, permissionMode: 'never',
       key: mintIdempotencyKey(),
       text, autoSend: text !== null, submitted: null, creating: false, error: null, remedy: null,
     });
@@ -202,10 +203,10 @@ export function createConversationDraftActions({ registry, draft, creating, sour
         if (!current()) { amendDraft(attempt, { error: notSentText(attempt.submitted), remedy: 'retry' }); return; }
         if (refuseOfflineDraft(attempt, text, answers)) return;
         previouslySubmitted = attempt.submitted;
-        const submitted = attempt.submitted ?? Object.freeze({ text, atMs: Date.now() });
+        const submitted = attempt.submitted ?? Object.freeze({ text, atMs: Date.now(), permissionMode: maySelectPermissions ? attempt.permissionMode : undefined, provider: attempt.provider, model: attempt.model, side: attempt.side });
         markDraftSent(attempt, submitted);
         attempt = { ...attempt, text, submitted };
-        await create(submitted.text, attempt.key, attempt.provider, attempt.model, attempt.side, (result) => {
+        await create(submitted.text, attempt.key, submitted.provider, submitted.model, submitted.side, submitted.permissionMode, (result) => {
           if (current()) adopt(attempt, result);
         });
       } catch (error: unknown) {

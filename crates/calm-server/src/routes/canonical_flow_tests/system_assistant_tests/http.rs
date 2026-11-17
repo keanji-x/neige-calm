@@ -560,6 +560,7 @@ async fn http_human_and_historical_namespace_refuse_before_legacy_adoption_even_
                 headers,
                 track.into(),
                 NewTrackConversationBody {
+                    permission_mode: None,
                     provider: AssistantProviderRequest::LegacyCodex,
                     side: None,
                     text: "historical sentinel".into(),

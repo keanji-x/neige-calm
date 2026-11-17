@@ -151,7 +151,6 @@ pub(crate) async fn workspace_report_instructions(
     card_id: &str,
     track_id: &str,
 ) -> Result<Option<&'static str>> {
-    const REPORTS: &str = include_str!("../prompts/workspace-reports.md");
     const PLANNER_REPORTS: &str = concat!(
         include_str!("../prompts/workspace-reports.md"),
         "\n",
@@ -164,10 +163,7 @@ pub(crate) async fn workspace_report_instructions(
                 reader.managed_context
                     && matches!(reader.role, CardRole::Planner | CardRole::Assistant)
             })
-            .map(|reader| match reader.role {
-                CardRole::Planner => PLANNER_REPORTS,
-                _ => REPORTS,
-            }),
+            .map(|_| PLANNER_REPORTS),
     )
 }
 
@@ -268,13 +264,18 @@ pub(crate) async fn reports_only_card(
         return Ok(false);
     };
     let internal = |e: CalmError| RpcError::internal(e.to_string());
-    let track: Option<String> =
-        sqlx::query_scalar("SELECT track_id FROM cards WHERE id=?1 AND role=?2")
+    let row: Option<(String, String)> =
+        sqlx::query_as("SELECT track_id,role FROM cards WHERE id=?1")
             .bind(card_id)
-            .bind(CardRole::Planner.as_db_str())
             .fetch_optional(pool.read_pool())
             .await
             .map_err(|e| internal(e.into()))?;
+    let track = row.and_then(|(track, role)| {
+        CardRole::try_from(role)
+            .ok()
+            .filter(|role| role.capability_role() == CardRole::Planner)
+            .map(|_| track)
+    });
     match track {
         Some(track) => reports_only_track(pool.read_pool(), &track)
             .await

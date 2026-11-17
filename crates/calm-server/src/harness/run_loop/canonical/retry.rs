@@ -91,6 +91,8 @@ pub(super) async fn dispatch_pending(
     })
     .await?;
     publish(inner, next).await;
+    #[cfg(feature = "fixtures")]
+    crate::test_seams::pause_point("conversation-retry-claimed", &inner.worker_session_id).await;
     dispatch_initial(
         inner,
         &source,

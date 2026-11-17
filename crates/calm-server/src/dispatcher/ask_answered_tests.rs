@@ -99,10 +99,16 @@ async fn ask_answered_wake_preserves_complete_detail_live_and_catch_up() {
         live[0], live[1],
         "identical titles must retain distinct standard context"
     );
-    let replayed =
-        crate::harness::catch_up::observations_since(&repo, &track, "non-report-only", 0, None)
-            .await
-            .unwrap();
+    let replayed = crate::harness::catch_up::observations_since(
+        &repo,
+        &track,
+        &CardId::from("planner"),
+        "non-report-only",
+        0,
+        None,
+    )
+    .await
+    .unwrap();
     assert_eq!(
         replayed
             .iter()

@@ -43,7 +43,7 @@ type ActivityItemBase = Readonly<{
  */
 export type ActivityItem =
   | (ActivityItemBase & Readonly<{
-    source: 'ask'; askId: number; questions: readonly AskQuestion[]; delivery: AskDelivery;
+    source: 'ask'; askId: number; cardId: string; sessionId: string | null; questions: readonly AskQuestion[]; delivery: AskDelivery;
     action?: import('../api/generated/wire.js').AskAction;
   }>)
   | (ActivityItemBase & Readonly<{ source: 'planner_down' | 'planner_turn_timeout' }>);

@@ -14,7 +14,7 @@ use calm_server::mcp_server::tools::track_report_blocks::{
     TOOL_REPORT_COMMIT, TOOL_REPORT_DESCRIBE, TOOL_REPORT_WRITE,
 };
 use calm_server::plugin_host::mcp::RpcError;
-use calm_types::report_blocks::{KIND_TASK, marker_line, render_fence};
+use calm_types::report_blocks::{KIND_TASK, render_fence};
 use serde_json::{Value, json};
 
 const TOOL_REPORT_READ: &str = "neige_report_read";
@@ -355,164 +355,55 @@ async fn an_assistant_may_rewrite_prose_around_user_and_planner_task_blocks() {
 }
 
 #[tokio::test]
-async fn an_assistant_may_not_declare_a_task_block() {
+async fn an_assistant_can_declare_release_rewrite_and_delete_planner_task_blocks() {
     let boot = boot().await;
-    let err = upsert_block(
+    let created = upsert_block(
         &boot,
         assistant_identity(&boot),
         json!({
-            "kind": KIND_TASK,
-            "payload": {
-                "key": "sneaky",
-                "kind": "codex",
-                "goal": "dispatch a worker",
-                "ready": true,
-                "declared_by": "assistant"
-            }
+            "kind": KIND_TASK, "payload": gated_task_payload("dispatchable", false)
         }),
     )
     .await
-    .expect_err("an assistant declaring a task must be refused");
-    assert_eq!(err.code, RpcError::INVALID_PARAMS);
-    assert!(
-        !body_text(&boot).await.contains("sneaky"),
-        "and nothing was written"
-    );
-}
-
-/// The refused assistant write is one that would have produced a dispatchable task, and the
-/// planner control proves this fixture can produce one. The guard is not redundant with the
-/// role gate behind it: that gate fires only when the edit changes the projected key set, so an
-/// in-place rewrite of a task's `goal` never reaches it.
-#[tokio::test]
-async fn an_assistant_may_not_flip_a_planner_task_to_ready() {
-    let boot = boot().await;
-
-    // 1. Planner seeds a gate-clean but withdrawn declaration.
-    let declared = upsert_block(
-        &boot,
-        planner_identity(&boot),
-        json!({ "kind": KIND_TASK, "payload": gated_task_payload("dispatchable", false) }),
-    )
-    .await
-    .expect("the planner may declare a not-yet-ready task");
-    let id = declared["id"].clone();
-    let released = json!({ "id": id, "kind": KIND_TASK,
-        "payload": gated_task_payload("dispatchable", true) });
-    assert_eq!(
-        task_rows(&boot).await,
-        Vec::<(String, String)>::new(),
-        "a `ready: false` declaration projects no task row — this is the \
-         baseline the next two steps are measured against"
-    );
-
-    // 2. The assistant flips exactly that block to ready.
-    let before = body_text(&boot).await;
-    let err = upsert_block(&boot, assistant_identity(&boot), released.clone())
-        .await
-        .expect_err("an assistant releasing a planner-declared task must be refused");
-    // Assert the guard's own message, not just the code: without the guard this write is stopped
-    // later by the role gate's dispatch-request arm, and the fixture would silently stop pinning it.
-    assert!(
-        err.message
-            .contains("an assistant may not modify task block"),
-        "the refusal must be P2's, not an incidental one from a layer \
-         further in: {err:?}"
-    );
-    assert_eq!(err.code, RpcError::INVALID_PARAMS);
-    assert_eq!(
-        before,
-        body_text(&boot).await,
-        "the refused write left the report untouched"
-    );
-    assert_eq!(
-        task_rows(&boot).await,
-        Vec::<(String, String)>::new(),
-        "and produced no dispatchable task"
-    );
-
-    // 3. Control: the planner makes the identical edit and a task appears.
-    upsert_block(&boot, planner_identity(&boot), released)
-        .await
-        .expect("the planner releases its own declaration");
-    assert_eq!(
-        task_rows(&boot).await,
-        vec![("dispatchable".to_string(), "pending".to_string())],
-        "the control group proves this exact edit does produce a schedulable \
-         task, so step 2's empty projection is the guard's doing"
-    );
-}
-
-/// All three shapes funnel through the same before/after diff. `before == after` on the body
-/// suffices: the task projection is a pure function of the report document.
-#[tokio::test]
-async fn an_assistant_may_not_modify_or_delete_an_existing_task_block() {
-    let boot = boot().await;
-    let (planner_fence, user_fence) = seed_prose_and_two_tasks(&boot).await;
-    let before = body_text(&boot).await;
-
-    let tasks = task_ids(&boot, assistant_identity(&boot)).await;
-    assert_eq!(tasks.len(), 2, "fixture holds the planner and user tasks");
-
-    // 1. In-place rewrite of the PLANNER-signed declaration (the user-only rule does not cover it).
-    let mut planner_task_id = None;
-    for id in &tasks {
-        let text = read(&boot, assistant_identity(&boot), json!({ "blocks": [id] })).await["text"]
-            .as_str()
-            .expect("a read by id returns the task")
-            .to_string();
-        if text == format!("{}{planner_fence}", marker_line(id)) {
-            planner_task_id = Some(id.clone());
-        }
-    }
-    let planner_task_id = planner_task_id.expect("locate the planner-declared task block");
-    let err = upsert_block(
+    .expect("Assistant declares through the shared contract");
+    assert!(task_rows(&boot).await.is_empty());
+    let id = created["id"].clone();
+    let mut payload = gated_task_payload("dispatchable", true);
+    payload["goal"] = json!("Assistant releases this task");
+    upsert_block(
         &boot,
         assistant_identity(&boot),
         json!({
-            "id": planner_task_id,
-            "kind": KIND_TASK,
-            "payload": {
-                "key": "build",
-                "kind": "codex",
-                "goal": "rewritten by the assistant",
-                "gate": check_gate(),
-                "ready": true,
-                "declared_by": "spec"
-            }
+            "id":id, "kind":KIND_TASK, "payload":payload
         }),
     )
     .await
-    .expect_err("an assistant rewriting a planner-declared task must be refused");
-    assert_eq!(err.code, RpcError::INVALID_PARAMS);
-
-    // 2. A delete op naming it by id.
-    let err = read_then_commit(
-        &boot,
-        assistant_identity(&boot),
-        json!([{"op": "delete",  "id": planner_task_id}]),
-    )
-    .await
-    .expect_err("an assistant deleting a task block must be refused");
-    assert_eq!(err.code, RpcError::INVALID_PARAMS);
-
+    .expect("Assistant releases and edits the declaration");
     assert_eq!(
-        before,
-        body_text(&boot).await,
-        "neither attempt wrote anything"
+        task_rows(&boot).await,
+        vec![("dispatchable".into(), "pending".into())]
     );
-
-    // 3. A whole-document rewrite carrying no fence keeps both tasks (#2617): it owns none.
-    read_then_write_markdown(
+    assert!(
+        body_text(&boot)
+            .await
+            .contains("Assistant releases this task")
+    );
+    read_then_commit(
         &boot,
         assistant_identity(&boot),
-        json!({ "body": "# Plan\n\nno more tasks\n"}),
+        json!([{"op":"delete", "id":id}]),
     )
     .await
-    .expect("a whole write owns no task block, so it deletes none");
-    let after = body_text(&boot).await;
-    assert!(after.contains("no more tasks"));
-    assert!(after.contains(&planner_fence) && after.contains(&user_fence));
+    .expect("Assistant deletes under the shared declaration rules");
+    assert!(
+        !body_text(&boot)
+            .await
+            .contains("Assistant releases this task")
+    );
+    assert_eq!(
+        report_edit_authors(&boot).await.last(),
+        Some(&EditAuthor::Assistant)
+    );
 }
 
 /// Control: without this, every assertion above would hold if task blocks had simply become immutable.
@@ -548,7 +439,7 @@ async fn the_planner_may_still_rewrite_its_own_task_block() {
     assert!(
         rewritten,
         "the planner must still be able to rewrite its own declaration — \
-         otherwise the assistant refusals above are not about the role"
+         alongside the shared Assistant declaration edits above"
     );
     assert!(
         body_text(&boot)

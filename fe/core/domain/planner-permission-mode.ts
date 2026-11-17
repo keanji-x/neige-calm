@@ -1,7 +1,5 @@
-// A Planner card's permission mode (#2348, #2441): whether its provider stays in its sandbox, may
-// pause a turn to ask the person before it acts outside it, or runs with no sandbox at all. `GET /api/cards/{id}/planner/run` reads it; the one write is
-// `PUT /api/cards/{id}/planner/permission-mode`, which only the person may make. A change applies
-// from the Planner's next turn.
+// A bound Planner or Assistant's approval choice. Provider policy owns sandbox behavior.
+// The user-only writer changes new issuance; running and frozen retry/resume settings persist.
 
 import { z } from 'zod';
 import type { PlannerPermissionMode, SetPlannerPermissionModeResponse } from '../api/generated/wire.js';

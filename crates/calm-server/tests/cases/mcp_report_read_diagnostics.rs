@@ -139,7 +139,7 @@ async fn index_skips_diagnostics_evaluation() {
 }
 
 #[tokio::test]
-async fn assistant_receives_no_diagnostics() {
+async fn assistant_receives_the_planner_diagnostics() {
     let (boot, _) = fixture(false).await;
     let out = call_tool(
         &boot,
@@ -149,7 +149,9 @@ async fn assistant_receives_no_diagnostics() {
     )
     .await
     .unwrap();
-    assert!(out.get("task_diagnostics").is_none());
+    let planner = read(&boot, json!({})).await;
+    assert!(out["task_diagnostics"].is_array(), "{out}");
+    assert_eq!(out["task_diagnostics"], planner["task_diagnostics"]);
 }
 
 #[tokio::test]

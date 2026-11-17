@@ -111,8 +111,9 @@ impl EventAdmission {
     }
     pub(super) fn kinds(&self) -> &[&'static str] {
         match self {
-            Self::Planner(_) => &PLANNER_CATCH_UP_KINDS,
-            Self::Assistant(_) => TARGETED_ASSISTANT_KINDS,
+            Self::Planner(v) if v.owns_track_notifications() => &PLANNER_CATCH_UP_KINDS,
+            Self::Planner(_) => &["ask.answered"],
+            Self::Assistant(_) => &["assistant.input_requested", "ask.answered"],
         }
     }
     pub(super) async fn qualify_tx(
@@ -121,8 +122,29 @@ impl EventAdmission {
         repo: &observation_reads::ObservationReads<'_>,
         fact: &calm_truth::db::sqlite::event_inputs::EventInputFact,
     ) -> Result<Option<HarnessObservation>> {
+        if let Event::AskAnswered { ask_id, .. } = &fact.envelope.event {
+            let source: Option<(String, String, Option<String>)> = sqlx::query_as(
+                "SELECT r.actor,json_extract(r.payload,'$.delivery'),ws.card_id
+                 FROM events r LEFT JOIN worker_sessions ws ON ws.id=json_extract(r.actor,'$.id') AND ws.track_id=r.scope_track
+                 WHERE r.id=?1 AND r.kind='ask.requested' AND r.scope_track=?2",
+            ).bind(ask_id).bind(self.track().as_str()).fetch_optional(&mut **tx).await?;
+            let Some((actor, delivery, card)) = source else {
+                return Err(CalmError::Conflict("answer source is missing".into()));
+            };
+            let actor = serde_json::from_str(&actor)?;
+            let own = crate::ask::source_target(&actor, card.map(Into::into))
+                .is_some_and(|target| target.is_for(self.card(), self.worker()));
+            if !own || delivery != "wake" {
+                return Ok(None);
+            }
+            return qualification::qualified_observation_tx(tx, repo, self.track(), &fact.envelope)
+                .await;
+        }
         match self {
             Self::Planner(v) => {
+                if !v.owns_track_notifications() {
+                    return Ok(None);
+                }
                 qualification::qualified_observation_tx(tx, repo, &v.track, &fact.envelope).await
             }
             Self::Assistant(v) => match &fact.envelope.event {

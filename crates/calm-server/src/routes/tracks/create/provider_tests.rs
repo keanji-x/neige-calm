@@ -10,6 +10,7 @@ fn provider_shape(planner_provider: AgentProvider) -> CreateRequestShape {
         ),
         admin: false,
         planner_provider,
+        permission_mode: None,
         model: None,
         reasoning_effort: None,
         title: "shared cwd".into(),

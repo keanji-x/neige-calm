@@ -639,9 +639,11 @@ url: string, };
 export type PlannerNotification = "notify" | "suppress" | "legacy";
 
 /**
- * What a Planner card's provider may do outside its sandbox (#2348, #2441): nothing, what the
- * person allows when asked, or anything, with no sandbox at all. Stored on the card as the server-owned payload key `permission_mode`; new Planner
- * cards use their ACP registration’s declared default, or `never` without one; delegated children inherit their parent’s mode. Only `PUT /api/cards/{id}/planner/permission-mode` changes it.
+ * Conversation approval choice for bound Planner and Assistant cards. Provider policy and
+ * sandbox behavior remain provider-owned; MCP role limits always apply. Creation stores a
+ * choice atomically. Omitted Planner selection uses its registration default; Assistant uses
+ * Never independently. The user-only `PUT /api/cards/{id}/planner/permission-mode` changes the
+ * saved choice for new issuance; running turns and frozen retries retain their original mode.
  */
 export type PlannerPermissionMode = "never" | "ask" | "full";
 

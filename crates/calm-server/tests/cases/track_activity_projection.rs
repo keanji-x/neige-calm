@@ -1117,7 +1117,7 @@ async fn high_water_mark_survives_an_unparseable_stored_payload() {
     };
     assert_eq!(p.activity_at_ms, Some(big), "{p:?}");
     let stored = f.stored(&t).await.unwrap();
-    assert_eq!(stored.schema_version, 4);
+    assert_eq!(stored.schema_version, 5);
     assert_eq!(stored.activity_at_ms, Some(big));
     assert!(
         !stored.working,
@@ -1310,7 +1310,7 @@ async fn activity_payload_passes_the_overlay_registry() {
     OVERLAY_KIND_REGISTRY
         .validate("activity", &stored.payload)
         .expect("the projector's payload is the registry's shape");
-    assert_eq!(stored.payload["schemaVersion"], json!(4));
+    assert_eq!(stored.payload["schemaVersion"], json!(5));
     // Every item key is present, nothing else: only an ask carries its id, questions and delivery.
     for item in stored.payload["items"].as_array().unwrap() {
         let mut keys: Vec<&String> = item.as_object().unwrap().keys().collect();
@@ -1321,15 +1321,94 @@ async fn activity_payload_passes_the_overlay_registry() {
                 [
                     "ask_id",
                     "at_ms",
+                    "card_id",
                     "delivery",
                     "key",
                     "questions",
+                    "session_id",
                     "source",
                     "text"
                 ]
             ),
             _ => assert_eq!(keys, ["at_ms", "key", "source", "text"]),
         }
+    }
+    // Exercise the full declared Ask contract against the real registry. Optional
+    // details/actions come from the event types; source identity remains required.
+    let ask_index = stored.payload["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .position(|item| item["source"] == "ask")
+        .unwrap();
+    let mut ask_payload = stored.payload.clone();
+    let ask = &ask_payload["items"][ask_index];
+    assert_eq!(ask["card_id"], planner);
+    assert_eq!(ask["session_id"], planner_ws);
+    for session in [serde_json::Value::Null, json!(planner_ws)] {
+        ask_payload["items"][ask_index]["session_id"] = session;
+        OVERLAY_KIND_REGISTRY
+            .validate("activity", &ask_payload)
+            .unwrap();
+    }
+    use calm_server::event::AskAction;
+    for action in [
+        AskAction::ObjectiveApprovalV2 {
+            objective: "Ship".into(),
+            standard_hash: "standard".into(),
+        },
+        AskAction::ObjectiveApproval {
+            objective: "Ship".into(),
+            standard_hash: "standard".into(),
+        },
+        AskAction::ReopenTrack { closed_at: 1 },
+        AskAction::GrantAdmin,
+        AskAction::TrackPluginAccess {
+            plugin_id: "calendar".into(),
+            enabled: true,
+            manifest_sha256: "manifest".into(),
+            expected_revision: 1,
+        },
+        AskAction::ForgeAction {
+            idempotency_key: "action".into(),
+            payload_hash: "payload".into(),
+        },
+    ] {
+        ask_payload["items"][ask_index]["action"] = serde_json::to_value(action).unwrap();
+        ask_payload["items"][ask_index]["questions"][0]["detail"] = json!("Full context");
+        OVERLAY_KIND_REGISTRY
+            .validate("activity", &ask_payload)
+            .unwrap();
+        let action = ask_payload["items"][ask_index]["action"]
+            .as_object()
+            .unwrap();
+        for key in action.keys().filter(|key| key.as_str() != "kind") {
+            let mut invalid = ask_payload.clone();
+            invalid["items"][ask_index]["action"]
+                .as_object_mut()
+                .unwrap()
+                .remove(key);
+            assert_activity_bad_request(&invalid);
+        }
+        let mut unknown = ask_payload.clone();
+        unknown["items"][ask_index]["action"]["unknown"] = json!(true);
+        assert_activity_bad_request(&unknown);
+    }
+    for field in ["card_id", "session_id"] {
+        let mut missing = stored.payload.clone();
+        missing["items"][ask_index]
+            .as_object_mut()
+            .unwrap()
+            .remove(field);
+        assert_activity_bad_request(&missing);
+        let mut wrong_type = stored.payload.clone();
+        wrong_type["items"][ask_index][field] = json!(7);
+        assert_activity_bad_request(&wrong_type);
+    }
+    for (field, value) in [("detail", json!(7)), ("unknown", json!(true))] {
+        let mut invalid = stored.payload.clone();
+        invalid["items"][ask_index]["questions"][0][field] = value;
+        assert_activity_bad_request(&invalid);
     }
     // Every key is present, nothing else.
     let mut keys: Vec<&String> = stored.payload.as_object().unwrap().keys().collect();
@@ -1345,6 +1424,15 @@ async fn activity_payload_passes_the_overlay_registry() {
             "working"
         ]
     );
+}
+
+fn assert_activity_bad_request(payload: &serde_json::Value) {
+    assert!(matches!(
+        OVERLAY_KIND_REGISTRY
+            .validate("activity", payload)
+            .unwrap_err(),
+        calm_truth::TruthError::Core(calm_types::error::CoreError::BadRequest(_))
+    ));
 }
 
 /// The wake-up table, every row, table-driven, including the events that must not wake anything.

@@ -769,7 +769,7 @@ async fn capture_over_the_per_track_quota_is_forbidden() {
 }
 
 #[tokio::test]
-async fn non_planner_roles_are_forbidden() {
+async fn workers_are_forbidden_and_assistants_share_capture() {
     let boot = boot().await;
     record(
         &boot,
@@ -780,25 +780,36 @@ async fn non_planner_roles_are_forbidden() {
     );
     let args =
         json!({ "call": { "tool": REGISTRY_NAME }, "provenance": "full_text", "title": "x" });
-    for identity in [worker_identity(&boot), assistant_identity(&boot)] {
-        let err = call_tool(&boot, TOOL_SOURCE_CAPTURE, identity.clone(), args.clone())
-            .await
-            .unwrap_err();
-        assert_eq!(err.code, -32403, "{err}");
-        assert!(
-            err.message.contains("tool requires role in [Planner]"),
-            "{err}"
-        );
-        let err = call_tool(&boot, TOOL_SOURCE_LS, identity, json!({}))
-            .await
-            .unwrap_err();
-        assert_eq!(err.code, -32403, "{err}");
-        assert!(
-            err.message.contains("tool requires role in [Planner]"),
-            "{err}"
-        );
-    }
+    let worker = worker_identity(&boot);
+    let err = call_tool(&boot, TOOL_SOURCE_CAPTURE, worker.clone(), args.clone())
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, -32403, "{err}");
+    assert!(
+        err.message.contains("tool requires role in [Planner]"),
+        "{err}"
+    );
+    let err = call_tool(&boot, TOOL_SOURCE_LS, worker, json!({}))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, -32403, "{err}");
+    assert!(
+        err.message.contains("tool requires role in [Planner]"),
+        "{err}"
+    );
     assert!(list(&boot).await.is_empty());
+
+    // An Assistant shares the Planner capability for both tools.
+    let assistant = assistant_identity(&boot);
+    let captured = call_tool(&boot, TOOL_SOURCE_CAPTURE, assistant.clone(), args)
+        .await
+        .expect("assistant captures with the Planner capability");
+    let source_id = captured["source_id"].as_str().expect("source_id");
+    let listed = call_tool(&boot, TOOL_SOURCE_LS, assistant, json!({}))
+        .await
+        .expect("assistant lists sources");
+    assert!(listed.to_string().contains(source_id), "{listed}");
+    assert_eq!(list(&boot).await.len(), 1);
 }
 
 #[tokio::test]

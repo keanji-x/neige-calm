@@ -316,12 +316,12 @@ impl Stack {
     pub async fn boot_config(config: &Config) -> Self {
         let mut config = config.clone();
         config.auth_password = Some("fixture-password".into());
-        let state = AppState::boot(&config)
+        let (state, auth) = AppState::boot(&config)
             .await
             .expect("AppState::boot")
-            .into_parts()
-            .0;
-        let app = crate::support::authenticated_router::application(state.clone()).await;
+            .into_parts();
+        let app =
+            crate::support::authenticated_router::application_with_auth(state.clone(), auth).await;
         Self { state, app }
     }
 

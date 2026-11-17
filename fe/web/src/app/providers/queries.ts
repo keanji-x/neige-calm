@@ -341,7 +341,7 @@ import type { SideConversation, CreatedConversation } from '../../../../core/dom
 export type ConversationMutations = Readonly<{
   archive: (cardId: string, archived: boolean) => Promise<void>;
   /** The key identifies the DRAFT, not the attempt: a retry after a timeout must reuse it, or it mints a second conversation. */
-  create: (text: string, idempotencyKey: string, provider: AgentProvider, selection: ModelSelection, side: SideConversation | undefined,
+  create: (text: string, idempotencyKey: string, provider: AgentProvider, selection: ModelSelection, side: SideConversation | undefined, permissionMode: import('../../../../core/api/generated/wire.ts').PlannerPermissionMode | undefined,
     answered: (result: CreatedConversation) => void) => Promise<CreatedConversation>;
   inspect: (cardId: string, idempotencyKey: string) => Promise<ConversationInitialInputObservation>;
   /** Re-read the list and hand back what it now holds. */
@@ -365,8 +365,8 @@ export function useTrackConversationMutations(
 ): ConversationMutations {
   const client = useQueryClient();
   const create = useRecoveryMutation(transport, {
-    mutationFn: ({ text, idempotencyKey, provider, selection, side }: { text: string; idempotencyKey: string; provider: AgentProvider; selection: ModelSelection; side?: SideConversation; answered: (result: CreatedConversation) => void }, transport: ApiTransportPort) =>
-      runOperation(transport, createTrackConversationOperation(trackId, text, idempotencyKey, provider, selection, side), unauthorized),
+    mutationFn: ({ text, idempotencyKey, provider, selection, side, permissionMode }: { text: string; idempotencyKey: string; provider: AgentProvider; selection: ModelSelection; permissionMode: import('../../../../core/api/generated/wire.ts').PlannerPermissionMode | undefined; side?: SideConversation; answered: (result: CreatedConversation) => void }, transport: ApiTransportPort) =>
+      runOperation(transport, createTrackConversationOperation(trackId, text, idempotencyKey, provider, selection, permissionMode, side), unauthorized),
     onSuccess: (result, { answered }) => {
       answered(result);
       const row = result.conversation;
@@ -393,7 +393,7 @@ export function useTrackConversationMutations(
     (cardId: string, archived: boolean) => archive.mutateAsync({ cardId, archived }));
   return {
     archive: changeArchive,
-    create: (text, idempotencyKey, provider, selection, side, answered) => create.mutateAsync({ text, idempotencyKey, provider, selection, side, answered }),
+    create: (text, idempotencyKey, provider, selection, side, permissionMode, answered) => create.mutateAsync({ text, idempotencyKey, provider, selection, side, permissionMode, answered }),
     inspect: (cardId, key) => runOperation(transport, initialInputObservationOperation(trackId, cardId, key), unauthorized),
     refresh: async (beforePublish) => {
       const admitted = admitTransport(transport);

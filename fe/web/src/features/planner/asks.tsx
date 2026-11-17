@@ -44,7 +44,7 @@ export function PlannerAskDrawer({ asks, onAnswer }: PlannerAskDrawerProps) {
         <Button label={`${open.length - 1} more ${open.length === 2 ? 'ask' : 'asks'}`}
           variant="secondary" size="sm" className={styles.queueToggle} isDisabled={busy}
           aria-expanded={queueOpen} onClick={() => setQueueOpen(value => !value)} />
-        {queueOpen && <div className={styles.queueList} role="group" aria-label="Other Planner asks">
+        {queueOpen && <div className={styles.queueList} role="group" aria-label="Other questions">
           {open.filter(ask => ask.askId !== current.askId).map(ask => <Button key={ask.askId}
             label={ask.questions[0].title} variant="secondary" size="sm" className={styles.queueItem}
             isDisabled={busy} onClick={() => { setSelected(ask.askId); setQueueOpen(false); }} />)}
@@ -112,7 +112,7 @@ function AskForm({ ask, state, onChange, onAnswer, onBusy, onSettled }: {
     if (answer === '' || lock.current) return;
     return advance(drafts.map((item, index) => index === page ? { ...item, own: answer } : item));
   };
-  return <section role="group" aria-label="The Planner asks" className={styles.ask} data-nc-ask={ask.askId}>
+  return <section role="group" aria-label="Questions" className={styles.ask} data-nc-ask={ask.askId}>
     {/* A `hold` ask is a provider request the running turn waits on (#2348). */}
     {ask.delivery === 'hold' && <p className={styles.paused} data-nc-ask-paused="">Turn paused, waiting for your approval</p>}
     {ask.questions.length > 1 && <HStack justify="between" align="center" className={styles.meta}>

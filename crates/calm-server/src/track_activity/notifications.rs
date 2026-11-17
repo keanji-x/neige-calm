@@ -45,6 +45,8 @@ pub enum ActivityItem {
         text: String,
         at_ms: i64,
         ask_id: i64,
+        card_id: String,
+        session_id: Option<String>,
         questions: Vec<AskQuestion>,
         delivery: AskDelivery,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -101,6 +103,9 @@ impl ActivityItem {
 pub struct OpenAsk {
     pub action: Option<crate::event::AskAction>,
     pub ask_id: i64,
+    pub card_id: String,
+    pub session_id: Option<String>,
+    pub replied: bool,
     pub at_ms: i64,
     pub questions: Vec<AskQuestion>,
     pub delivery: AskDelivery,
@@ -120,8 +125,6 @@ pub struct LastTurn {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct NotificationRows {
     pub asks: Vec<OpenAsk>,
-    /// U — the newest user message to the Planner card.
-    pub user_sent_at: Option<i64>,
     pub last_turn: Option<LastTurn>,
     /// Trusted timeouts not superseded by a successful completed turn.
     pub timeouts: Vec<LastTurn>,
@@ -140,7 +143,7 @@ pub fn notifications(track_id: &str, rows: &NotificationRows) -> Vec<ActivityIte
 
     for ask in &rows.asks {
         let key = format!("{ASK_KEY}{}", ask.ask_id);
-        let replied = rows.user_sent_at.is_some_and(|at| at >= ask.at_ms);
+        let replied = ask.replied;
         if ask.delivery == AskDelivery::Wake
             && ask.action.is_none()
             && (replied || rows.dismissed.contains(&key))
@@ -157,6 +160,8 @@ pub fn notifications(track_id: &str, rows: &NotificationRows) -> Vec<ActivityIte
                 .join(" / "),
             at_ms: ask.at_ms,
             ask_id: ask.ask_id,
+            card_id: ask.card_id.clone(),
+            session_id: ask.session_id.clone(),
             questions: ask.questions.clone(),
             delivery: ask.delivery,
             action: ask.action.clone(),
@@ -211,6 +216,9 @@ mod tests {
             asks: vec![OpenAsk {
                 action: None,
                 ask_id: 7,
+                card_id: "owner".into(),
+                session_id: Some("session".into()),
+                replied: false,
                 at_ms,
                 delivery,
                 questions: vec![
@@ -241,6 +249,8 @@ mod tests {
                 text: "Merge PR #7? / Which branch?".into(),
                 at_ms: 100,
                 ask_id: 7,
+                card_id: "owner".into(),
+                session_id: Some("session".into()),
                 questions: rows.asks[0].questions.clone(),
                 delivery: AskDelivery::Wake,
             }]
@@ -255,15 +265,11 @@ mod tests {
 
     #[test]
     fn a_later_user_message_or_a_dismissal_closes_the_ask() {
-        let replied = NotificationRows {
-            user_sent_at: Some(101),
-            ..open(100)
-        };
+        let mut replied = open(100);
+        replied.asks[0].replied = true;
         assert!(notifications("t", &replied).is_empty());
-        let earlier_reply = NotificationRows {
-            user_sent_at: Some(99),
-            ..open(100)
-        };
+        let mut earlier_reply = open(100);
+        earlier_reply.asks[0].replied = false;
         assert_eq!(notifications("t", &earlier_reply).len(), 1);
         let dismissed = NotificationRows {
             dismissed: BTreeSet::from(["ask:7".to_string()]),
@@ -276,7 +282,6 @@ mod tests {
     #[test]
     fn a_user_message_or_a_dismissal_does_not_close_a_hold_ask() {
         let rows = NotificationRows {
-            user_sent_at: Some(101),
             dismissed: BTreeSet::from(["ask:7".to_string()]),
             ..open_with(100, AskDelivery::Hold)
         };
@@ -328,7 +333,6 @@ mod timeout_tests {
                 status: Some("interrupted".into()),
                 error_message: None,
             }],
-            user_sent_at: Some(200),
             ..Default::default()
         };
         let items = notifications("track", &rows);

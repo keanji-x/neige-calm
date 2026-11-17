@@ -440,10 +440,24 @@ async fn invalid_tags_and_non_planner_writes_are_refused_before_any_write() {
         err.message.contains("only the Planner changes report tags"),
         "{err:?}"
     );
-    let mut assistant = planner();
-    assistant.role = CardRole::Assistant;
-    tag(&boot, assistant, json!({ "path": "report.md" }))
-        .await
-        .expect_err("assistant is not a tagging role");
     assert!(stored(&boot, &boot.a).await.is_empty());
+
+    // Use the real managed Assistant card/session, not a relabeled Planner identity.
+    let shared = crate::mcp_track_report::boot().await;
+    let out = crate::mcp_track_report::call_tool(
+        &shared,
+        TOOL_REPORT_TAG,
+        crate::mcp_track_report::assistant_identity(&shared),
+        json!({ "path": "report.md", "add": ["shared"] }),
+    )
+    .await
+    .expect("assistant tags with the Planner capability");
+    assert_eq!(out["tags"], json!(["shared"]));
+    let tags: Vec<String> =
+        sqlx::query_scalar("SELECT tag FROM report_tags WHERE track_id = ?1 ORDER BY ordinal")
+            .bind(shared.track_id.as_str())
+            .fetch_all(shared.repo.sqlite_db().unwrap().read_pool())
+            .await
+            .unwrap();
+    assert_eq!(tags, ["shared"]);
 }

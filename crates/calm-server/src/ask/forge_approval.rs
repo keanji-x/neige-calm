@@ -50,7 +50,10 @@ pub async fn forge_approval_tx(
             .bind(track.as_str())
             .fetch_optional(&mut **tx)
             .await?;
-    if role.as_deref() != Some(CardRole::Planner.as_db_str()) {
+    if !role
+        .and_then(|role| CardRole::try_from(role).ok())
+        .is_some_and(|role| role.capability_role() == CardRole::Planner)
+    {
         return Err(CalmError::Forbidden(
             "an approval-gated forge action is submitted only by its track's Planner".into(),
         ));
@@ -65,8 +68,9 @@ pub async fn forge_approval_tx(
             AND json_extract(r.payload, '$.action.kind') = 'forge_action' \
             AND json_extract(r.payload, '$.action.idempotency_key') = ?2 \
             AND json_extract(r.payload, '$.action.payload_hash') = ?3 \
-            AND json_extract(r.actor, '$.kind') = 'AiPlanner' \
-            AND json_extract(r.actor, '$.id') = ?4 \
+            AND ((json_extract(r.actor, '$.kind') = 'AiPlanner' AND json_extract(r.actor, '$.id') = ?4) \
+                 OR (json_extract(r.actor, '$.kind') IN ('AiPlannerSession','AiManagedSession') \
+                     AND EXISTS(SELECT 1 FROM worker_sessions ws WHERE ws.id=json_extract(r.actor,'$.id') AND ws.card_id=?4))) \
           ORDER BY r.id LIMIT 1",
     )
     .bind(track.as_str())

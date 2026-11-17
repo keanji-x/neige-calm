@@ -196,7 +196,7 @@ it('settles a queued edit only in its originating conversation and preserves any
 
 it('keeps accepted first-input display separate from stored canonical history and never reimports a retired receipt', () => {
   const registry = mountRegistry();
-  const submitted = Object.freeze({ text: 'first words', atMs: 7 });
+  const submitted = Object.freeze({ text: 'first words', atMs: 7, permissionMode: 'never', provider: 'codex', model: { model: null, reasoning_effort: null } });
   const from = { scopeId: 'track', key: 'create-key' };
   const conversation: Conversation = { id: CONVERSATION, trackId: 'track', kind: 'track-assistant', provider: 'codex', title: null,
     state: 'idle', updatedAt: 100 };
@@ -204,7 +204,7 @@ it('keeps accepted first-input display separate from stored canonical history an
     queuedAtMs: 100, textSha256: sha256Hex(submitted.text), initialRuntimeId: 'runtime' } } } as const;
   act(() => {
     registry().remember(conversation, []);
-    registry().startDraft({ ...from, provider: 'codex', model: { model: null, reasoning_effort: null }, text: submitted.text,
+    registry().startDraft({ ...from, permissionMode: 'never', provider: 'codex', model: { model: null, reasoning_effort: null }, text: submitted.text,
       submitted, creating: true, error: null, remedy: null });
     expect(registry().acceptDraft(from, result, submitted)).toBe(true);
   });
@@ -220,9 +220,9 @@ it('keeps accepted first-input display separate from stored canonical history an
 
 it('ignores a late acceptance after a valid rekey without touching a newer draft', () => {
   const registry = mountRegistry();
-  const submitted = Object.freeze({ text: 'old words', atMs: 3 });
+  const submitted = Object.freeze({ text: 'old words', atMs: 3, permissionMode: 'never', provider: 'codex', model: { model: null, reasoning_effort: null } });
   const from = { scopeId: 'track', key: 'old-key' };
-  act(() => { registry().startDraft({ ...from, provider: 'codex', model: { model: null, reasoning_effort: null }, text: 'new words',
+  act(() => { registry().startDraft({ ...from, permissionMode: 'never', provider: 'codex', model: { model: null, reasoning_effort: null }, text: 'new words',
     submitted, creating: false, error: null, remedy: null }); });
   act(() => { registry().editDraft(from, current => ({ ...current, key: 'new-key', submitted: null })); });
   act(() => { expect(registry().acceptDraft(from, {

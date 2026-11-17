@@ -6,7 +6,7 @@ use crate::ask::{ForgeApproval, ForgeApprovalRead, forge_approval_tx};
 use crate::db::{RepoEventWrite, write_in_tx_typed, write_with_actor_events_typed};
 use crate::error::CalmError;
 use crate::event::EventBus;
-use crate::ids::{ActorId, CardId, TrackId};
+use crate::ids::{CardId, TrackId};
 use crate::mcp_server::framing::{RpcError, calm_error};
 use crate::mcp_server::registry::{AppContext, ToolCallIdentity};
 use crate::mcp_server::transport::{ForgeSubmit, PluginForgePayload};
@@ -113,7 +113,7 @@ async fn approval(
         return Ok(approval);
     }
     // Preserve the recorded card-level actor; only new ask admission uses the caller session.
-    let actor = ActorId::AiPlanner(call.card.clone());
+    let actor = asks.caller.to_actor_id();
     let caller = asks.caller.clone();
     let (_, ids) =
         write_with_actor_events_typed::<(), _>(asks.repo, None, asks.events, asks.write, {

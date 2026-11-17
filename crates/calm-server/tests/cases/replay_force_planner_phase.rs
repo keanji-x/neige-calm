@@ -635,7 +635,7 @@ async fn assistant_provider_forced_phase_keeps_the_declared_provider_and_never_b
             let mut tx = write_session.begin_immediate().await.unwrap();
             calm_server::db::sqlite::card_create_with_id_tx(&mut tx,id.clone(),NewCard {
                 track_id:track.clone().into(),title:None,kind:"codex".into(),sort:None,
-                payload:json!({"schemaVersion":1,"harness_profile":"assistant","assistant_provider":provider}),
+                payload:json!({"schemaVersion":1,"harness_profile":"assistant","assistant_provider":provider,"permission_mode":"never"}),
             },CardRole::Assistant,false,&roles).await.unwrap();
             tx.commit().await.unwrap();
             let outcome =

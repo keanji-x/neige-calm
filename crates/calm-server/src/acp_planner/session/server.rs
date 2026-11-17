@@ -96,7 +96,6 @@ pub(super) async fn issue(
         original_native,
         input.thread,
         selection,
-        input.permission,
         &source,
     )
     .await?;

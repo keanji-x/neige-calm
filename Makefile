@@ -232,7 +232,14 @@ $(FE_NODE_MODULES_STAMP): $(WORKTREE)/fe/package-lock.json $(WORKTREE)/fe/packag
 	@$(CHECK_FE_NODE)
 	cd $(WORKTREE)/fe && npm ci
 
-$(FE_DIST): $(shell find $(WORKTREE)/fe/core $(WORKTREE)/fe/web/src $(WORKTREE)/fe/web/public -type f 2>/dev/null) $(WORKTREE)/fe/package.json $(WORKTREE)/fe/vite.config.ts $(WORKTREE)/fe/tools/pwa/vite-plugin.ts $(WORKTREE)/fe/web/index.html $(FE_NODE_MODULES_STAMP)
+# Build from repository inputs, including new source files. Ignored browser
+# output is not a source dependency; NUL reads and Make escaping retain spaces.
+FE_SOURCE_FILES := $(shell git -C "$(WORKTREE)" ls-files -z --cached --others --exclude-standard -- fe/core fe/web/src fe/web/public | while IFS= read -r -d '' source_path; do if [ -f "$(WORKTREE)/$$source_path" ]; then printf '%s\n' "$(WORKTREE)/$${source_path// /\\ }"; fi; done)
+ifneq ($(.SHELLSTATUS),0)
+$(error failed to enumerate frontend source files from the Git checkout)
+endif
+
+$(FE_DIST): $(FE_SOURCE_FILES) $(WORKTREE)/fe/package.json $(WORKTREE)/fe/vite.config.ts $(WORKTREE)/fe/tools/pwa/vite-plugin.ts $(WORKTREE)/fe/web/index.html $(FE_NODE_MODULES_STAMP)
 	@$(CHECK_FE_NODE)
 	cd $(WORKTREE)/fe && npm run build
 

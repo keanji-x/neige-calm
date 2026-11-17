@@ -123,7 +123,7 @@ async fn rig(profile: Profile) -> Rig {
         ),
         Profile::Assistant => (
             CardRole::Assistant,
-            json!({"schemaVersion": 1, "harness_profile": "assistant", "assistant_provider":"codex"}),
+            json!({"schemaVersion": 1, "harness_profile": "assistant", "assistant_provider":"codex","permission_mode":"never"}),
             WorkerSessionKind::ManagedAssistant,
         ),
     };
@@ -418,6 +418,8 @@ async fn a_planner_native_question_becomes_one_open_ask() {
             text: captured_questions()[0].title.clone(),
             at_ms: items[0].at_ms(),
             ask_id,
+            card_id: rig.card.to_string(),
+            session_id: Some(rig.session_id.clone()),
             questions: captured_questions(),
             delivery: calm_server::event::AskDelivery::Wake,
         }]
@@ -568,20 +570,22 @@ async fn a_started_item_asks_nothing() {
 }
 
 #[tokio::test]
-async fn plain_chat_and_assistant_conversations_ask_nothing() {
+async fn plain_chat_asks_nothing_and_assistant_uses_the_shared_native_question_path() {
     for profile in [Profile::PlainChat, Profile::Assistant] {
-        let (logs, _guard) = Logs::capture();
         let rig = rig(profile).await;
         rig.emit("item/completed", captured_params());
         rig.settle().await;
-        assert!(rig.item_added(ITEM_ID).await, "the reply is stored");
+        assert!(rig.item_added(ITEM_ID).await);
         let asks = rig.asks().await;
-        assert!(asks.is_empty(), "{asks:?}");
-        assert!(
-            !logs.text().contains(REFUSED),
-            "not a Planner conversation is not a refusal: {}",
-            logs.text()
-        );
+        if matches!(profile, Profile::PlainChat) {
+            assert!(asks.is_empty());
+        } else {
+            assert!(
+                matches!(asks.as_slice(), [(ActorId::AiManagedSession(id), Event::AskRequested { .. })]
+                if id.as_str() == rig.session_id),
+                "{asks:?}"
+            );
+        }
         rig.harness.shutdown().await.unwrap();
     }
 }

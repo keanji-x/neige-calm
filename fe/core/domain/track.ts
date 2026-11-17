@@ -143,6 +143,8 @@ const activityItemWireSchema = z.discriminatedUnion('source', [
     text: z.string(),
     at_ms: z.number(),
     ask_id: z.number(),
+    card_id: z.string(),
+    session_id: z.string().nullable(),
     questions: z.array(askQuestionSchema),
     delivery: z.enum(['wake', 'hold']),
     action: askActionSchema.optional(),
@@ -168,7 +170,7 @@ const activityCardWireSchema = z.object({
 /** Mirrors `calm_truth::validation::KERNEL_OVERLAY_PLUGIN_ID`. */
 const KERNEL_OVERLAY_PLUGIN_ID = 'kernel';
 const activityOverlayWireSchema = z.object({
-  schemaVersion: z.literal(4),
+  schemaVersion: z.literal(5),
   working: z.boolean(),
   attention: attentionKindSchema,
   activity_at_ms: z.number().nullable(),
@@ -186,7 +188,7 @@ function activityOverlayFields(payload: unknown): Partial<TrackActivity> | null 
     const base = { key: item.data.key, text: item.data.text, atMs: item.data.at_ms };
     attentionItems.push(item.data.source === 'ask'
       ? {
-        ...base, source: 'ask', askId: item.data.ask_id, questions: item.data.questions, delivery: item.data.delivery,
+        ...base, source: 'ask', askId: item.data.ask_id, cardId: item.data.card_id, sessionId: item.data.session_id, questions: item.data.questions, delivery: item.data.delivery,
         ...(item.data.action === undefined ? {} : { action: item.data.action }),
       }
       : { ...base, source: item.data.source });
@@ -365,6 +367,7 @@ export type NewTrackBody = Readonly<{
   area_id: string;
   /** The Planner's backend, stamped on its card and never changed. Required: the kernel refuses a create without it. */
   planner_provider: AgentProvider;
+  permission_mode?: import('../api/generated/wire.js').PlannerPermissionMode;
   /** Planner overrides applied before the first message; omitted follows installation defaults. */
   model?: string;
   reasoning_effort?: string;

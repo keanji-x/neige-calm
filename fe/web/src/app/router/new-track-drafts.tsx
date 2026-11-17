@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useSyncExternalStore, type ReactNode } from 'react';
 import { FOLLOW_INSTALLATION_DEFAULT, type ModelSelection } from '../../../../core/domain/conversation.ts';
-import type { AgentProvider } from '../../../../core/api/generated/wire.ts';
+import type { PlannerPermissionMode, AgentProvider } from '../../../../core/api/generated/wire.ts';
 import type { Area } from '../../../../core/domain/area.ts';
 import type { NewTrackBody } from '../../../../core/domain/track.ts';
 import type { NewTrackFormState } from '../../features/area/new-track/public.tsx';
@@ -18,6 +18,7 @@ export type NewTrackSession = Readonly<{
   form: NewTrackFormState | null;
   /** The Planner's backend; `codex` until the reader picks a model from another provider's group. */
   provider: AgentProvider;
+  permissionMode: PlannerPermissionMode;
   /** A selection from `provider`'s catalog; set together with `provider` by one pick. */
   model: ModelSelection;
   /** `admin` creates an Area admin Track (`admin: true`); `member` sends no `admin` key. */
@@ -42,7 +43,7 @@ function createDraftStore() {
     get: (areaId: string) => drafts.get(areaId) ?? null,
     ensure: (area: Area) => {
       if (drafts.has(area.id)) return;
-      drafts.set(area.id, { area: { id: area.id, name: area.name, defaultCwd: area.defaultCwd }, form: null, provider: 'codex', model: FOLLOW_INSTALLATION_DEFAULT, role: 'member', key: mintIdempotencyKey(), creating: false,
+      drafts.set(area.id, { area: { id: area.id, name: area.name, defaultCwd: area.defaultCwd }, form: null, provider: 'codex', permissionMode: 'never', model: FOLLOW_INSTALLATION_DEFAULT, role: 'member', key: mintIdempotencyKey(), creating: false,
         request: null, createdTrackId: null, error: null, canRetryAsNewTrack: false, folderConflict: null });
       notify();
     },

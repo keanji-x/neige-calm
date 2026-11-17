@@ -227,7 +227,7 @@ pub(super) async fn collect_turn(
                     stop_at=Some(tokio::time::Instant::now()+Duration::from_secs(5));
                     if !matches!(*cancelled.borrow(), CancelRequest::Attempted) {
                     tokio::time::timeout(Duration::from_secs(3),async {
-                        approvals.cancel(&receipt.native_session_id, shared.admission(&receipt.thread_id, None, Some(&receipt.native_session_id), Some(&receipt.turn_id)).gate()).await.map_err(wire_error)
+                        approvals.cancel(&receipt.native_session_id, shared.admission(&receipt.thread_id, Some(&receipt.native_session_id), Some(&receipt.turn_id)).gate()).await.map_err(wire_error)
                     }).await.map_err(|_|CalmError::Conflict("ACP cancellation writes timed out".into()))??;
                     }
                 }

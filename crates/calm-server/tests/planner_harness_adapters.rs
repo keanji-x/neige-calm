@@ -278,7 +278,7 @@ async fn seed_assistant_card(
                 title: None,
                 kind: "codex".into(),
                 sort: None,
-                payload: json!({"schemaVersion": 1, "harness_profile": "assistant", "assistant_provider":"codex"}),
+                payload: json!({"schemaVersion": 1, "harness_profile": "assistant", "assistant_provider":"codex", "permission_mode":"never"}),
             },
             CardRole::Assistant,
             false,
@@ -1105,7 +1105,14 @@ async fn assistant_thread_start_carries_mcp_config_and_the_assistant_prompt() {
     );
 
     let expected_prompt =
-        calm_server::planner_card::render_assistant_prompt_for_test(track.id.as_str());
+        calm_server::operation::planner_harness_start_adapter::planner_instructions_for_test(
+            repo.as_ref(),
+            &state.plugin,
+            track.id.as_str(),
+            &card_id,
+        )
+        .await
+        .unwrap();
     assert_eq!(
         state
             .shared_codex_appserver
