@@ -88,6 +88,7 @@ pub(in crate::acp_planner::session) async fn compact(
     let turn = uuid::Uuid::new_v4().to_string();
     let (cancel, cancelled) = watch::channel(CancelRequest::Running);
     shared.state.lock().expect("ACP state").active = Some(Active {
+        permission,
         thread: target.thread_id.clone(),
         turn: turn.clone(),
         cancel,

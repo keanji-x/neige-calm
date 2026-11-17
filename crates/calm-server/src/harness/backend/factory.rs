@@ -80,12 +80,16 @@ impl<'a> PlannerFactory<'a> {
         match binding.profile {
             HarnessProfile::Planner => Some(WorkerContract::Planner),
             HarnessProfile::Assistant => Some(WorkerContract::Assistant),
-            HarnessProfile::PlainChat | HarnessProfile::TaskWorker => None,
+            HarnessProfile::TaskWorker => Some(WorkerContract::Executor),
+            HarnessProfile::PlainChat => None,
         }
     }
 
     /// Static storage capability for this exact binding; no readiness probe.
     pub(crate) fn canonical_inputs(binding: &crate::harness::profile::PlannerBinding) -> bool {
+        if binding.profile == crate::harness::profile::HarnessProfile::TaskWorker {
+            return false;
+        }
         let Some(contract) = Self::worker_contract(binding) else {
             return false;
         };
@@ -331,6 +335,26 @@ impl<'a> PlannerFactory<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn task_worker_factory_uses_executor_and_historical_inputs() {
+        for provider in [
+            AgentProvider::Codex,
+            AgentProvider::Antigravity,
+            AgentProvider::OpenCode,
+            AgentProvider::Grok,
+        ] {
+            let binding = crate::harness::profile::PlannerBinding {
+                profile: crate::harness::profile::HarnessProfile::TaskWorker,
+                provider,
+            };
+            assert_eq!(
+                PlannerFactory::worker_contract(&binding),
+                Some(calm_types::worker::WorkerContract::Executor)
+            );
+            assert!(!PlannerFactory::canonical_inputs(&binding));
+        }
+    }
 
     #[test]
     fn factory_pre_checkpoint_replay_excludes_acp_receipt_recovery() {

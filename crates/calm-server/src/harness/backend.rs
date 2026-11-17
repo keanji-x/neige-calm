@@ -10,6 +10,7 @@
 use provider::control::*;
 mod control;
 mod managed;
+pub(crate) mod worker_turn;
 pub(super) use managed::IssueTurnHandle;
 pub(crate) mod factory;
 mod start;

@@ -44,6 +44,8 @@ fn harness_turn_start_is_gated() {
     let allowed = [
         "src/dispatcher/mod.rs",
         "src/harness/backend/managed.rs",
+        // Replaces operation/codex_adapter/worker_spawn.rs, removed in PR 2.
+        "src/harness/backend/worker_turn.rs",
         "src/operation/codex_adapter/interactive.rs",
         "src/operation/codex_adapter/worker_spawn.rs",
         "src/shared_codex_appserver.rs",

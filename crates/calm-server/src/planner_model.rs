@@ -472,3 +472,5 @@ mod tests {
 pub(crate) mod selection_advice;
 
 pub(crate) mod child_selection;
+
+pub(crate) mod task_selection;

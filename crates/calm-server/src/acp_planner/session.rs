@@ -66,6 +66,7 @@ pub(super) enum CancelRequest {
     Attempted,
 }
 struct Active {
+    permission: PlannerPermissionMode,
     thread: String,
     turn: String,
     cancel: watch::Sender<CancelRequest>,
