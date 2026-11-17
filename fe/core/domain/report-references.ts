@@ -49,7 +49,7 @@ export function reportReferenceRepository(markdown: readonly string[], readMarkd
 
 /** This recognizes qualified paths, not ordinary identifiers, API routes or command fragments. */
 export function qualifiedReportFileReference(value: string): boolean {
-  return value.includes('/') && /^(?:\.{1,2}\/|\/)?[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)*\.[A-Za-z][A-Za-z0-9]*(?::[0-9]+(?:-[0-9]+)?(?:,[0-9]+(?:-[0-9]+)?)*(?::[0-9]+)?)?$/.test(value)
+  return value.includes('/') && /^(?:\.{1,2}\/|\/)?[\p{L}\p{M}\p{N}_.-]+(?:\/[\p{L}\p{M}\p{N}_.-]+)*\.[A-Za-z][A-Za-z0-9]*(?::[0-9]+(?:-[0-9]+)?(?:,[0-9]+(?:-[0-9]+)?)*(?::[0-9]+)?)?$/u.test(value)
     && parseReportFileLink(value) !== null;
 }
 
