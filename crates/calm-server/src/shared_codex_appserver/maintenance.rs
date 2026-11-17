@@ -3,6 +3,13 @@ use super::*;
 use crate::harness::backend::{MaintenanceObservation, MaintenanceTarget};
 
 impl SharedCodexAppServer {
+    pub(crate) fn watch_native_source_loss(
+        &self,
+        signal: &Arc<tokio::sync::Notify>,
+    ) -> SourceLossWatch {
+        self.native_turns.watch_source_loss(signal)
+    }
+
     pub(crate) async fn thread_compact_delivery_admitted(
         &self,
         target: MaintenanceTarget,

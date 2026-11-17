@@ -483,7 +483,24 @@ async fn drive_compact(
             process.connection.incoming = inbox.lock().expect("compact inbox").take().expect("one compact driver");
         }
         let pending = handed.map_err(|_| before("ACP compact handoff lost"))?.map_err(|e| CompactFailure::Crossed(wire_error(e.into_error())))?;
+        #[cfg(all(test, feature = "fixtures"))]
+        super::super::test_seams::wait_before_compact_response_wait(&shared.params.worker_session_id).await;
         let response = pending.wait(Duration::from_secs(3600)); tokio::pin!(response);
+        #[cfg(all(test, feature = "fixtures"))]
+        let response = {
+            let worker = &shared.params.worker_session_id;
+            let mut announced = false;
+            std::future::poll_fn(move |cx| {
+                let outcome = std::future::Future::poll(response.as_mut(), cx);
+                if outcome.is_pending() && !announced {
+                    announced = true;
+                    super::super::test_seams::settlement_note(worker, "compact-response-waiting");
+                }
+                outcome
+            })
+        };
+        #[cfg(all(test, feature = "fixtures"))]
+        tokio::pin!(response);
         let mut correlation = Correlation::default();
         let mut incoming_open = true;
         loop { tokio::select! {

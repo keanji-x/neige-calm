@@ -270,6 +270,16 @@ impl PlannerBackend {
         }
     }
 
+    pub(crate) fn watch_native_source_loss(
+        &self,
+        signal: &std::sync::Arc<tokio::sync::Notify>,
+    ) -> Option<crate::shared_codex_appserver::SourceLossWatch> {
+        match &self.0 {
+            Arm::Codex(daemon, _) => Some(daemon.watch_native_source_loss(signal)),
+            Arm::Acp(_) | Arm::Claude(_) => None,
+        }
+    }
+
     pub(crate) async fn observe_maintenance(
         &self,
         target: &MaintenanceTarget,

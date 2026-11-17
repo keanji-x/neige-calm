@@ -29,7 +29,8 @@ pub use request_attempt::{RequestCrossing, RpcAttemptFailure, RpcRemoteError};
 mod server_request_tests;
 mod server_requests;
 pub mod tool_names;
-use client_transport::{ReaderLifetime, TransportAbort};
+pub use client_transport::LocalTerminationWatch;
+use client_transport::{ReaderLifetime, ReaderTermination, TransportAbort};
 
 use std::sync::atomic::AtomicU64;
 use std::time::Duration;
@@ -124,6 +125,7 @@ pub struct CodexAppServer {
     reader: tokio::task::JoinHandle<()>,
     /// Observes the original consumer without keeping the channel open.
     notifications: mpsc::WeakUnboundedSender<Notification>,
+    termination: Arc<ReaderTermination>,
 }
 
 impl Drop for CodexAppServer {
@@ -248,6 +250,15 @@ impl CodexAppServer {
             .is_none_or(|sender| sender.is_closed())
     }
 
+    /// Register a local reader-end hint. This never certifies remote completion.
+    /// The transport and notification sender are closed before a hint is issued.
+    pub fn watch_local_termination(
+        &self,
+        signal: &Arc<tokio::sync::Notify>,
+    ) -> LocalTerminationWatch {
+        self.termination.watch(signal)
+    }
+
     /// Test-only: a fully-constructed [`CodexAppServer`] over an in-process `UnixStream::pair` handshake; the returned server end must be kept alive or the connection closes.
     #[cfg(test)]
     pub(crate) async fn connect_pair_for_test()
@@ -275,9 +286,15 @@ impl CodexAppServer {
         let pending: Pending = Arc::new(StdMutex::new(HashMap::new()));
         let (notif_tx, notif_rx) = mpsc::unbounded_channel();
         let notifications = notif_tx.downgrade();
+        let termination = Arc::new(ReaderTermination::default());
         let reader = tokio::spawn(reader_loop(
             read,
-            ReaderLifetime::new(notif_tx, pending.clone(), transport.clone()),
+            ReaderLifetime::new(
+                notif_tx,
+                pending.clone(),
+                transport.clone(),
+                termination.clone(),
+            ),
             sink.clone(),
             transport.clone(),
             routes,
@@ -290,6 +307,7 @@ impl CodexAppServer {
             request_timeout: DEFAULT_REQUEST_TIMEOUT,
             reader,
             notifications,
+            termination,
         };
         (
             client,
@@ -380,10 +398,16 @@ impl CodexAppServer {
         // Unbounded: notification delivery must never block the reader's response routing.
         let (notif_tx, notif_rx) = mpsc::unbounded_channel();
         let notifications = notif_tx.downgrade();
+        let termination = Arc::new(ReaderTermination::default());
 
         let reader = tokio::spawn(reader_loop(
             read,
-            ReaderLifetime::new(notif_tx, pending.clone(), transport.clone()),
+            ReaderLifetime::new(
+                notif_tx,
+                pending.clone(),
+                transport.clone(),
+                termination.clone(),
+            ),
             sink.clone(),
             transport.clone(),
             routes,
@@ -399,6 +423,7 @@ impl CodexAppServer {
             request_timeout: DEFAULT_REQUEST_TIMEOUT,
             reader,
             notifications,
+            termination,
         };
         Ok((
             client,

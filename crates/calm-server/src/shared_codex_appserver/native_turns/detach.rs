@@ -146,10 +146,12 @@ impl State {
     pub(super) fn publish_source(&mut self, client: &Arc<CodexAppServer>) {
         self.invalidate();
         self.source = Some(Arc::downgrade(client));
+        self.source_loss.bind(client);
     }
     pub(super) fn invalidate(&mut self) {
         self.source_generation = self.source_generation.wrapping_add(1);
         self.invalidate_now();
+        self.source_loss.invalidate();
     }
     pub(super) fn retire_thread(&mut self, thread: &str) -> Option<()> {
         if let Some((_, retire)) = self.detaching.get_mut(thread) {

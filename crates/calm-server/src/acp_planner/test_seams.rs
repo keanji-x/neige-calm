@@ -188,3 +188,15 @@ pub(crate) fn compact_incoming_len(worker: &str) -> usize {
         .get(worker)
         .map_or(0, |count| count())
 }
+
+#[cfg(test)]
+static COMPACT_RESPONSE_WAIT: LazyLock<Mutex<HashMap<String, Hook>>> =
+    LazyLock::new(Mutex::default);
+#[cfg(test)]
+pub(crate) fn pause_compact_response_wait(worker: &str) -> SettlementPause {
+    pause_at(&COMPACT_RESPONSE_WAIT, worker)
+}
+#[cfg(test)]
+pub(crate) async fn wait_before_compact_response_wait(worker: &str) {
+    wait_at(&COMPACT_RESPONSE_WAIT, worker).await;
+}

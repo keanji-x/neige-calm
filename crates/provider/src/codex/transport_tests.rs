@@ -278,3 +278,91 @@ async fn disconnect_aborted_reader_fails_pending_rpc_without_waiting_for_deadlin
         "{error}"
     );
 }
+
+async fn termination_hint(signal: &tokio::sync::Notify) {
+    tokio::time::timeout(Duration::from_secs(2), signal.notified())
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn disconnect_local_termination_wakes_each_live_watch_after_peer_eof() {
+    use futures_util::FutureExt;
+    let (client, _notifications, peer, _root) = connection().await;
+    let signals: Vec<_> = (0..3)
+        .map(|_| Arc::new(tokio::sync::Notify::new()))
+        .collect();
+    let _a = client.watch_local_termination(&signals[0]);
+    let _b = client.watch_local_termination(&signals[1]);
+    let cancelled = client.watch_local_termination(&signals[2]);
+    drop(cancelled);
+    assert!(signals[0].notified().now_or_never().is_none());
+    drop(peer);
+    for signal in &signals[..2] {
+        termination_hint(signal).await;
+        assert!(client.notification_stream_closed());
+        assert!(client.is_closed());
+    }
+    assert!(signals[2].notified().now_or_never().is_none());
+}
+
+#[tokio::test]
+async fn disconnect_local_termination_wakes_on_unpolled_reader_abort() {
+    let (client, _notifications, _peer) = CodexAppServer::connect_pair_for_test().await;
+    let signal = Arc::new(tokio::sync::Notify::new());
+    let _watch = client.watch_local_termination(&signal);
+    // No yield since the production constructor spawned the reader.
+    client.reader.abort();
+    termination_hint(&signal).await;
+    assert!(client.notification_stream_closed());
+    assert!(client.is_closed());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn disconnect_local_termination_wakes_when_reader_guard_unwinds() {
+    let (socket, _peer) = UnixStream::pair().unwrap();
+    let transport = Arc::new(TransportAbort::new(&socket).unwrap());
+    let termination = Arc::new(ReaderTermination::default());
+    let signal = Arc::new(tokio::sync::Notify::new());
+    let _watch = termination.watch(&signal);
+    let (sender, mut receiver) = mpsc::unbounded_channel();
+    let guard = ReaderLifetime::new(sender, Arc::default(), transport.clone(), termination);
+    let task = tokio::spawn(async move {
+        let _guard = guard;
+        panic!("exercise production reader lifetime unwind");
+    });
+    termination_hint(&signal).await;
+    assert!(matches!(
+        receiver.try_recv(),
+        Err(mpsc::error::TryRecvError::Disconnected)
+    ));
+    assert!(transport.check().is_err());
+    assert!(task.await.unwrap_err().is_panic());
+}
+
+#[tokio::test]
+async fn disconnect_local_termination_wakes_after_client_drop() {
+    let (client, mut notifications, _peer, _root) = connection().await;
+    let signal = Arc::new(tokio::sync::Notify::new());
+    let _watch = client.watch_local_termination(&signal);
+    drop(client);
+    termination_hint(&signal).await;
+    assert!(notifications.recv_result().await.is_err());
+}
+
+#[tokio::test]
+async fn disconnect_local_termination_watch_after_end_signals_at_registration() {
+    use futures_util::FutureExt;
+    let (client, _notifications, peer, _root) = connection().await;
+    drop(peer);
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while !client.reader_finished() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    let signal = Arc::new(tokio::sync::Notify::new());
+    let _watch = client.watch_local_termination(&signal);
+    assert!(signal.notified().now_or_never().is_some());
+}

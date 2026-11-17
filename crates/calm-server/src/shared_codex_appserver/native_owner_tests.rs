@@ -724,3 +724,5 @@ mod detach_tests;
 
 #[cfg(test)]
 mod backpressure_tests;
+
+mod source_loss_tests;

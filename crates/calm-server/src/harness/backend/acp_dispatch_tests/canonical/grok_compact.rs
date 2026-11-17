@@ -31,6 +31,10 @@ async fn interrupted(cancel: bool) {
         thread_id: fx.owner.thread.clone(),
         operation_id: crate::model::new_id(),
     };
+    let before_wait = (!cancel)
+        .then(|| crate::acp_planner::test_seams::pause_compact_response_wait(&fx.owner.worker));
+    let mut response_wait =
+        (!cancel).then(|| crate::acp_planner::test_seams::observe_settlement(&fx.owner.worker));
     let admission = NativePromptAdmission::new(|| Ok(()), || Box::pin(async { Ok(()) }));
     let submit = || CompactRequest {
         selection: TurnModelSelection::inherit(),
@@ -83,7 +87,24 @@ async fn interrupted(cancel: bool) {
     if cancel {
         fx.session.turn_interrupt(&fx.owner.thread, &turn).await;
     } else {
-        // Only the existing native response deadline advances; no hour-long wall wait.
+        let before_wait = before_wait.as_ref().unwrap();
+        tokio::time::timeout(Duration::from_secs(20), before_wait.entered.notified())
+            .await
+            .unwrap();
+        before_wait.release.notify_one();
+        tokio::time::timeout(Duration::from_secs(20), async {
+            let notes = response_wait.as_mut().unwrap();
+            loop {
+                if notes.recv().await.expect("compact driver observation")
+                    == "compact-response-waiting"
+                {
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("the real response deadline must be polled before advancing time");
+        // A pending poll proves the real response deadline is armed.
         tokio::time::pause();
         tokio::time::advance(Duration::from_secs(3601)).await;
         tokio::time::resume();

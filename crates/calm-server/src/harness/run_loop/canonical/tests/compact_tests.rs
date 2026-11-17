@@ -273,19 +273,163 @@ async fn canonical_codex_compact_ambiguous_native_starts_cannot_supply_a_boundar
 
 #[tokio::test]
 async fn canonical_codex_compact_lost_source_wedges_without_resubmitting() {
-    let (fx, client, mut peer) = ready().await;
-    let task = compact(&fx);
-    let call = request(&mut peer).await;
-    send(&mut peer, json!({"id":call["id"],"result":{}})).await;
-    task.await.unwrap().unwrap();
-    peer.close(None).await.unwrap();
-    crate::shared_codex_appserver::native_owner_tests::reader_finished(&client).await;
-    let held = fx.wait_phase(HarnessPhaseTag::Wedged).await;
-    assert_eq!(
-        held.header.compact_outcome.unwrap().status,
-        CompactStatus::Unconfirmed
-    );
-    fx.harness.shutdown().await.unwrap();
+    for blocked in [false, true] {
+        lost_source_after_waiting(blocked).await;
+    }
+}
+
+async fn lost_source_after_waiting(blocked: bool) {
+    use crate::shared_codex_appserver::native_owner_tests::{
+        attribution_blocked, connect_with_reader, hold_attribution, reader_finished,
+    };
+    use crate::test_seams::{PausePoint, install_pause_for_test};
+    use futures::FutureExt;
+    let fx = Fixture::new().await;
+    let (client, mut peer, mut forwarder) = connect_with_reader(&fx.daemon).await;
+    let card = fx.harness.inner.card_id.as_str();
+    let points = [
+        "conversation-command-completed",
+        "maintenance-observe-decided",
+        "canonical-result-wait",
+        "canonical-recovery-probe-ready",
+    ];
+    let pauses: Vec<_> = points.iter().map(|_| PausePoint::default()).collect();
+    let mut attribution = None;
+    let mut compact_task = None;
+    let mut joined = false;
+    let result = std::panic::AssertUnwindSafe(async {
+        let thread = super::content_tests::start(&fx, &mut peer, fx.message.clone(), "user").await;
+        super::content_tests::complete(&fx, &mut peer, &thread, "user").await;
+        compact_task = Some(compact(&fx));
+        let call = request(&mut peer).await;
+        assert_eq!(call["method"], "thread/compact/start");
+        install_pause_for_test(points[0], card, pauses[0].clone());
+        send(&mut peer, json!({"id":call["id"],"result":{}})).await;
+        let compact_result = compact_task.as_mut().unwrap().await;
+        compact_task = None;
+        compact_result.unwrap().unwrap();
+        tokio::time::timeout(Duration::from_secs(5), pauses[0].entered.notified())
+            .await
+            .unwrap();
+        let frame = fx.frame().await;
+        let target = crate::harness::backend::MaintenanceTarget {
+            card_id: card.into(),
+            track_id: fx.harness.inner.track_id.to_string(),
+            worker_session_id: fx.harness.inner.worker_session_id.clone(),
+            thread_id: thread.clone(),
+            operation_id: frame.header.compact_outcome.unwrap().operation_id,
+        };
+        assert!(
+            fx.harness
+                .inner
+                .backend
+                .observe_maintenance(&target)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        for (point, pause) in points.iter().zip(&pauses).skip(1) {
+            install_pause_for_test(point, card, pause.clone());
+        }
+        pauses[0].release.notify_one();
+        tokio::time::timeout(Duration::from_secs(5), pauses[1].entered.notified())
+            .await
+            .unwrap();
+        assert!(
+            fx.harness
+                .inner
+                .backend
+                .observe_maintenance(&target)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        pauses[1].release.notify_one();
+        tokio::time::timeout(Duration::from_secs(5), pauses[2].entered.notified())
+            .await
+            .unwrap();
+        pauses[2].release.notify_one();
+        tokio::time::timeout(Duration::from_secs(5), pauses[3].entered.notified())
+            .await
+            .unwrap();
+        let _ = fx
+            .harness
+            .inner
+            .inputs
+            .canonical()
+            .unwrap()
+            .progress_requested()
+            .now_or_never();
+        if blocked {
+            attribution = Some(hold_attribution(&fx.daemon).await);
+            send(
+                &mut peer,
+                json!({"method":"thread/started","params":{"thread":{"id":"delayed"}}}),
+            )
+            .await;
+            attribution_blocked(&fx.daemon).await;
+        }
+        peer.close(None).await.unwrap();
+        reader_finished(&client).await;
+        if blocked {
+            assert!(!forwarder.is_finished());
+        } else {
+            tokio::time::timeout(Duration::from_secs(5), &mut forwarder)
+                .await
+                .unwrap()
+                .unwrap();
+            joined = true;
+        }
+        assert!(matches!(
+            fx.harness
+                .inner
+                .backend
+                .observe_maintenance(&target)
+                .await
+                .unwrap(),
+            Some(crate::harness::backend::MaintenanceObservation::Unconfirmed)
+        ));
+        pauses[3].release.notify_one();
+        let held = fx.wait_phase(HarnessPhaseTag::Wedged).await;
+        assert_eq!(
+            held.header.compact_outcome.unwrap().status,
+            CompactStatus::Unconfirmed
+        );
+        if blocked {
+            assert!(!forwarder.is_finished());
+        }
+    })
+    .catch_unwind()
+    .await;
+    for (point, pause) in points.iter().zip(&pauses) {
+        if let Some(armed) = calm_truth::test_seam::take(point, card) {
+            armed.release.notify_one();
+        }
+        pause.release.notify_one();
+    }
+    if let Some(task) = compact_task {
+        task.abort();
+        let _ = task.await;
+    }
+    drop(attribution);
+    drop(peer);
+    let shutdown = fx.harness.shutdown().await;
+    let join = if joined {
+        None
+    } else {
+        Some(tokio::time::timeout(Duration::from_secs(5), &mut forwarder).await)
+    };
+    if matches!(join, Some(Err(_))) {
+        forwarder.abort();
+        let _ = (&mut forwarder).await;
+    }
+    if let Err(panic) = result {
+        std::panic::resume_unwind(panic);
+    }
+    shutdown.unwrap();
+    if let Some(join) = join {
+        join.unwrap().unwrap();
+    }
 }
 
 #[tokio::test]

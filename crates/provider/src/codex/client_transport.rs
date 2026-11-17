@@ -92,17 +92,22 @@ pub(super) struct ReaderLifetime {
     pub(super) sender: tokio::sync::mpsc::UnboundedSender<super::Notification>,
     pub(super) pending: super::Pending,
     transport: std::sync::Arc<TransportAbort>,
+    // Fields drop in declaration order after Drop::drop: sender must disappear
+    // before this latch wakes observers using notification_stream_closed().
+    _termination: PublishTermination,
 }
 impl ReaderLifetime {
     pub(super) fn new(
         sender: tokio::sync::mpsc::UnboundedSender<super::Notification>,
         pending: super::Pending,
         transport: std::sync::Arc<TransportAbort>,
+        termination: std::sync::Arc<ReaderTermination>,
     ) -> Self {
         Self {
             sender,
             pending,
             transport,
+            _termination: PublishTermination(termination),
         }
     }
 }
@@ -116,5 +121,75 @@ impl Drop for ReaderLifetime {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clear();
+    }
+}
+
+/// Irreversible local reader termination, published after the notification sender drops.
+#[derive(Default)]
+pub(super) struct ReaderTermination {
+    state: Mutex<TerminationState>,
+}
+#[derive(Default)]
+struct TerminationState {
+    finished: bool,
+    next: u64,
+    watchers: std::collections::HashMap<u64, std::sync::Weak<tokio::sync::Notify>>,
+}
+
+/// Keeps a local termination hint registered without retaining the connection or signal.
+#[must_use]
+pub struct LocalTerminationWatch {
+    owner: std::sync::Weak<ReaderTermination>,
+    token: u64,
+}
+impl Drop for LocalTerminationWatch {
+    fn drop(&mut self) {
+        if let Some(owner) = self.owner.upgrade() {
+            owner.state.lock().unwrap().watchers.remove(&self.token);
+        }
+    }
+}
+impl ReaderTermination {
+    pub(super) fn watch(
+        self: &std::sync::Arc<Self>,
+        signal: &std::sync::Arc<tokio::sync::Notify>,
+    ) -> LocalTerminationWatch {
+        let mut state = self.state.lock().unwrap();
+        let token = state.next;
+        state.next = state
+            .next
+            .checked_add(1)
+            .expect("termination watch token exhausted");
+        let finished = state.finished;
+        if !finished {
+            state
+                .watchers
+                .insert(token, std::sync::Arc::downgrade(signal));
+        }
+        drop(state);
+        if finished {
+            signal.notify_one();
+        }
+        LocalTerminationWatch {
+            owner: std::sync::Arc::downgrade(self),
+            token,
+        }
+    }
+    fn finish(&self) {
+        let watchers = {
+            let mut state = self.state.lock().unwrap();
+            state.finished = true;
+            std::mem::take(&mut state.watchers)
+        };
+        for signal in watchers.into_values().filter_map(|signal| signal.upgrade()) {
+            signal.notify_one();
+        }
+    }
+}
+
+struct PublishTermination(std::sync::Arc<ReaderTermination>);
+impl Drop for PublishTermination {
+    fn drop(&mut self) {
+        self.0.finish();
     }
 }

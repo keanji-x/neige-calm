@@ -707,6 +707,11 @@ impl PlannerHarness {
         let handle = Self {
             inner: Arc::clone(&inner),
         };
+        let source_loss = inner.inputs.canonical().and_then(|inputs| {
+            inner
+                .backend
+                .watch_native_source_loss(&inputs.progress_signal())
+        });
         let task = tokio::spawn(run_loop(
             inner,
             obs_rx,
@@ -715,6 +720,7 @@ impl PlannerHarness {
             events,
             live,
             announce_dropped_first,
+            source_loss,
         ));
         *handle
             .inner
@@ -1780,6 +1786,8 @@ fn harness_tick() -> tokio::time::Interval {
     tick
 }
 
+// The final guard must be an owned future argument, including before its first poll.
+#[allow(clippy::too_many_arguments)]
 async fn run_loop(
     inner: Arc<Inner>,
     mut observations: mpsc::Receiver<HarnessObservationCommand>,
@@ -1788,6 +1796,7 @@ async fn run_loop(
     mut events: PlannerEvents,
     live: LiveReplyWriter,
     announce_dropped_first: bool,
+    _source_loss: Option<crate::shared_codex_appserver::SourceLossWatch>,
 ) {
     // Early flush before the first command is served. Correctness does not rest on it:
     // `persist_snapshot_inner` drains the same list and refuses to write without it.
