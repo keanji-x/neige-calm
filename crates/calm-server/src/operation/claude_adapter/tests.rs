@@ -16,6 +16,9 @@ mod support;
 use support::*;
 
 #[cfg(test)]
+mod task_worker_validation_tests;
+
+#[cfg(test)]
 mod reader_head_tests;
 
 #[cfg(test)]

@@ -310,9 +310,9 @@ fn task_kind() -> Value {
             },
             "oneOf": [
                 {
-                    "description": "Agent task",
+                    "description": "Agent task; Claude workers are rejected during preparation",
                     "required": ["key", "kind", "goal", "ready", "declared_by"],
-                    "properties": { "kind": { "enum": ["agent", "codex"] } },
+                    "properties": { "kind": { "enum": ["agent", "codex", "claude"] } },
                     "not": { "anyOf": [
                         { "required": ["command"] }, { "required": ["tombstoned_by"] },
                         {
@@ -390,14 +390,14 @@ fn task_kind() -> Value {
                     "minLength": 1,
                     "maxLength": report_blocks::MAX_STRING_CHARS,
                     "pattern": "\\S",
-                    "description": "Natural-language objective. Required only for agent/codex tasks; forbidden for terminal tasks."
+                    "description": "Natural-language objective. Required for agent/codex/claude tasks; forbidden for terminal tasks."
                 },
                 "command": {
                     "type": "string",
                     "minLength": 1,
                     "maxLength": report_blocks::MAX_STRING_CHARS,
                     "pattern": "\\S",
-                    "description": "Exact Shell command passed verbatim as `/bin/sh -c <command>`. Required only for terminal tasks; forbidden for agent/codex tasks."
+                    "description": "Exact Shell command passed verbatim as `/bin/sh -c <command>`. Required only for terminal tasks; forbidden for agent/codex/claude tasks."
                 },
                 "acceptance": { "type": "string", "minLength": 1, "maxLength": report_blocks::MAX_STRING_CHARS, "pattern": "\\S" },
                 "gate": {

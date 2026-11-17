@@ -847,7 +847,10 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
         if self.repo.track_get(&payload.track_id).await?.is_none() {
             return Err(CalmError::NotFound(format!("track {}", payload.track_id)));
         }
-        Ok(())
+        // Keep persisted Claude task declarations readable, but admit no new workers.
+        Err(CalmError::BadRequest(
+            "unsupported_worker_provider: claude workers are not supported in-checkout".into(),
+        ))
     }
 
     async fn prepare_tx<'tx>(

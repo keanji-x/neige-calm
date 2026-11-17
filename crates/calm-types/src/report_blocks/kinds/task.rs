@@ -137,12 +137,6 @@ pub(super) fn validate_task(map: &Map<String, Value>, errors: &mut Vec<String>) 
         _ => {}
     }
     let in_checkout = map.get("spawn").and_then(Value::as_str) != Some("sub-track");
-    if task_kind == Some("claude") && in_checkout {
-        errors.push(
-            "kind: unsupported_worker_provider: claude workers are not supported in-checkout"
-                .into(),
-        );
-    }
     for field in ["provider", "model", "reasoning_effort"] {
         optional_non_empty_string(map, field, errors);
         if map.contains_key(field)

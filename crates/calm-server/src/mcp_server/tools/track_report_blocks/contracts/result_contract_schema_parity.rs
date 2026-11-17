@@ -219,5 +219,5 @@ fn agent_worker_selection_published_schema_matches_validator() {
             false,
         );
     }
-    check(agent("claude"), false);
+    check(agent("claude"), true);
 }

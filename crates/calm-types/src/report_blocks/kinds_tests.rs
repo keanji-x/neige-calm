@@ -934,11 +934,8 @@ fn agent_worker_task_selection_validates_provider_alias_and_placement() {
     }
     let mut task = valid_task();
     task["kind"] = json!("claude");
-    assert!(
-        validate_payload(KIND_TASK, &task)
-            .unwrap_err()
-            .contains("unsupported_worker_provider")
-    );
+    // Historical declarations remain readable; new launches are refused by preparation.
+    assert_eq!(validate_payload(KIND_TASK, &task), Ok(()));
     task["kind"] = json!("terminal");
     task["provider"] = json!("codex");
     assert!(validate_payload(KIND_TASK, &task).is_err());
