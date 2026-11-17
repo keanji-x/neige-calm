@@ -167,7 +167,7 @@ fn codex_worker_payload_omits_none_cwd_for_hash_stability() {
         finished_at_ms: None,
     };
     let (kind, built) = crate::scheduler::build_worker_payload(&task_with_cwd).unwrap();
-    assert_eq!(kind, "codex-worker");
+    assert_eq!(kind, "agent-worker");
     assert!(
         !built.as_object().unwrap().contains_key("cwd"),
         "build_worker_payload must not leak task.cwd into codex op identity"
@@ -799,3 +799,5 @@ mod agent_backend_tests;
 
 #[cfg(test)]
 mod agent_backend_binding_tests;
+
+mod task_worker_tests;

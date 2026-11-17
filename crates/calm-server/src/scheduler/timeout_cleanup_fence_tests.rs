@@ -18,6 +18,9 @@ struct Fixture {
 
 impl Fixture {
     async fn new(access: TaskAccess) -> Self {
+        Self::with_headless(access, false).await
+    }
+    async fn with_headless(access: TaskAccess, headless: bool) -> Self {
         let cwd = crate::operation::workspace_lease::upstream_tests::attached_repo();
         let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
         let area = repo
@@ -50,10 +53,34 @@ impl Fixture {
         .await
         .unwrap();
         crate::test_support::ensure_track_worktree(repo.db(), track.id.as_str()).await;
+        let seed_op = if headless {
+            Some(
+                SqlxOperationRepo::new(repo.db().clone())
+                    .insert_operation(
+                        "agent-worker",
+                        OperationKey {
+                            operation_key: "spawn-a".into(),
+                            idempotency_key: Some(format!("{}:a", track.id)),
+                            payload_hash: "a".into(),
+                        },
+                        json!({}),
+                    )
+                    .await
+                    .unwrap(),
+            )
+        } else {
+            None
+        };
         let write_db = (repo.db()).clone();
         write_db.writer().with_writer(|write_session| Box::pin(async move {
             let mut tx = write_session.begin_immediate().await.unwrap();
-            let (card, _) = calm_truth::db::sqlite::card_with_claude_worker_create_tx(
+            let card=if headless {
+                calm_truth::db::sqlite::task_worker_create_tx(&mut tx,"card-timeout".into(),"session-a".into(),seed_op.clone().expect("headless operation exists"),crate::model::NewCard {
+                    track_id:track.id.clone(),kind:"codex".into(),sort:None,title:None,
+                    payload:json!({"schemaVersion":1,"harness_profile":"task_worker","worker_provider":"codex","idempotency_key":format!("{}:a",track.id)}),
+                },crate::session_projection_repo::AgentProvider::Codex,None,repo.card_role_cache()).await.unwrap()
+            } else {
+                let (card, _) = calm_truth::db::sqlite::card_with_claude_worker_create_tx(
                 &mut tx,
                 "card-timeout".into(),
                 "session-a",
@@ -74,10 +101,12 @@ impl Fixture {
             )
             .await
             .unwrap();
+                card
+            };
             let mut task = tests::task("a", TaskStatus::Running, &[], 0);
             task.id = format!("{}:a", track.id);
             task.track_id = track.id.to_string();
-            task.kind = TaskKind::Claude;
+            task.kind = if headless {TaskKind::Agent} else {TaskKind::Claude};
             task.access = access;
             task.worker_card_id = Some(card.id.to_string());
             crate::test_support::insert_task_tx(&mut tx, &task)
@@ -89,9 +118,9 @@ impl Fixture {
                 .unwrap();
             tx.commit().await.unwrap();
             let operations = Arc::new(SqlxOperationRepo::new(repo.db().clone()));
-            let op = operations
+            let op=if let Some(op)=seed_op {op} else {operations
                 .insert_operation(
-                    "claude-worker",
+                    if headless {"agent-worker"} else {"claude-worker"},
                     OperationKey {
                         operation_key: "spawn-a".into(),
                         idempotency_key: Some(task.id.clone()),
@@ -100,7 +129,7 @@ impl Fixture {
                     json!({}),
                 )
                 .await
-                .unwrap();
+                .unwrap()};
             (repo.db()).writer().execute(sqlx::query("UPDATE operations SET target_type = 'card', target_id = ?, payload_json = ? WHERE id = ?")
                 .bind(card.id.as_str()).bind(json!({"actor": ActorId::KernelDispatcher}).to_string())
                 .bind(&op)).await.unwrap();
@@ -147,9 +176,19 @@ impl Fixture {
             tx.commit().await.unwrap();
             let events = EventBus::new();
             let completion = OperationCompletionBus::new();
+            let adapters:Vec<Arc<dyn crate::operation::ProviderAdapter>>=if headless {
+                let wiring=crate::harness::wiring::PlannerWiring::unconfigured_for_test(repo.clone());
+                let daemon=crate::shared_codex_appserver::SharedCodexAppServer::new_stub(repo.clone());
+                vec![Arc::new(crate::operation::agent_worker_adapter::AgentWorkerAdapter::new(
+                    repo.clone(),wiring.clone(),crate::planner_model::child_selection::ChildSelectionContext {
+                        availability:Arc::default(),claude:wiring.claude.clone(),acp:wiring.acp.clone(),codex:daemon.clone(),
+                    },crate::agent_backend_pool::codex::CodexBackends::single(daemon),crate::harness::HarnessRegistry::new(),
+                    repo.card_role_cache().clone(),repo.track_area_cache().clone(),None,cwd.path().into(),
+                    crate::operation::task_gate_run::GateRunWait::DEFAULT))]
+            } else {Vec::new()};
             let runtime = Arc::new(OperationRuntime::new_unchecked(
                 operations.clone(),
-                Vec::new(),
+                adapters,
                 events.clone(),
                 completion.clone(),
                 SpawnCtx::new(
@@ -559,4 +598,131 @@ async fn w_timeout_cleanup_already_ended_session_converges() {
             .await
             .expect("independent write operation")
     }
+}
+
+#[tokio::test]
+async fn agent_worker_turn_ended_fails_and_releases_lease_atomically() {
+    let f = Fixture::with_headless(TaskAccess::ReadWrite, true).await;
+    f.repo
+        .db()
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tasks SET status='running',status_detail=NULL WHERE id=?1")
+                .bind(&f.task.id),
+        )
+        .await
+        .unwrap();
+    crate::operation::agent_worker_adapter::settlement::settle(
+        f.repo.as_ref(),
+        &f.scheduler.events,
+        &f.scheduler.write,
+        &f.task.id,
+        f.card.id.as_str(),
+        "session-a",
+    )
+    .await
+    .unwrap();
+    let task = f.repo.task_get(&f.task.id).await.unwrap().unwrap();
+    assert_eq!(task.status, TaskStatus::Failed);
+    assert_eq!(task.status_detail.as_deref(), Some(WORKER_TURN_ENDED));
+    let lease: String = sqlx::query_scalar("SELECT state FROM workspace_leases WHERE lease_id=?1")
+        .bind(&f.lease)
+        .fetch_one(f.repo.pool())
+        .await
+        .unwrap();
+    assert_eq!(lease, "released");
+    let outcome: String =
+        sqlx::query_scalar("SELECT outcome FROM task_git_deliveries WHERE producer_attempt_id=?1")
+            .bind(&f.task.id)
+            .fetch_one(f.repo.pool())
+            .await
+            .unwrap();
+    assert_eq!(outcome, "failed");
+}
+
+#[tokio::test]
+async fn agent_worker_turn_ended_preserves_reported_outcome() {
+    let f = Fixture::with_headless(TaskAccess::ReadOnly, true).await;
+    // A report already settled the attempt before native completion arrived.
+    crate::operation::agent_worker_adapter::settlement::settle(
+        f.repo.as_ref(),
+        &f.scheduler.events,
+        &f.scheduler.write,
+        &f.task.id,
+        f.card.id.as_str(),
+        "session-a",
+    )
+    .await
+    .unwrap();
+    let task = f.repo.task_get(&f.task.id).await.unwrap().unwrap();
+    assert_eq!(task.status, TaskStatus::Failed);
+    assert_eq!(task.status_detail.as_deref(), Some("worker-timeout"));
+    let lease: String = sqlx::query_scalar("SELECT state FROM workspace_leases WHERE lease_id=?1")
+        .bind(&f.lease)
+        .fetch_one(f.repo.pool())
+        .await
+        .unwrap();
+    assert_eq!(lease, "released");
+}
+
+#[tokio::test]
+async fn agent_worker_turn_ended_rolls_back_failure_if_release_fails() {
+    let f = Fixture::with_headless(TaskAccess::ReadOnly, true).await;
+    f.repo
+        .db()
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tasks SET status='running',status_detail=NULL WHERE id=?1")
+                .bind(&f.task.id),
+        )
+        .await
+        .unwrap();
+    f.repo.db().writer().execute(sqlx::query("CREATE TRIGGER refuse_agent_worker_release BEFORE UPDATE OF state ON workspace_leases WHEN NEW.state='released' BEGIN SELECT RAISE(ABORT,'injected release failure'); END")).await.unwrap();
+    let result = crate::operation::agent_worker_adapter::settlement::settle(
+        f.repo.as_ref(),
+        &f.scheduler.events,
+        &f.scheduler.write,
+        &f.task.id,
+        f.card.id.as_str(),
+        "session-a",
+    )
+    .await;
+    assert!(result.is_err());
+    let task = f.repo.task_get(&f.task.id).await.unwrap().unwrap();
+    assert_eq!(task.status, TaskStatus::Running);
+    let lease: String = sqlx::query_scalar("SELECT state FROM workspace_leases WHERE lease_id=?1")
+        .bind(&f.lease)
+        .fetch_one(f.repo.pool())
+        .await
+        .unwrap();
+    assert_eq!(lease, "held");
+}
+
+#[tokio::test]
+async fn agent_worker_boot_recovery_fails_unfinished_session_and_releases_lease() {
+    let f = Fixture::with_headless(TaskAccess::ReadOnly, true).await;
+    f.repo
+        .db()
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tasks SET status='running',status_detail=NULL WHERE id=?1")
+                .bind(&f.task.id),
+        )
+        .await
+        .unwrap();
+    f.scheduler.sweep_boot().await;
+    assert!(f.scheduler.boot_sweep_completed());
+    assert_eq!(
+        f.repo.task_get(&f.task.id).await.unwrap().unwrap().status,
+        TaskStatus::Failed
+    );
+    assert_eq!(f.lease_state().await, "released");
+    let session = f
+        .repo
+        .session_get(&WorkerSessionId("session-a".into()))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(session.state, WorkerSessionState::Exited);
+    assert!(session.completed_at_ms.is_some());
 }

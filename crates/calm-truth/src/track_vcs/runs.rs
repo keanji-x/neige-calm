@@ -202,10 +202,10 @@ pub(super) async fn project_runs_tx(
                 canceled.remove(&key).as_ref(),
                 worker_card.is_some(),
             );
-            let kind = worker_card
-                .as_ref()
-                .and_then(run_kind_from_card)
-                .or_else(|| requested_kind.get(&key).copied())
+            let kind = requested_kind
+                .get(&key)
+                .copied()
+                .or_else(|| worker_card.as_ref().and_then(run_kind_from_card))
                 .unwrap_or("unknown")
                 .to_string();
             RunProjection {
@@ -350,10 +350,8 @@ pub(super) async fn project_run_by_key_tx(
         canceled.as_ref(),
         worker_card.is_some(),
     );
-    let kind = worker_card
-        .as_ref()
-        .and_then(run_kind_from_card)
-        .or(requested_kind)
+    let kind = requested_kind
+        .or_else(|| worker_card.as_ref().and_then(run_kind_from_card))
         .unwrap_or("unknown")
         .to_string();
 

@@ -1,5 +1,4 @@
-//! Bound TaskWorker protocol control. The scheduler adapter is wired in the next step.
-#![allow(dead_code)] // Step 3 installs the scheduler consumer.
+//! Bound TaskWorker protocol control used by the terminal-free task adapter.
 use super::*;
 use crate::acp_planner::session::{AcpPlannerSession, SessionParams};
 
@@ -46,6 +45,15 @@ impl WorkerTurn {
             backend: PlannerBackend(Arm::Acp(session)),
             thread,
             _held: Some(receiver),
+        }
+    }
+
+    /// Codex's shared notification bus outlives a daemon process; ACP emits a terminal event on exit.
+    pub(crate) fn source_available(&self) -> bool {
+        match &self.backend.0 {
+            Arm::Codex(daemon, _) => daemon.is_running_per_readiness(),
+            Arm::Acp(_) => true,
+            Arm::Claude(_) => unreachable!("TaskWorker has no Claude constructor"),
         }
     }
 

@@ -45,7 +45,6 @@ fn task_provider(
 
 /// Omitted values follow provider defaults on the fresh worker session. Explicit values are
 /// judged against the live catalog, including an effort supplied without an explicit model.
-#[allow(dead_code)] // Consumed by the step 3 worker adapter.
 pub(crate) async fn resolve_task_selection(
     access: &CatalogAccess<'_>,
     kind: TaskKind,

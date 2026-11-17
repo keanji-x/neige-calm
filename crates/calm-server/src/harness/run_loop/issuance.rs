@@ -662,6 +662,18 @@ pub(crate) struct TrackAdmissionFence {
     _guard: crate::per_card_lock::KeyedLockGuard,
 }
 impl TrackAdmissionFence {
+    pub(crate) fn try_for_worker(
+        track: &str,
+        locks: &crate::per_card_lock::KeyedLocks,
+    ) -> Result<Self> {
+        let guard = crate::per_card_lock::try_lock_key(locks, track)
+            .ok_or_else(|| CalmError::WorkspaceBusy(track.to_owned()))?;
+        Ok(Self {
+            track: track.into(),
+            _guard: guard,
+        })
+    }
+
     pub(crate) fn track(&self) -> &crate::ids::TrackId {
         &self.track
     }

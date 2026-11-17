@@ -1,7 +1,7 @@
 //! Human-only manual context compaction. The harness owns admission and sequencing.
 use crate::extract::{Json, Path};
 use crate::routes::{
-    planner_cards::card_runs_headless_harness, track_report_blocks::require_rest_user_actor_for,
+    planner_cards::human_harness_binding, track_report_blocks::require_rest_user_actor_for,
 };
 use crate::{
     actor::Actor,
@@ -62,7 +62,7 @@ pub(crate) async fn compact_planner_card(
         .write
         .verify_role(&card.id)
         .ok_or_else(|| CalmError::NotFound(format!("card {id}")))?;
-    if !card_runs_headless_harness(&card, role) {
+    if human_harness_binding(&card, role).is_none() {
         return Err(CalmError::Forbidden(
             "This card has no planner conversation.".into(),
         ));

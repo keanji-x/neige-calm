@@ -21,7 +21,7 @@ pub async fn task_stamp_missing_running_liveness_tx(
                running_started_at_ms = COALESCE(running_started_at_ms, ?2),
                updated_at_ms = ?2
            WHERE id = ?3
-             AND kind IN ('codex', 'claude')
+             AND kind IN ('agent', 'codex', 'claude')
              AND status = 'running'
              AND (running_deadline_ms IS NULL OR running_started_at_ms IS NULL)"#,
     )
@@ -52,7 +52,11 @@ pub async fn task_running_liveness_tx(
     let row: Option<(i64, i64, Option<i64>)> = sqlx::query_as(
         r#"SELECT running_started_at_ms,
                   running_deadline_ms,
-                  (SELECT MAX(updated_at_ms) FROM worker_flow_cursors WHERE card_id = ?2)
+                  (SELECT MAX(progress_at) FROM (
+                      SELECT MAX(updated_at_ms) AS progress_at FROM worker_flow_cursors WHERE card_id = ?2
+                      UNION ALL
+                      SELECT MAX(created_at_ms) AS progress_at FROM harness_items WHERE card_id = ?2
+                  ))
            FROM tasks
            WHERE id = ?1
              AND status = 'running'

@@ -353,7 +353,7 @@ pub async fn worker_op_targets_card_tx(
 
 /// The scheduler's worker-spawn ops that created card `?1` (see [`worker_op_targets_card_tx`]).
 const WORKER_SPAWN_OPS_OF_CARD: &str = "FROM operations \
-     WHERE kind IN ('codex-worker', 'terminal-worker', 'claude-worker') \
+     WHERE kind IN ('agent-worker', 'codex-worker', 'terminal-worker', 'claude-worker') \
        AND target_type = 'card' AND target_id = ?1 \
        AND json_extract(payload_json, '$.actor.kind') = 'KernelDispatcher'";
 

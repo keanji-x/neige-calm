@@ -39,6 +39,7 @@ use crate::db::sqlite::conversation::{
     self, AcceptedPendingInput, ClaimedSubmission, CurrentInputCarrier,
 };
 use crate::error::{CalmError, Result};
+use crate::harness::profile::require_human_harness_card_tx;
 
 pub(crate) async fn authorize_human_tx(
     tx: &mut Transaction<'_, Sqlite>,
@@ -46,13 +47,15 @@ pub(crate) async fn authorize_human_tx(
     card_id: &str,
 ) -> Result<crate::model::Area> {
     let area = conversation::conversation_area_tx(tx, card_id).await?;
-    crate::organization_access::require_area_access_tx(
+    let area = crate::organization_access::require_area_access_tx(
         tx,
         area.id.as_str(),
         principal,
         AreaAccess::Collaborate,
     )
-    .await
+    .await?;
+    require_human_harness_card_tx(tx, card_id).await?;
+    Ok(area)
 }
 
 pub(crate) async fn accept_human_tx(

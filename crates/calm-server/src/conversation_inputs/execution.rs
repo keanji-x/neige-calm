@@ -12,7 +12,8 @@ pub(crate) async fn authorize_human_resource_tx(
     card_id: &str,
 ) -> Result<()> {
     let area = conversation::conversation_area_tx(tx, card_id).await?;
-    authorize_legacy_human_area_tx(tx, source, area.id.as_str()).await
+    authorize_legacy_human_area_tx(tx, source, area.id.as_str()).await?;
+    require_human_harness_card_tx(tx, card_id).await
 }
 
 /// The same private deployment resource policy is used by canonical execution

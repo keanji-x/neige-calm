@@ -285,7 +285,7 @@ fn worker_payload_is_pure_function_of_the_row() {
     let codex = task("a", TaskStatus::Pending, &[], 0);
     let (kind1, p1) = build_worker_payload(&codex).unwrap();
     let (kind2, p2) = build_worker_payload(&codex).unwrap();
-    assert_eq!(kind1, "codex-worker");
+    assert_eq!(kind1, "agent-worker");
     assert_eq!(kind1, kind2);
     assert_eq!(p1, p2, "same row → byte-identical payload");
     assert_eq!(
@@ -306,17 +306,10 @@ fn worker_payload_is_pure_function_of_the_row() {
     let mut claude = task("cl", TaskStatus::Pending, &[], 0);
     claude.kind = TaskKind::Claude;
     claude.cwd = Some("/repo/from-plan".into());
-    let (kind, p) = build_worker_payload(&claude).unwrap();
-    assert_eq!(kind, "claude-worker");
-    assert_eq!(p["idempotency_key"], json!("w:cl"));
-    assert_eq!(
-        p["actor"],
-        serde_json::to_value(ActorId::KernelDispatcher).unwrap()
-    );
-    assert!(
-        !p.as_object().unwrap().contains_key("cwd"),
-        "claude cwd stays absent; prepare_tx supplies the lease cwd"
-    );
+    assert!(matches!(
+        build_worker_payload(&claude),
+        Err(CalmError::BadRequest(_))
+    ));
 
     let mut terminal = task("t", TaskStatus::Pending, &[], 0);
     terminal.kind = TaskKind::Terminal;
@@ -333,7 +326,7 @@ fn codex_payload_ignores_task_cwd_for_hash_stability() {
     let mut codex = task("a", TaskStatus::Pending, &[], 0);
     codex.cwd = Some("/repo".into());
     let (kind, p) = build_worker_payload(&codex).unwrap();
-    assert_eq!(kind, "codex-worker");
+    assert_eq!(kind, "agent-worker");
     assert!(
         !p.as_object().unwrap().contains_key("cwd"),
         "task.cwd must not affect codex worker payload identity"
@@ -362,37 +355,16 @@ fn codex_payload_ignores_task_cwd_for_hash_stability() {
 }
 
 #[test]
-fn claude_payload_ignores_task_cwd_for_hash_stability() {
-    let mut claude = task("a", TaskStatus::Pending, &[], 0);
-    claude.kind = TaskKind::Claude;
-    claude.cwd = Some("/repo".into());
-    let (kind, p) = build_worker_payload(&claude).unwrap();
-    assert_eq!(kind, "claude-worker");
-    assert!(
-        !p.as_object().unwrap().contains_key("cwd"),
-        "task.cwd must not affect claude worker payload identity"
-    );
-
-    let legacy_without_cwd = json!({
-        "actor": serde_json::to_value(ActorId::KernelDispatcher).unwrap(),
-        "track_id": "w",
-        "idempotency_key": "w:a",
-        "goal": "do",
-        "context": null,
-    });
-    assert_eq!(
-        stable_payload_hash(&p).unwrap(),
-        stable_payload_hash(&legacy_without_cwd).unwrap(),
-        "non-null task.cwd must hash like the no-cwd payload"
-    );
-
-    claude.cwd = None;
-    let (_, p1) = build_worker_payload(&claude).unwrap();
-    assert_eq!(p, p1);
-    assert_eq!(
-        stable_payload_hash(&p).unwrap(),
-        stable_payload_hash(&p1).unwrap()
-    );
+fn agent_worker_claude_payload_is_refused_for_every_cwd() {
+    for cwd in [None, Some("/repo".into())] {
+        let mut claude = task("a", TaskStatus::Pending, &[], 0);
+        claude.kind = TaskKind::Claude;
+        claude.cwd = cwd;
+        assert!(matches!(
+            build_worker_payload(&claude),
+            Err(CalmError::BadRequest(_))
+        ));
+    }
 }
 
 #[test]
@@ -786,4 +758,21 @@ async fn running_timeout_race_lost_does_not_teardown_or_release_lease() {
         })
         .await
         .expect("independent write operation")
+}
+
+#[test]
+fn agent_worker_scheduler_routes_agents_and_codex_to_headless_adapter() {
+    for kind in [TaskKind::Agent, TaskKind::Codex] {
+        let mut row = task("agent", TaskStatus::Pending, &[], 0);
+        row.kind = kind;
+        let (operation, payload) = build_worker_payload(&row).unwrap();
+        assert_eq!(operation, "agent-worker");
+        assert_eq!(payload["idempotency_key"], row.id);
+    }
+    let mut row = task("claude", TaskStatus::Pending, &[], 0);
+    row.kind = TaskKind::Claude;
+    assert!(matches!(
+        build_worker_payload(&row),
+        Err(CalmError::BadRequest(_))
+    ));
 }

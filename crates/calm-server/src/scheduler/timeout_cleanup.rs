@@ -36,7 +36,7 @@ impl Scheduler {
                     json_extract(handle_state_json, '$.timeout_cleanup.task_id') AS task_id,
                     json_extract(handle_state_json, '$.timeout_cleanup') AS marker
              FROM worker_sessions
-             WHERE provider IN ('codex', 'claude') AND card_id IS NOT NULL
+             WHERE provider != 'terminal' AND card_id IS NOT NULL
                AND json_extract(handle_state_json, '$.timeout_cleanup.requested_at_ms') IS NOT NULL
                AND json_type(handle_state_json, '$.timeout_cleanup.task_id') = 'text'
              ORDER BY updated_at_ms ASC, id ASC",
@@ -66,6 +66,18 @@ impl Scheduler {
             return;
         };
         for cleanup in worker_rows {
+            if let Ok(Some(session)) = self
+                .repo
+                .session_projection_by_id(&cleanup.session_id)
+                .await
+                && session.kind == crate::session_projection_repo::WorkerSessionKind::ManagedWorker
+            {
+                if let Some(harness) = self.compaction_harness.get() {
+                    harness.interrupt_task_worker(&cleanup.session_id);
+                }
+                continue;
+            }
+
             if let Err(error) = self
                 .cleanup_timeout_worker(cleanup.clone(), runtime.clone())
                 .await

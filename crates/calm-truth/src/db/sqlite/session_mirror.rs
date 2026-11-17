@@ -61,14 +61,11 @@ async fn worker_session_track_id_for_card_tx(
 fn runtime_init_session_identity(
     init: &WorkerSessionInit,
 ) -> WorkerSessionProjectionResult<(WorkerProviderKind, SessionMode, WorkerContract)> {
-    if init.kind == WorkerSessionKind::ManagedWorker {
-        return Err(runtime_message(
-            "managed worker session execution is not wired yet",
-        ));
-    }
     if !matches!(
         init.kind,
-        WorkerSessionKind::SharedPlanner | WorkerSessionKind::ManagedAssistant
+        WorkerSessionKind::SharedPlanner
+            | WorkerSessionKind::ManagedAssistant
+            | WorkerSessionKind::ManagedWorker
     ) {
         return Ok(derive_session_identity(&init.kind));
     }
@@ -87,7 +84,9 @@ fn runtime_init_session_identity(
                 init.id
             ))
         })?;
-    let contract = if init.kind == WorkerSessionKind::ManagedAssistant {
+    let contract = if init.kind == WorkerSessionKind::ManagedWorker {
+        WorkerContract::Executor
+    } else if init.kind == WorkerSessionKind::ManagedAssistant {
         WorkerContract::Assistant
     } else {
         WorkerContract::Planner

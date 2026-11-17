@@ -13,9 +13,17 @@ pub(crate) trait HarnessProfileExt: Sized {
     fn from_shape(kind: &str, role: CardRole, payload: &Value) -> Option<Self>;
     fn session_kind(self) -> crate::session_projection_repo::WorkerSessionKind;
     fn mcp_role(self) -> Option<CardRole>;
+    fn accepts_human_input(self) -> bool;
 }
 
 impl HarnessProfileExt for HarnessProfile {
+    fn accepts_human_input(self) -> bool {
+        match self {
+            Self::Planner | Self::Assistant | Self::PlainChat => true,
+            Self::TaskWorker => false,
+        }
+    }
+
     fn from_shape(kind: &str, role: CardRole, payload: &Value) -> Option<Self> {
         calm_truth::planner_binding::profile_from_shape(kind, role, payload)
     }
@@ -38,6 +46,21 @@ impl HarnessProfileExt for HarnessProfile {
             Self::PlainChat | Self::TaskWorker => None,
         }
     }
+}
+
+pub(crate) async fn require_human_harness_card_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    card_id: &str,
+) -> crate::error::Result<()> {
+    let shape = crate::db::sqlite::card_execution_shape_tx(tx, card_id).await?;
+    if calm_truth::planner_binding::profile_from_shape(&shape.kind, shape.role, &shape.payload)
+        .is_some_and(|profile| !profile.accepts_human_input())
+    {
+        return Err(crate::error::CalmError::Forbidden(
+            "TaskWorker accepts no human input".into(),
+        ));
+    }
+    Ok(())
 }
 
 /// Server admission wraps the Truth decoder; backend capability remains server-owned.

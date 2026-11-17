@@ -25,7 +25,7 @@ use crate::model::CardPatch;
 use crate::operation::codex_adapter::card_payload_get_tx;
 use crate::planner_model::CardModelSelection;
 use crate::routes::cards::card_scope;
-use crate::routes::planner_cards::card_runs_headless_harness;
+use crate::routes::planner_cards::human_harness_binding;
 use crate::routes::track_report_blocks::require_rest_user_actor_for;
 use crate::state::{CodexShellState, RouteState, WorkerState};
 
@@ -114,7 +114,7 @@ pub(crate) async fn set_planner_model(
         .write
         .verify_role(&card.id)
         .ok_or_else(|| CalmError::NotFound(format!("card {id}")))?;
-    if !card_runs_headless_harness(&card, role) {
+    if human_harness_binding(&card, role).is_none() {
         return Err(CalmError::Forbidden(format!(
             "card {id} is not a planner codex card",
         )));
@@ -160,6 +160,7 @@ pub(crate) async fn set_planner_model(
             let card_id = card_id.to_string();
             move |tx| {
                 Box::pin(async move {
+                    crate::harness::profile::require_human_harness_card_tx(tx, &card_id).await?;
                     // Read-modify-write inside the transaction: the payload column is replaced wholesale.
                     let mut payload = card_payload_get_tx(tx, &card_id).await?;
                     let map = payload.as_object_mut().ok_or_else(|| {

@@ -369,6 +369,11 @@ impl Scheduler {
     pub fn poke_worker_cleanups(self: &Arc<Self>) {
         let this = Arc::clone(self);
         tokio::spawn(async move {
+            if let Some(runtime) = this.operation_runtime.upgrade()
+                && let Err(error) = runtime.reconcile_sessions().await
+            {
+                tracing::warn!(%error,"worker cleanup recovery deferred");
+            }
             this.sweep_timeout_worker_cleanups().await;
         });
     }

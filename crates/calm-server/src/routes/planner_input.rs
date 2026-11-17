@@ -17,7 +17,7 @@ use crate::extract::{Json, JsonBody, Path};
 use crate::harness::queue::{MutationRefused, QueueEntryId, QueueMutation};
 use crate::harness::{HarnessPhaseTag, SteerRefused};
 use crate::ids::{ActorId, CardId};
-use crate::routes::planner_cards::{card_runs_headless_harness, validate_planner_input_text};
+use crate::routes::planner_cards::{human_harness_binding, validate_planner_input_text};
 use crate::routes::track_report_blocks::require_rest_user_actor_for;
 use crate::state::{RouteState, WorkerState};
 
@@ -132,7 +132,7 @@ async fn resolve(
         .write
         .verify_role(&card.id)
         .ok_or_else(|| CalmError::NotFound(format!("card {card_id}")))?;
-    if !card_runs_headless_harness(&card, role) {
+    if human_harness_binding(&card, role).is_none() {
         return Err(CalmError::Forbidden(format!(
             "card {card_id} is not a planner codex card",
         )));

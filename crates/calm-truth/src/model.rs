@@ -300,19 +300,25 @@ pub enum TaskKind {
 }
 
 impl TaskKind {
-    const CHECKOUT_WORKERS: [(Self, &'static str); 3] = [
+    const CHECKOUT_WORKERS: [(Self, &'static str); 5] = [
+        (Self::Agent, "agent-worker"),
+        (Self::Codex, "agent-worker"),
         (Self::Codex, "codex-worker"),
         (Self::Claude, "claude-worker"),
         (Self::Terminal, "terminal-worker"),
     ];
 
-    /// The operation whose preparation owns a task's checkout admission.
-    /// Compact and child-track lifecycle work do not acquire worker checkouts.
+    /// The current operation used for new checkout executions.
     pub fn worker_operation_kind(self) -> Option<&'static str> {
+        self.worker_operation_kinds().next()
+    }
+
+    /// Current and historical operations belonging to this declaration kind.
+    pub fn worker_operation_kinds(self) -> impl Iterator<Item = &'static str> {
         Self::CHECKOUT_WORKERS
-            .iter()
-            .find(|(kind, _)| *kind == self)
-            .map(|(_, operation)| *operation)
+            .into_iter()
+            .filter(move |(kind, _)| *kind == self)
+            .map(|(_, operation)| operation)
     }
 
     pub fn from_worker_operation_kind(operation: &str) -> Option<Self> {

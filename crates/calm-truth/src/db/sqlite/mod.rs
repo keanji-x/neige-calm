@@ -528,3 +528,6 @@ pub mod session_backend;
 mod session_backend_tests;
 
 pub mod claude_session_launch;
+
+mod task_worker;
+pub use task_worker::task_worker_create_tx;

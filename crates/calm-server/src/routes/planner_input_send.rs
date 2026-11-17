@@ -14,7 +14,7 @@ use crate::ids::{ActorId, CardId};
 use crate::operation::planner_start_fence::CardStartFence;
 use crate::per_card_lock::lock_key;
 use crate::routes::idempotency_key::{parse_idempotency_key_header, stable_payload_hash};
-use crate::routes::planner_cards::{card_runs_headless_harness, validate_planner_input};
+use crate::routes::planner_cards::{human_harness_binding, validate_planner_input};
 use crate::routes::planner_session::dormant;
 use crate::routes::track_report_blocks::require_rest_user_actor_for;
 use crate::session_projection_repo::WorkerSessionProjection;
@@ -188,7 +188,7 @@ async fn send_keyed(
         .write
         .verify_role(&card.id)
         .ok_or_else(|| CalmError::NotFound(format!("card {id}")))?;
-    if !card_runs_headless_harness(&card, role) {
+    if human_harness_binding(&card, role).is_none() {
         return Err(CalmError::Forbidden(format!(
             "card {id} is not a planner codex card",
         )));

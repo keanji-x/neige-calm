@@ -238,17 +238,14 @@ pub(super) async fn runtimes_active_for_kind_from_pool(
     pool: &SqlitePool,
     kind: WorkerSessionKind,
 ) -> WorkerSessionProjectionResult<Vec<WorkerSessionProjection>> {
-    if kind == WorkerSessionKind::ManagedWorker {
-        return Err(super::session_row::runtime_message(
-            "managed worker session execution is not wired yet",
-        ));
-    }
     let (provider, _mode, contract) = derive_session_identity(&kind);
     // A Planner row carries its own provider (`WorkerSessionInit::shared_planner`), so the
     // managed contract selects every registered backend.
     let provider_filter = if matches!(
         kind,
-        WorkerSessionKind::SharedPlanner | WorkerSessionKind::ManagedAssistant
+        WorkerSessionKind::SharedPlanner
+            | WorkerSessionKind::ManagedAssistant
+            | WorkerSessionKind::ManagedWorker
     ) {
         None
     } else {
@@ -259,12 +256,16 @@ pub(super) async fn runtimes_active_for_kind_from_pool(
            WHERE (?1 IS NULL OR ws.provider = ?1)
              AND (?1 IS NOT NULL OR ws.provider != 'terminal')
              AND ws.contract = ?2
+             AND (?3 = 0 OR json_extract(c.payload,'$.harness_profile')='task_worker')
+             AND (?4 = 0 OR coalesce(json_extract(c.payload,'$.harness_profile'),'')!='task_worker')
              AND ws.state IN ('starting', 'running', 'idle', 'turn_pending')
            ORDER BY ws.created_at_ms ASC, c.id ASC"#
     );
     let rows = sqlx::query(&sql)
         .bind(provider_filter)
         .bind(contract.as_db_str())
+        .bind(kind == WorkerSessionKind::ManagedWorker)
+        .bind(kind == WorkerSessionKind::CodexCard)
         .fetch_all(pool)
         .await?;
     rows.iter().map(card_runtime_from_ws_join_row).collect()
