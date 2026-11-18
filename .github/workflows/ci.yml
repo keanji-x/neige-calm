@@ -497,7 +497,7 @@ jobs:
     needs: changes
     if: ${{ always() && (github.event_name == 'pull_request' || github.event_name == 'push') && (needs.changes.result != 'success' || needs.changes.outputs.rust_changed == 'true') }}
     runs-on: macos-latest
-    timeout-minutes: 45
+    timeout-minutes: 75
     env:
       CARGO_BUILD_JOBS: "6"
       CARGO_PROFILE_DEV_DEBUG: "0"
