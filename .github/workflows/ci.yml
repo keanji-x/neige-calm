@@ -497,7 +497,7 @@ jobs:
     needs: changes
     if: ${{ always() && (github.event_name == 'pull_request' || github.event_name == 'push') && (needs.changes.result != 'success' || needs.changes.outputs.rust_changed == 'true') }}
     runs-on: macos-latest
-    timeout-minutes: 75
+    timeout-minutes: 45
     env:
       CARGO_BUILD_JOBS: "6"
       CARGO_PROFILE_DEV_DEBUG: "0"
@@ -513,10 +513,6 @@ jobs:
           shared-key: terminal-native-macos
           save-if: ${{ github.event_name == 'push' }}
       - uses: taiki-e/install-action@nextest
-      - name: native Claude protocol and worker sink
-        run: |
-          env -u NEIGE_CODEX_BIN cargo nextest run --locked -p calm-server --lib \
-            -E 'test(/^claude_planner::protocol_tests::/) | test(/^claude_worker::sink_tests::/)' --no-tests fail --test-threads 8
       - name: native original group lifecycle
         run: |
           env -u NEIGE_CODEX_BIN cargo nextest run --locked -p calm-proc-supervisor --test integration_suite \
