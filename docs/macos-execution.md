@@ -97,6 +97,12 @@ facts are retained before their first database publication, including ordinary
 publication failures. Settlement requires the same Recorded scope and a native
 empty-group observation; it grants no permission over a later listener.
 
+Persisted takeover requires the saved PID to lead the recorded group. The owner
+checks native group membership and birth before the handshake and before
+installing the connection. A stale socket whose peer is a nonleader authorizes
+signals only to that verified peer. A live launcher or sibling keeps the recovery
+record in place until the original group is empty.
+
 Endpoint cleanup holds the verified parent directory descriptor, rejects
 symlinks and non-socket leaves, and uses public `unlinkat(AT_NODELETEBUSY)`.
 Automatic cleanup requires that capability on the host filesystem. Unsupported

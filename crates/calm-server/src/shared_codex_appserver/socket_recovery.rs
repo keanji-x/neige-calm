@@ -218,7 +218,7 @@ impl SharedCodexAppServer {
                     "listener process {peer_pid} identity unavailable"
                 ))
             })?;
-        macos_process::terminate_listener(listener, identity.pgid, grace)
+        macos_process::terminate_listener(listener, grace)
             .await
             .map_err(|e| {
                 CalmError::CodexAppServer(format!("reap listener process {peer_pid}: {e}"))

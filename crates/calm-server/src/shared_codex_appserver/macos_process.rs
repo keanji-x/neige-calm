@@ -198,17 +198,6 @@ pub(super) async fn terminate_identity(
     boot: &str,
     grace: Duration,
 ) -> io::Result<()> {
-    terminate_identity_with_listener(pid, pgid, start, boot, grace, None).await
-}
-
-async fn terminate_identity_with_listener(
-    pid: i32,
-    pgid: Option<i32>,
-    start: u64,
-    boot: &str,
-    grace: Duration,
-    listener: Option<MacProcess>,
-) -> io::Result<()> {
     if read_boot_id().as_deref() != Some(boot) {
         return Err(io::Error::other("original boot identity unavailable"));
     }
@@ -220,17 +209,13 @@ async fn terminate_identity_with_listener(
             Err(io::Error::other("leader absent with unresolved group"))
         };
     };
-    let members = capture_members(leader, pgid, listener)?;
+    let members = capture_members(leader, pgid)?;
     terminate_members(leader, pgid, &members, grace).await
 }
 
 /// The caller proves authority over this leader. External callers require a live
 /// identity; an owned Child may also pin a terminal leader until it is reaped.
-fn capture_members(
-    leader: MacProcess,
-    pgid: Option<i32>,
-    listener: Option<MacProcess>,
-) -> io::Result<Vec<MacProcess>> {
+fn capture_members(leader: MacProcess, pgid: Option<i32>) -> io::Result<Vec<MacProcess>> {
     let members = match pgid {
         Some(group) if group == leader.pid && leader.pgid == group => observe_group(group)?,
         Some(_) => return Err(io::Error::other("leader group identity mismatch")),
@@ -240,11 +225,6 @@ fn capture_members(
     // Later scans may certify emptiness, but can never add signal targets.
     if read_macos_process(leader.pid)? != Some(leader) || !members.contains(&leader) {
         return Err(io::Error::other("leader changed during member capture"));
-    }
-    if let Some(listener) = listener
-        && (!members.contains(&listener) || read_macos_process(listener.pid)? != Some(listener))
-    {
-        return Err(io::Error::other("listener changed during member capture"));
     }
     Ok(members)
 }
@@ -260,7 +240,7 @@ fn owned_members(child: &Child, pgid: i32) -> io::Result<Option<(MacProcess, Vec
     if leader.pid != pgid || leader.pgid != pgid {
         return Err(io::Error::other("owned child group identity mismatch"));
     }
-    let members = match capture_members(leader, Some(pgid), None) {
+    let members = match capture_members(leader, Some(pgid)) {
         Ok(members) => members,
         Err(error) => {
             // The Child pin still authorizes its own verified incarnation. A
@@ -360,30 +340,32 @@ async fn terminate_members(
 
 pub(super) async fn terminate_listener(
     identity: ListenerIdentity,
-    pgid: Option<i32>,
     grace: Duration,
 ) -> io::Result<()> {
-    // A socket peer can be a child of its launcher. Capture the live leader of
-    // the peer's observed group before capturing any signal targets. This is
-    // listener authority, not permission to repair a corrupt persisted tuple.
-    let leader = match pgid {
-        Some(group) if group != identity.process.pgid => {
-            return Err(io::Error::other("listener group identity mismatch"));
-        }
-        Some(group) if group != identity.process.pid => read_macos_process(group)?
-            .filter(|leader| leader.pgid == group && !leader.is_zombie)
-            .ok_or_else(|| io::Error::other("listener group leader unavailable"))?,
-        _ => identity.process,
-    };
-    terminate_identity_with_listener(
-        leader.pid,
-        pgid,
-        leader.start_time,
-        &identity.boot_id,
-        grace,
-        Some(identity.process),
-    )
-    .await
+    let peer = identity.process;
+    let group = peer.pgid;
+    if group == peer.pid {
+        return terminate_identity(
+            peer.pid,
+            Some(group),
+            peer.start_time,
+            &identity.boot_id,
+            grace,
+        )
+        .await;
+    }
+    // A socket identifies its peer. Membership in a live launcher's group
+    // supplies the scope to observe, while only the peer may receive signals.
+    if group <= 1
+        || read_boot_id().as_deref() != Some(&identity.boot_id)
+        || !read_macos_process(group)?
+            .is_some_and(|leader| leader.pgid == group && !leader.is_zombie)
+        || peer.is_zombie
+        || read_macos_process(peer.pid)? != Some(peer)
+    {
+        return Err(io::Error::other("nonleader listener identity unavailable"));
+    }
+    terminate_members(peer, Some(group), &[peer], grace).await
 }
 
 #[cfg(test)]
@@ -419,7 +401,7 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(50)).await;
         let grace = Duration::from_millis(100);
         let started = Instant::now();
-        terminate_listener(watcher, Some(pid), grace).await.unwrap();
+        terminate_listener(watcher, grace).await.unwrap();
         assert!(started.elapsed() >= grace);
         assert!(!child.wait().unwrap().success());
     }
@@ -437,7 +419,7 @@ mod tests {
         let watcher = ListenerIdentity::new(pid).unwrap();
         tokio::time::sleep(Duration::from_millis(50)).await;
         let started = Instant::now();
-        terminate_listener(watcher, Some(pid), Duration::from_secs(5))
+        terminate_listener(watcher, Duration::from_secs(5))
             .await
             .unwrap();
         assert!(started.elapsed() < Duration::from_secs(2));
@@ -460,7 +442,7 @@ mod tests {
         assert!(!child.wait().unwrap().success());
         let grace = Duration::from_secs(1);
         let started = Instant::now();
-        terminate_listener(watcher, Some(pid), grace).await.unwrap();
+        terminate_listener(watcher, grace).await.unwrap();
         assert!(started.elapsed() < grace);
     }
 

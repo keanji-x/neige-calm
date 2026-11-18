@@ -28,7 +28,7 @@ fn listener_group() -> (Owned, Owned, Owned) {
 async fn native_macos_recovery_nonleader_can_only_stop_the_socket_peer() {
     let (mut leader, mut peer, mut sibling) = listener_group();
     let identity = ListenerIdentity::new(peer.pid()).unwrap();
-    let result = terminate_listener(identity, Some(leader.pid()), Duration::from_millis(20)).await;
+    let result = terminate_listener(identity, Duration::from_millis(20)).await;
     let survivors = [leader.alive(), peer.alive(), sibling.alive()];
     drop((leader, peer, sibling));
     assert_eq!(survivors, [true, false, true]);
@@ -43,7 +43,7 @@ async fn native_macos_recovery_nonleader_listener_stale_birth_never_signals() {
     assert_eq!(identity.process.pgid, pgid);
     // Deliberately stale input; the boot and all children remain real and live.
     identity.process.start_time += 1;
-    let result = terminate_listener(identity, Some(pgid), Duration::from_millis(20)).await;
+    let result = terminate_listener(identity, Duration::from_millis(20)).await;
     let survivors = [leader.alive(), peer.alive(), member.alive()];
     // Owned kills and reaps every child even when the assertions below fail.
     drop((leader, peer, member));
@@ -67,7 +67,7 @@ async fn native_macos_recovery_nonleader_listener_reaped_leader_never_signals() 
     );
     let identity = ListenerIdentity::new(peer.pid()).unwrap();
     assert_eq!(identity.process.pgid, pgid);
-    let result = terminate_listener(identity, Some(pgid), Duration::from_millis(20)).await;
+    let result = terminate_listener(identity, Duration::from_millis(20)).await;
     let survivors = [peer.alive(), member.alive()];
     drop((leader, peer, member));
     assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::Other);

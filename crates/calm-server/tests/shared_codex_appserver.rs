@@ -1729,7 +1729,7 @@ async fn stale_socket_with_live_listener_reaped_before_relaunch() {
 }
 
 #[tokio::test]
-async fn reap_listener_uses_getpgid_to_derive_pgid_from_peer_pid() {
+async fn reap_listener_allows_relaunch_after_nonleader_peer_exits() {
     let root = tempfile::tempdir().unwrap();
     let sock = root.path().join("run/codex-appserver.sock");
     std::fs::create_dir_all(sock.parent().unwrap()).unwrap();
@@ -1745,7 +1745,7 @@ async fn reap_listener_uses_getpgid_to_derive_pgid_from_peer_pid() {
     result.unwrap();
     assert!(
         peer_gone,
-        "stale listener reap must kill peer_pid's real pgid, not kill(-peer_pid)"
+        "the stale listener must exit before its endpoint can be reused"
     );
 }
 

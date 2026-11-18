@@ -2955,22 +2955,11 @@ impl SharedCodexAppServer {
             runtime,
             child,
             watcher,
-            recovery,
+            recovery: _legacy_recovery,
         }) = running
         else {
             return true;
         };
-        #[cfg(target_os = "macos")]
-        if !self
-            .repo
-            .shared_daemon_runtime_get(self.backend_id.as_str())
-            .await
-            .is_ok_and(|record| record.recovery == recovery)
-        {
-            return false;
-        }
-        #[cfg(not(target_os = "macos"))]
-        let _ = recovery;
         watcher.handle.abort();
         if let Some(mut child) = child {
             terminate_group_with_grace(
@@ -2980,13 +2969,10 @@ impl SharedCodexAppServer {
                 self.stop_grace,
             )
             .await;
-            #[cfg(target_os = "macos")]
-            return macos_process::group_empty(runtime.pgid);
-            #[cfg(not(target_os = "macos"))]
             return true;
         }
 
-        let settled = reap_verified_process_group(
+        reap_verified_process_group(
             paths,
             runtime.pid,
             runtime.pgid,
@@ -2994,13 +2980,7 @@ impl SharedCodexAppServer {
             &runtime.boot_id,
             self.stop_grace,
         )
-        .await;
-        #[cfg(target_os = "macos")]
-        return settled;
-        #[cfg(not(target_os = "macos"))]
-        {
-            settled
-        }
+        .await
     }
 
     #[cfg(not(target_os = "macos"))]
