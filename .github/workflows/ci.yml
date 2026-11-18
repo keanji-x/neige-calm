@@ -533,7 +533,7 @@ jobs:
         run: |
           env -u NEIGE_CODEX_BIN cargo nextest run --locked -p calm-server --lib --test shared_codex_appserver \
             -E 'test(/^shared_codex_appserver::|^shared_takeover_failure::|^reap_listener_/)' \
-            --no-tests fail --no-fail-fast --test-threads 8
+            --no-tests fail --no-fail-fast --test-threads 2
       - name: build real renderer supervisor
         run: env -u NEIGE_CODEX_BIN cargo build --locked -p calm-proc-supervisor --bin calm-proc-supervisor
       - name: renderer retained resources

@@ -21,7 +21,7 @@ impl SpawnFixture {
         // cancellation's Drop belt cannot accidentally stand in for an empty proof.
         std::fs::write(
             &executable,
-            r#"#!/usr/bin/python3
+            r#"#!/usr/bin/env python3
 import os,pathlib,signal,socket,sys,time
 base = pathlib.Path(__file__)
 def stop(*_):

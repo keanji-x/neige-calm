@@ -188,7 +188,7 @@ async fn native_macos_recovery_reaped_child_drop_cannot_signal_original_group() 
     let pid = child.id().unwrap() as i32;
     s.capture_owned(pid);
     let mut member = Owned(
-        Command::new("/usr/bin/python3")
+        Command::new("python3")
             .args([
                 "-c",
                 "print('ready',flush=True); input(); print('alive',flush=True)",

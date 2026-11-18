@@ -22,6 +22,34 @@ impl Drop for Owned {
     }
 }
 impl Owned {
+    // Each child reports its own PID after installing its signal handler and
+    // binding its socket (when present). Keep the direct Child pinned on errors.
+    fn spawn_ready(command: &mut Command) -> Self {
+        use std::io::{BufRead, BufReader};
+        use std::os::fd::OwnedFd;
+        use std::os::unix::net::UnixStream;
+
+        let (reader, writer) = UnixStream::pair().unwrap();
+        reader
+            .set_read_timeout(Some(Duration::from_secs(30)))
+            .unwrap();
+        let mut child = Self(
+            command
+                .stdin(Stdio::null())
+                .stdout(OwnedFd::from(writer))
+                .spawn()
+                .unwrap(),
+        );
+        let mut ready = String::new();
+        let result = BufReader::new(reader).read_line(&mut ready);
+        assert!(
+            result.is_ok() && ready.trim().parse::<i32>() == Ok(child.pid()),
+            "fixture child {} failed to report readiness ({result:?}, {ready:?}, status {:?})",
+            child.pid(),
+            child.0.try_wait().unwrap()
+        );
+        child
+    }
     fn pid(&self) -> i32 {
         self.0.id() as i32
     }
@@ -49,7 +77,8 @@ impl Fixture {
         Self::with_storage(polluted, false).await
     }
     async fn with_storage(polluted: bool, file_backed: bool) -> Self {
-        let root = tempfile::tempdir().unwrap();
+        // Darwin sockaddr_un must hold the complete fixture socket path.
+        let root = tempfile::tempdir_in("/private/tmp").unwrap();
         let config = Config::parse_from([
             "calm-server",
             "--data-dir",
@@ -86,26 +115,18 @@ impl Fixture {
         let daemon = SharedCodexAppServer::new(&config, Arc::new(home), repo.clone());
         let paths = daemon.verify_backend_isolation().await.unwrap();
         std::fs::create_dir_all(&paths.paths().run).unwrap();
-        let mut command = Command::new("/usr/bin/python3");
-        command.args(["-c", "import socket,signal,sys,time,pathlib\ndef stop(*_):\n if pathlib.Path(sys.argv[2]).exists():\n  pathlib.Path(sys.argv[3]).touch()\n  while not pathlib.Path(sys.argv[4]).exists(): time.sleep(0.005)\n sys.exit(0)\nsignal.signal(signal.SIGTERM,stop)\ns=socket.socket(socket.AF_UNIX); s.bind(sys.argv[1]); s.listen(); clients=[]\nwhile True:\n c,_=s.accept(); clients.append(c); c.sendall(b'not-json\\n')\n"])
+        let mut command = Command::new("python3");
+        command.args(["-c", "import os,socket,signal,sys,time,pathlib\ndef stop(*_):\n if pathlib.Path(sys.argv[2]).exists():\n  pathlib.Path(sys.argv[3]).touch()\n  while not pathlib.Path(sys.argv[4]).exists(): time.sleep(0.005)\n sys.exit(0)\nsignal.signal(signal.SIGTERM,stop)\ns=socket.socket(socket.AF_UNIX); s.bind(sys.argv[1]); s.listen(); clients=[]\nprint(os.getpid(),flush=True)\nwhile True:\n c,_=s.accept(); clients.append(c); c.sendall(b'not-json\\n')\n"])
             .arg(&paths.paths().socket)
             .arg(root.path().join("hold-term"))
             .arg(root.path().join("term-seen"))
             .arg(root.path().join("release-term"))
             .process_group(0);
-        let leader = Owned(command.spawn().unwrap());
-        let ready = root.path().join("member-ready");
-        let member = Owned(
+        let leader = Owned::spawn_ready(&mut command);
+        let member = Owned::spawn_ready(
             Command::new("/bin/sh")
-                .args([
-                    "-c",
-                    "trap '' TERM; echo ready > \"$1\"; exec sleep 60",
-                    "sh",
-                ])
-                .arg(&ready)
-                .process_group(leader.pid())
-                .spawn()
-                .unwrap(),
+                .args(["-c", "trap '' TERM; echo \"$$\"; exec /bin/sleep 60"])
+                .process_group(leader.pid()),
         );
         let unrelated = Owned(
             Command::new("sleep")
@@ -114,13 +135,6 @@ impl Fixture {
                 .spawn()
                 .unwrap(),
         );
-        for _ in 0..200 {
-            if ready.exists() && paths.paths().socket.exists() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        assert!(ready.exists() && paths.paths().socket.exists());
         Self {
             root,
             config,
