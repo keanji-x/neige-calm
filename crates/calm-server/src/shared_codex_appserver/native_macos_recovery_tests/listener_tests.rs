@@ -25,6 +25,17 @@ fn listener_group() -> (Owned, Owned, Owned) {
 }
 
 #[tokio::test]
+async fn native_macos_recovery_nonleader_can_only_stop_the_socket_peer() {
+    let (mut leader, mut peer, mut sibling) = listener_group();
+    let identity = ListenerIdentity::new(peer.pid()).unwrap();
+    let result = terminate_listener(identity, Some(leader.pid()), Duration::from_millis(20)).await;
+    let survivors = [leader.alive(), peer.alive(), sibling.alive()];
+    drop((leader, peer, sibling));
+    assert_eq!(survivors, [true, false, true]);
+    assert!(result.is_err(), "the original group still has live members");
+}
+
+#[tokio::test]
 async fn native_macos_recovery_nonleader_listener_stale_birth_never_signals() {
     let (mut leader, mut peer, mut member) = listener_group();
     let pgid = leader.pid();
