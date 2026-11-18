@@ -1,6 +1,187 @@
 use super::*;
 use std::time::{Duration, Instant};
 
+enum LaunchFailure {
+    Nonce,
+    NulArgument,
+    MissingProgram,
+}
+
+async fn no_child_launch_failure(failure: LaunchFailure) {
+    use super::super::{Executor, protocol_test_support::*};
+    use crate::execution::ExecutorConfig;
+    let temp = tempfile::tempdir().unwrap();
+    let config = ExecutorConfig {
+        journal_directory: temp.path().join("journal"),
+        helper_program: "/bin/sh".into(),
+        kernel_client_secret: CapabilityToken::fresh().unwrap(),
+    };
+    let executor = Executor::open(config.clone()).unwrap();
+    let source = temp.path().join("source");
+    std::fs::create_dir(&source).unwrap();
+    let (mut request, held) = private(&executor, &source);
+    request.specification.program = "/bin/sh".into();
+    request.specification.args = vec!["-c".into(), "printf payload > payload-ran".into()];
+    match failure {
+        LaunchFailure::NulArgument => request.specification.args.push("nul\0argument".into()),
+        LaunchFailure::MissingProgram => {
+            request.specification.program = temp.path().join("absent-program");
+        }
+        LaunchFailure::Nonce => {}
+    }
+    prepare(&executor, &request, &held).await;
+    let launch = consume(&request);
+    let first = {
+        let _fault = matches!(failure, LaunchFailure::Nonce).then(|| FaultGuard::set(Fault::Nonce));
+        executor.launch(launch.clone()).await.unwrap()
+    };
+    assert!(
+        matches!(
+            first,
+            ExecutionReply::Receipt {
+                receipt: None,
+                state: ExecutionState::NoChild { .. }
+            }
+        ),
+        "{first:?}"
+    );
+    assert_released(&executor);
+    assert!(!source.join("payload-ran").exists());
+    let original = executor.record(&request.identity.execution_id).unwrap();
+    assert!(original.durably_settled());
+    assert_eq!(original.output_end, OutputEnd::Complete { final_cursor: 0 });
+    assert_eq!(
+        serde_json::to_value(executor.launch(launch.clone()).await.unwrap()).unwrap(),
+        serde_json::to_value(&first).unwrap()
+    );
+
+    // A later owner takes the alias by the normal handoff contract. Its successful
+    // spawn then fails setup, retaining an unsettled reservation even after cleanup.
+    let (mut next, next_held) = private(&executor, &source);
+    next.specification.program = "/bin/sh".into();
+    next.specification.args = vec!["-c".into(), "exit 0".into()];
+    next.identity.process_alias = request.identity.process_alias.clone();
+    next.handoff = Some(AliasHandoff {
+        previous_execution: request.identity.execution_id.clone(),
+        expected_slot_version: 1,
+    });
+    prepare(&executor, &next, &next_held).await;
+    {
+        let _fault = FaultGuard::set(Fault::Setup);
+        let reply = executor.launch(consume(&next)).await.unwrap();
+        assert!(matches!(
+            reply,
+            ExecutionReply::Receipt {
+                state: ExecutionState::Unknown { .. },
+                ..
+            }
+        ));
+    }
+    assert_eq!(
+        serde_json::to_value(executor.launch(launch.clone()).await.unwrap()).unwrap(),
+        serde_json::to_value(&first).unwrap()
+    );
+    assert!(
+        executor
+            .live_objects
+            .lock()
+            .unwrap()
+            .contains_key(&next.identity.source_registration)
+    );
+    let slot = executor.aliases.lock().unwrap()[&next.identity.process_alias].clone();
+    assert_eq!(slot.execution, Some(next.identity.execution_id.clone()));
+    assert_eq!(slot.version, 2);
+    drop(executor);
+    let restored = Executor::open(config).unwrap();
+    assert_eq!(
+        serde_json::to_value(restored.launch(launch).await.unwrap()).unwrap(),
+        serde_json::to_value(&first).unwrap()
+    );
+    assert!(
+        restored
+            .record(&request.identity.execution_id)
+            .unwrap()
+            .durably_settled()
+    );
+    let slot = restored.aliases.lock().unwrap()[&next.identity.process_alias].clone();
+    assert_eq!(slot.execution, Some(next.identity.execution_id));
+    assert_eq!(slot.version, 2);
+    assert!(!source.join("payload-ran").exists());
+}
+
+#[tokio::test]
+async fn native_macos_no_child_nul_argv_is_durable_and_preserves_successor() {
+    no_child_launch_failure(LaunchFailure::NulArgument).await;
+}
+
+#[tokio::test]
+async fn native_macos_no_child_posix_spawn_error_is_durable_and_preserves_successor() {
+    no_child_launch_failure(LaunchFailure::MissingProgram).await;
+}
+
+#[tokio::test]
+async fn native_macos_no_child_nonce_failure_is_durable_and_preserves_successor() {
+    no_child_launch_failure(LaunchFailure::Nonce).await;
+}
+
+#[tokio::test]
+async fn native_macos_setup_failure_remains_unknown_after_cleanup_and_restart() {
+    use super::super::{Executor, protocol_test_support::*};
+    use crate::execution::ExecutorConfig;
+    let temp = tempfile::tempdir().unwrap();
+    let config = ExecutorConfig {
+        journal_directory: temp.path().join("journal"),
+        helper_program: "/bin/sh".into(),
+        kernel_client_secret: CapabilityToken::fresh().unwrap(),
+    };
+    let executor = Executor::open(config.clone()).unwrap();
+    let (mut request, held) = private(&executor, temp.path());
+    request.specification.program = "/bin/sh".into();
+    request.specification.args = vec!["-c".into(), "printf payload > payload-ran".into()];
+    prepare(&executor, &request, &held).await;
+    let first = {
+        let _fault = FaultGuard::set(Fault::Setup);
+        executor.launch(consume(&request)).await.unwrap()
+    };
+    assert!(
+        matches!(
+            first,
+            ExecutionReply::Receipt {
+                receipt: None,
+                state: ExecutionState::Unknown { .. }
+            }
+        ),
+        "{first:?}"
+    );
+    assert_eq!(
+        serde_json::to_value(executor.launch(consume(&request)).await.unwrap()).unwrap(),
+        serde_json::to_value(&first).unwrap()
+    );
+    assert!(
+        !executor
+            .record(&request.identity.execution_id)
+            .unwrap()
+            .durably_settled()
+    );
+    assert!(
+        executor
+            .live_objects
+            .lock()
+            .unwrap()
+            .contains_key(&request.identity.source_registration)
+    );
+    drop(executor);
+    let restored = Executor::open(config).unwrap();
+    assert!(matches!(
+        restored.launch(consume(&request)).await.unwrap(),
+        ExecutionReply::Receipt {
+            receipt: None,
+            state: ExecutionState::Unknown { .. }
+        }
+    ));
+    assert!(!temp.path().join("payload-ran").exists());
+}
+
 struct Payload {
     process: Arc<Process>,
     output: Arc<super::super::output::OutputLog>,
@@ -24,7 +205,6 @@ impl Payload {
         let (process, _) = spawn(
             &File::open(root.path()).unwrap(),
             &specification,
-            CapabilityToken::fresh().unwrap(),
             output.clone(),
         )
         .unwrap();
@@ -235,6 +415,7 @@ fn native_macos_suspended_wait_event_allows_resume() {
 #[derive(Clone, Copy, PartialEq)]
 pub(super) enum Fault {
     None,
+    Nonce,
     Setup,
     Observe,
     Group,

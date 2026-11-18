@@ -29,6 +29,22 @@ impl Drop for StartupCleanup {
 #[path = "native_owned_child.rs"]
 mod native_child;
 use native_child::{Child, Pin};
+
+/// Only preparation and a nonzero Darwin posix_spawn return may mint this proof.
+/// Cleanup of a successfully spawned child does not establish NoChild.
+#[derive(Debug)]
+pub(super) struct NoChild(anyhow::Error);
+impl std::fmt::Display for NoChild {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&self.0, f)
+    }
+}
+impl std::error::Error for NoChild {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.0.as_ref())
+    }
+}
+
 struct Ownership {
     identity: MacProcessIdentity,
     child: Child,
@@ -297,16 +313,28 @@ impl Drop for SpawnAttributes {
         }
     }
 }
-pub(super) fn spawn(
+fn identity_nonce() -> anyhow::Result<CapabilityToken> {
+    #[cfg(test)]
+    tests::fault(tests::Fault::Nonce)?;
+    Ok(CapabilityToken::fresh()?)
+}
+
+struct SuspendedChild {
+    child: Child,
+    nonce: CapabilityToken,
+    input_write: File,
+    output_read: File,
+}
+
+fn spawn_suspended(
     cwd: &File,
     specification: &ExecutionSpecification,
-    nonce: CapabilityToken,
-    output: Arc<super::output::OutputLog>,
-) -> anyhow::Result<(Arc<Process>, NativeProcessIdentity)> {
+) -> anyhow::Result<SuspendedChild> {
     anyhow::ensure!(
         matches!(specification.io_mode, IoMode::Pipe),
         "native registered execution supports Pipe only"
     );
+    let nonce = identity_nonce()?;
     let program = CString::new(specification.program.as_os_str().as_encoded_bytes())?;
     let arguments = std::iter::once(program.clone())
         .chain(
@@ -388,6 +416,8 @@ pub(super) fn spawn(
         )
     })?;
     let mut pid = 0;
+    // Apple's posix_spawn(2), RETURN VALUES: a nonzero return creates no child.
+    // No fallible work may follow success inside this proof-producing boundary.
     check(unsafe {
         libc::posix_spawn(
             &mut pid,
@@ -398,7 +428,26 @@ pub(super) fn spawn(
             envp.as_ptr(),
         )
     })?;
-    let mut child = Child::new(pid);
+    Ok(SuspendedChild {
+        child: Child::new(pid),
+        nonce,
+        input_write,
+        output_read,
+    })
+}
+
+pub(super) fn spawn(
+    cwd: &File,
+    specification: &ExecutionSpecification,
+    output: Arc<super::output::OutputLog>,
+) -> anyhow::Result<(Arc<Process>, NativeProcessIdentity)> {
+    let SuspendedChild {
+        mut child,
+        nonce,
+        input_write,
+        output_read,
+    } = spawn_suspended(cwd, specification).map_err(NoChild)?;
+    let pid = child.pid;
     child.record(
         "spawn",
         &format!(
@@ -441,8 +490,6 @@ pub(super) fn spawn(
         }),
         input: Mutex::new(Some(input_write)),
     });
-    drop(input_read);
-    drop(output_write);
     output.read(output_read, false);
     Ok((process, NativeProcessIdentity::MacOwnedGroup(identity)))
 }
