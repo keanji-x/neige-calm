@@ -89,16 +89,10 @@ impl SharedCodexAppServer {
             self.record_guard_refusal(paths, &record, &msg).await;
             return Err(CalmError::CodexAppServer(msg));
         }
-        let takeover_eligible = !matches!(
-            record.state,
-            SharedDaemonState::Idle | SharedDaemonState::Failed
-        ) && record.pid.is_some()
-            && record.pgid == record.pid
-            && record.process_start_time.is_some()
-            && record.boot_id.is_some()
-            && record.started_at.is_some()
-            && record.sock_path.is_some();
-        if persisted_identity_present(&record) && !takeover_eligible {
+        if let Some(runtime) = SharedDaemonRuntime::for_takeover(&record) {
+            return self.try_takeover_live(paths, &record, runtime).await;
+        }
+        if persisted_identity_present(&record) {
             match self.resolve_persisted_shape(paths, &record).await {
                 ShapeResolution::ProvenAbsent => {
                     // Durable proof of absence makes a retry safe even if spawn never completes.
@@ -130,8 +124,7 @@ impl SharedCodexAppServer {
                 }
             }
         }
-        // Failed survivors are never adopted; takeover errors share this completion owner.
-        self.try_takeover_live(paths, &record).await
+        Ok(false)
     }
 
     /// Read, admit and path-check one snapshot before any process or endpoint effect.

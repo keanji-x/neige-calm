@@ -51,18 +51,20 @@ pub fn observe_process(pid: i32) -> ProcessObservation {
     if pid <= 0 {
         return ProcessObservation::Absent;
     }
-    classify_macos_process(read_macos_process(pid))
+    read_macos_process(pid).into()
 }
 
 #[cfg(target_os = "macos")]
-fn classify_macos_process(process: std::io::Result<Option<MacProcess>>) -> ProcessObservation {
-    match process {
-        Ok(Some(process)) => ProcessObservation::Present {
-            start_time: process.start_time,
-            is_zombie: process.is_zombie,
-        },
-        Ok(None) => ProcessObservation::Absent,
-        Err(_) => ProcessObservation::Unknown,
+impl From<std::io::Result<Option<MacProcess>>> for ProcessObservation {
+    fn from(process: std::io::Result<Option<MacProcess>>) -> Self {
+        match process {
+            Ok(Some(process)) => ProcessObservation::Present {
+                start_time: process.start_time,
+                is_zombie: process.is_zombie,
+            },
+            Ok(None) => ProcessObservation::Absent,
+            Err(_) => ProcessObservation::Unknown,
+        }
     }
 }
 
@@ -73,7 +75,7 @@ fn classify_bsd_info(
     error: Option<i32>,
     info: &libc::proc_bsdinfo,
 ) -> ProcessObservation {
-    classify_macos_process(macos::classify_bsd_info(pid, written, error, info))
+    macos::classify_bsd_info(pid, written, error, info).into()
 }
 
 /// Unsupported platforms cannot establish presence or absence.

@@ -448,7 +448,10 @@ impl SharedCodexAppServer {
         let record = self.claim_legacy(record).await?;
         let guard = SharedCodexHome::new(paths.paths().home.clone())
             .verify_expected_mcp_servers(EXPECTED_MCP_SERVERS);
-        if guard.is_ok() && self.try_takeover_live(paths, &record).await? {
+        if guard.is_ok()
+            && let Some(runtime) = SharedDaemonRuntime::for_takeover(&record)
+            && self.try_takeover_live(paths, &record, runtime).await?
+        {
             return Ok(true);
         }
         // Only a successful non-adoption or an explicit guard refusal hands H

@@ -2017,23 +2017,11 @@ impl SharedCodexAppServer {
         self: &Arc<Self>,
         paths: &VerifiedRuntimePaths,
         record: &crate::db::SharedCodexDaemonRecord,
+        runtime: SharedDaemonRuntime,
     ) -> Result<bool> {
-        let (Some(pid), Some(pgid), Some(start_time), Some(boot_id), Some(started_at)) = (
-            record.pid,
-            record.pgid,
-            record.process_start_time,
-            record.boot_id.clone(),
-            record.started_at,
-        ) else {
-            return Ok(false);
-        };
-        if matches!(
-            record.state,
-            SharedDaemonState::Idle | SharedDaemonState::Failed
-        ) {
-            return Ok(false);
-        }
-        match observe_owned_pid(pid, start_time, &boot_id) {
+        let pid = runtime.pid;
+        let pgid = runtime.pgid;
+        match runtime.observe_for_takeover() {
             #[cfg(target_os = "macos")]
             OwnedProcessObservation::Matching { is_zombie: true } => return Ok(false),
             OwnedProcessObservation::Matching { .. } => {}
@@ -2077,17 +2065,15 @@ impl SharedCodexAppServer {
             );
         }
 
-        if record.sock_path.is_none() {
-            return Ok(false);
-        }
         // A `starting` row names a child still inside its cold-start budget (mid-backfill), so it
         // gets the REMAINING readiness window instead of the instant handshake fast-fail.
         let probe = if matches!(record.state, SharedDaemonState::Starting) {
             // ms-domain saturating math anchored to the PERSISTED `started_at`: clock skew degenerates
             // to a full or zero window; repeated boots never re-arm the window.
-            let elapsed = Duration::from_millis(now_ms().saturating_sub(started_at).max(0) as u64);
+            let elapsed =
+                Duration::from_millis(now_ms().saturating_sub(runtime.started_at).max(0) as u64);
             let remaining = self.start_timeout.saturating_sub(elapsed);
-            self.poll_adopt_initialized(paths, pid, start_time, &boot_id, remaining)
+            self.poll_adopt_initialized(paths, &runtime, remaining)
                 .await
         } else {
             // The deadline for this arm lives at the transport (`CodexAppServer::connect`'s
@@ -2100,7 +2086,7 @@ impl SharedCodexAppServer {
         match probe {
             AdoptProbe::IdentityUnknown => Err(self.retain_unreconciled(record).await),
             AdoptProbe::Connected((client, notifications)) => {
-                match observe_owned_pid(pid, start_time, &boot_id) {
+                match runtime.observe_for_takeover() {
                     #[cfg(target_os = "macos")]
                     OwnedProcessObservation::Matching { is_zombie: true } => return Ok(false),
                     OwnedProcessObservation::Matching { .. } => {}
@@ -2112,13 +2098,6 @@ impl SharedCodexAppServer {
                     }
                 }
                 let client = Arc::new(client);
-                let runtime = SharedDaemonRuntime {
-                    pid,
-                    pgid,
-                    boot_id,
-                    process_start_time: start_time,
-                    started_at,
-                };
                 drop(self.install_client(client.clone(), notifications).await?);
                 let watcher_self = Arc::downgrade(self);
                 let watcher_runtime = runtime.clone();
@@ -2196,8 +2175,8 @@ impl SharedCodexAppServer {
                     paths,
                     pid,
                     pgid,
-                    start_time,
-                    &boot_id,
+                    runtime.process_start_time,
+                    &runtime.boot_id,
                     self.stop_grace,
                 )
                 .await;
@@ -2224,8 +2203,8 @@ impl SharedCodexAppServer {
                     paths,
                     pid,
                     pgid,
-                    start_time,
-                    &boot_id,
+                    runtime.process_start_time,
+                    &runtime.boot_id,
                     self.stop_grace,
                 )
                 .await;
@@ -3141,9 +3120,7 @@ impl SharedCodexAppServer {
     async fn poll_adopt_initialized(
         &self,
         paths: &VerifiedRuntimePaths,
-        pid: i32,
-        start_time: u64,
-        boot_id: &str,
+        runtime: &SharedDaemonRuntime,
         window: Duration,
     ) -> AdoptProbe {
         let started = tokio::time::Instant::now();
@@ -3163,7 +3140,7 @@ impl SharedCodexAppServer {
                         .to_string(),
                 ),
             };
-            match observe_owned_pid(pid, start_time, boot_id) {
+            match runtime.observe_for_takeover() {
                 OwnedProcessObservation::Mismatch | OwnedProcessObservation::Absent => {
                     return AdoptProbe::ChildExited;
                 }
@@ -3177,7 +3154,7 @@ impl SharedCodexAppServer {
             if deadline_hit_in_flight || tokio::time::Instant::now() >= deadline {
                 tracing::warn!(
                     target: "shared_codex_daemon::start",
-                    pid,
+                    pid = runtime.pid,
                     waited_ms = started.elapsed().as_millis() as u64,
                     window_ms = window.as_millis() as u64,
                     error = %attempt_err,
@@ -5031,7 +5008,7 @@ mod tests {
 
     /// A settings-read failure inside `try_takeover_live` must not escape with the in-memory
     /// state stranded `Restarting`; the DB row is left untouched. Injection: drop ONLY the
-    /// `settings` table; the "live verified daemon" is this test process itself.
+    /// `settings` table; the live daemon identity belongs to a dedicated group leader.
     #[tokio::test]
     async fn takeover_settings_read_failure_terminalizes_failed_and_arms_heal() {
         use calm_truth::db::{RepoOutOfDomain as _, RepoRead as _};
@@ -5047,16 +5024,22 @@ mod tests {
             .unwrap();
 
         let root = tempfile::tempdir().unwrap();
-        let self_pid = i32::try_from(std::process::id()).unwrap();
-        let start_time = read_proc_start_time(self_pid).expect("own start time");
+        let mut leader = Command::new("/bin/sleep")
+            .arg("120")
+            .process_group(0)
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let pid = i32::try_from(leader.id().unwrap()).unwrap();
+        let start_time = read_proc_start_time(pid).expect("leader start time");
         let boot_id = read_boot_id().unwrap_or_default();
         repo.shared_daemon_runtime_set(
             "default",
             SharedCodexDaemonUpdate {
                 recovery: calm_truth::db::RecoveryWrite::Legacy,
                 state: SharedDaemonState::Running,
-                pid: Some(self_pid),
-                pgid: Some(self_pid),
+                pid: Some(pid),
+                pgid: Some(pid),
                 paths_are_legacy_display: false,
                 sock_path: Some(
                     root.path()
@@ -5125,7 +5108,7 @@ mod tests {
             SharedDaemonState::Running,
             "no forged failed/absence write over the live daemon's row"
         );
-        assert_eq!(record.pid, Some(self_pid), "identity untouched");
+        assert_eq!(record.pid, Some(pid), "identity untouched");
 
         // The supervisor is not wedged: another round runs to the same
         // terminal state (no stuck serial, no stranded Restarting).
@@ -5134,6 +5117,7 @@ mod tests {
             .await
             .expect_err("still failing while the settings table is gone");
         assert_eq!(daemon.status_snapshot().state, SharedDaemonState::Failed);
+        leader.kill().await.unwrap();
     }
 
     #[test]

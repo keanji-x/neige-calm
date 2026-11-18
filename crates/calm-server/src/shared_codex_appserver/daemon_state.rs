@@ -2,7 +2,8 @@
 use super::heal_retry::FailureClass;
 use super::resume_replay::ConnectionReplay;
 use crate::codex_appserver::CodexAppServer;
-use crate::db::SharedDaemonState;
+use crate::db::{SharedCodexDaemonRecord, SharedDaemonState};
+use crate::proc_identity::OwnedProcessObservation;
 use std::sync::Arc;
 use tokio::{process::Child, task::JoinHandle};
 
@@ -13,6 +14,51 @@ pub struct SharedDaemonRuntime {
     pub boot_id: String,
     pub process_start_time: u64,
     pub started_at: i64,
+}
+
+impl SharedDaemonRuntime {
+    /// Persisted daemons are spawned with process_group(0). Only their leader
+    /// can be taken over and later replaced through the persisted-runtime path.
+    pub(super) fn for_takeover(record: &SharedCodexDaemonRecord) -> Option<Self> {
+        let pid = record.pid?;
+        if record.pgid != Some(pid)
+            || record.sock_path.is_none()
+            || matches!(
+                record.state,
+                SharedDaemonState::Idle | SharedDaemonState::Failed
+            )
+        {
+            return None;
+        }
+        Some(Self {
+            pid,
+            pgid: pid,
+            boot_id: record.boot_id.clone()?,
+            process_start_time: record.process_start_time?,
+            started_at: record.started_at?,
+        })
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(super) fn observe_for_takeover(&self) -> OwnedProcessObservation {
+        let process = plugin::proc_identity::read_macos_process(self.pid);
+        if matches!(&process, Ok(Some(live)) if live.pgid != self.pgid) {
+            // A live nonleader cannot be adopted. The recovery owner separately
+            // reconciles the original group before it can settle or replace it.
+            return OwnedProcessObservation::Mismatch;
+        }
+        crate::proc_identity::classify_owned_process(
+            process.into(),
+            crate::proc_identity::read_boot_id().as_deref(),
+            self.process_start_time,
+            &self.boot_id,
+        )
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    pub(super) fn observe_for_takeover(&self) -> OwnedProcessObservation {
+        crate::proc_identity::observe_owned_pid(self.pid, self.process_start_time, &self.boot_id)
+    }
 }
 
 #[derive(Debug, Clone)]
