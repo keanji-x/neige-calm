@@ -1,5 +1,6 @@
 use super::*;
 use serde_json::{Value, json};
+use std::path::Path;
 
 fn registration(method: Option<Value>, env: Value) -> Value {
     let mut agent = json!({"provider":"grok","command":"/opt/grok","args":[],

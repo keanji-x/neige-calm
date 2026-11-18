@@ -304,6 +304,16 @@ impl Client {
         self.write_reply(json!({"jsonrpc":"2.0","id":id,"result":result}))
             .await
     }
+    /// A role owner rechecks authority under the transport writer lock before a grant reply.
+    pub async fn respond_gated(
+        &self,
+        id: Value,
+        result: Value,
+        gate: &PreSendGate<'_>,
+    ) -> Result<(), WriteFailure> {
+        self.write_gated(json!({"jsonrpc":"2.0","id":id,"result":result}), None, gate)
+            .await
+    }
     pub async fn reject_method(&self, id: Value) -> Result<(), Error> {
         self.write_reply(json!({"jsonrpc":"2.0","id":id,"error":{"code":-32601,"message":"Unsupported client method"}})).await
     }

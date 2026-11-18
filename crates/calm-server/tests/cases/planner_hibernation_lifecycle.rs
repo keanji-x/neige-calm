@@ -101,7 +101,7 @@ async fn planner_hibernat_failed_release_survives_card_delete() {
     failed_release_after_owner_change("card_delete").await;
 }
 
-async fn send_completed(boot: &Boot, card: &Card, runtime: &String, text: &str) {
+async fn send_completed(boot: &Boot, card: &Card, runtime: &str, text: &str) {
     let (status, body) = post_planner_input(
         crate::support::authenticated_router::application(boot.state.clone()).await,
         &format!("/api/cards/{}/planner/input", card.id),
@@ -109,7 +109,7 @@ async fn send_completed(boot: &Boot, card: &Card, runtime: &String, text: &str) 
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(body["worker_session_id"], runtime.as_str());
+    assert_eq!(body["worker_session_id"], runtime);
     let deadline = Instant::now() + Duration::from_secs(8);
     loop {
         let rows = conversation_rows(boot, card).await;

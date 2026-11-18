@@ -8,18 +8,8 @@ pub(super) fn attachment_request(
     native: Option<&str>,
     mcp: &[protocol::McpServer],
 ) -> std::result::Result<(&'static str, Value), StartFailure> {
-    Ok(match native {
-        Some(native) if capabilities.session_capabilities.resume.is_some() => (
-            "session/resume",
-            protocol::encode_resume_session(native, cwd, mcp),
-        ),
-        Some(native) if capabilities.load_session => (
-            "session/load",
-            protocol::encode_load_session(native, cwd, mcp),
-        ),
-        Some(_) => return Err(super::start::ContinuationRefusal::LoadUnsupported.into()),
-        None => ("session/new", protocol::encode_new_session(cwd, mcp)),
-    })
+    crate::acp_session::setup::attachment_request(capabilities, cwd, native, mcp)
+        .map_err(Into::into)
 }
 
 pub(super) async fn attach(
@@ -97,64 +87,27 @@ impl Shared {
         usage: &mut provider::acp::usage::UsageTracker,
     ) -> std::result::Result<(), StartFailure> {
         let params = &self.params;
-        params
-            .host
-            .record_configuration(&params.card_id, configuration.clone());
-        for (category, value) in [
-            ("model", selection.model.as_deref()),
-            ("thought_level", selection.effort.as_deref()),
-        ] {
-            let Some(value) = value else {
-                continue;
-            };
-            let option = configuration
-                .category(category)
-                .filter(|option| option.accepts(value))
-                .ok_or_else(|| {
-                    refused("The ACP agent did not declare that model or effort choice")
-                })?;
-            let result = setup_request(
-                connection,
-                commands,
-                "session/set_config_option",
-                protocol::encode_set_config_option(native, &option.id, value),
-                admission.gate(),
-            )
-            .await?;
-            usage.configure(&result);
-            *configuration = provider::acp::configuration::Configuration::from_response(&result)
-                .map_err(|error| StartFailure::Failed(wire_error(error)))?;
-            if configuration
-                .category(category)
-                .is_none_or(|option| option.current_value != value)
-            {
-                return Err(refused("ACP did not confirm the selected model or effort"));
-            }
-            params
-                .host
-                .record_configuration(&params.card_id, configuration.clone());
-        }
-        Ok(())
+        crate::acp_session::setup::configure(
+            connection,
+            commands,
+            native,
+            configuration,
+            selection,
+            admission.gate(),
+            usage,
+            |configuration| {
+                params
+                    .host
+                    .record_configuration(&params.card_id, configuration.clone())
+            },
+        )
+        .await
+        .map_err(Into::into)
     }
 }
 
 impl SessionParams {
     pub(super) fn mcp_server(&self, name: String, token: &str) -> protocol::McpServer {
-        // Native MCP consumers may build model output from content alone.
-        let args = super::super::profile::AcpAgentProfile::of(&self.provider)
-            .expect("ACP session uses an ACP profile")
-            .mcp_shim_args(&name);
-        protocol::McpServer::Stdio {
-            name,
-            command: self.host.mcp_shim.to_string_lossy().into_owned(),
-            args,
-            env: crate::mcp_server::wiring::card_mcp_env(&self.host.mcp_socket, token)
-                .into_iter()
-                .map(|(name, value)| protocol::EnvVariable {
-                    name: name.into(),
-                    value,
-                })
-                .collect(),
-        }
+        crate::acp_session::setup::mcp_server(&self.host, &self.provider, name, token)
     }
 }

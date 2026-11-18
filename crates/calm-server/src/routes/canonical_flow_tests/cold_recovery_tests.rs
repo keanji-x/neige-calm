@@ -447,7 +447,7 @@ async fn assert_recovery_held(
             .unwrap();
     assert_eq!(token, old_token);
     assert_eq!(fixture.counts(card).await, (2, 2, 1, 1, 1));
-    assert!(state.harness.get(&worker.to_owned()).is_none());
+    assert!(state.harness.get(worker).is_none());
 }
 
 async fn acknowledge(

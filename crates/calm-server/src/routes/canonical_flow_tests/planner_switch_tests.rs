@@ -503,7 +503,7 @@ async fn planner_switch_pair_commit_root_history_and_next_send() {
             assert!(
                 p.state
                     .harness
-                    .get(&replacement.old_worker.id.to_string())
+                    .get(replacement.old_worker.id.as_str())
                     .is_none()
             );
             let snapshot: String =
@@ -773,7 +773,7 @@ async fn planner_switch_reconcile_fresh_planner_without_broadcast() {
 
 async fn prepare_consumed_message(
     state: &AppState,
-    worker: &String,
+    worker: &str,
     message: calm_types::conversation::MessageRevisionRef,
     human: &HumanInputSource,
 ) {
@@ -782,7 +782,7 @@ async fn prepare_consumed_message(
 
 async fn prepare_consumed_message_controlled(
     state: &AppState,
-    worker: &String,
+    worker: &str,
     message: calm_types::conversation::MessageRevisionRef,
     human: &HumanInputSource,
     tail: Option<&crate::test_seams::PausePoint>,

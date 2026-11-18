@@ -8,6 +8,7 @@ pub enum UsageSource {
     XaiNotificationMeta,
 }
 
+#[derive(Clone)]
 pub struct UsageTracker {
     source: UsageSource,
     model: Option<String>,

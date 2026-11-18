@@ -24,7 +24,7 @@ impl Owner {
     pub(crate) fn bind(&self, repo: Arc<dyn crate::db::Repo>) {
         let _ = self.repo.set(repo);
     }
-    pub(crate) fn request_progress(&self, worker: &String) {
+    pub(crate) fn request_progress(&self, worker: &str) {
         if let Some(registry) = self.registry.get() {
             registry.request_progress(worker);
         }
@@ -297,7 +297,7 @@ impl ProviderExecutionOwner for Owner {
                         if let Some(harness) = self
                             .registry
                             .get()
-                            .and_then(|registry| registry.get(&session.to_owned()))
+                            .and_then(|registry| registry.get(session))
                         {
                             harness
                                 .complete_provider_execution(&id, turn_id, &record.purpose, turn)

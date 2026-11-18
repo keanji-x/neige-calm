@@ -563,6 +563,8 @@ pub(crate) async fn probe_supervisor_for_terminal_at(
 }
 
 pub mod acp_planner;
+pub(crate) mod acp_session;
+mod acp_wiring;
 /// The Today summary's activity source; one caller (`routes::today_summary`), no MCP surface.
 pub mod activity_window;
 pub mod agent_providers;

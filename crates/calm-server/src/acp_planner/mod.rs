@@ -8,12 +8,12 @@ pub mod config;
 mod context_snapshot;
 pub(crate) mod execution;
 pub(crate) mod lifecycle;
-mod process;
-mod profile;
+pub(crate) use crate::acp_session::process;
+pub(crate) use crate::acp_session::profile;
 pub(crate) mod recovery;
 pub(crate) mod resident_execution;
 pub mod session;
-mod start;
+pub(crate) mod start;
 #[cfg(feature = "fixtures")]
 pub mod test_seams;
 #[cfg(all(test, feature = "fixtures"))]

@@ -121,7 +121,7 @@ async fn refresh_and_wake(
     state: RouteState,
     card: CardId,
     source: HumanInputSource,
-    carrier: &String,
+    carrier: &str,
     envelope: crate::event::BroadcastEnvelope,
     handoff: crate::harness::registry::SourceHandoff,
 ) {

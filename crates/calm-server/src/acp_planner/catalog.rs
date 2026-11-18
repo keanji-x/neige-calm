@@ -9,22 +9,14 @@ use crate::planner_model::catalog::{
 };
 use calm_types::runtime::AgentProvider;
 use provider::acp::{configuration::Configuration, protocol};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 pub(super) const WORKER: &str = "catalog";
 const TTL: Duration = Duration::from_secs(30);
 const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(30);
 type Catalog = (Configuration, i64);
-pub(super) type DiscoveryCache = tokio::sync::Mutex<Option<Entry>>;
-
-#[derive(Debug)]
-pub(super) struct Entry {
-    provider: AgentProvider,
-    cwd: Option<PathBuf>,
-    started: Instant,
-    catalog: Option<Catalog>,
-}
+use crate::acp_session::host::DiscoveryEntry as Entry;
 
 impl AcpPlannerHost {
     /// Project the card's current native settings without maintaining another cache.

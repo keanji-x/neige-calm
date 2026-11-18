@@ -177,10 +177,9 @@ async fn initial_input_receipt_observation_waits_for_the_entire_issuance_command
         .state
         .harness
         .get(
-            &created["initialInput"]["receipt"]["initialRuntimeId"]
+            created["initialInput"]["receipt"]["initialRuntimeId"]
                 .as_str()
-                .unwrap()
-                .to_string(),
+                .unwrap(),
         )
         .unwrap();
     let snapshot = harness.snapshot().await.unwrap();

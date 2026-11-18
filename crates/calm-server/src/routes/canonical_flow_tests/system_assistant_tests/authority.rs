@@ -423,7 +423,7 @@ async fn drain_owners(
         )
         .await;
         let operations = state.operation_runtime.lock_for_track_delete().await;
-        if let Some(handle) = state.harness.get(&worker.to_owned()) {
+        if let Some(handle) = state.harness.get(worker) {
             handle.shutdown().await.unwrap();
         }
         (card, operations)
