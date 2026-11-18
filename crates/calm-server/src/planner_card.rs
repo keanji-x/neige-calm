@@ -22,6 +22,13 @@ pub(crate) const WORKER_CODEX_SYSTEM_PROMPT: &str = concat!(
     include_str!("../prompts/worker/tail.md")
 );
 
+/// ACP workers use the same role contract and task-specific lease instructions.
+pub(crate) const WORKER_ACP_SYSTEM_PROMPT: &str = concat!(
+    include_str!("../prompts/worker/head.md"),
+    include_str!("../prompts/worker/tool-discovery-acp.md"),
+    include_str!("../prompts/worker/tail.md")
+);
+
 /// The track assistant's system prompt: ordinary head, the mechanics shared by both assistant identities, and the ordinary tail.
 /// Deliberately not a trimmed planner prompt: every close/plan tool rejects `CardRole::Assistant` at the handler. Pinned by `tests/goldens/assistant_prompt.txt`.
 pub(crate) const ASSISTANT_SYSTEM_PROMPT_TEMPLATE: &str = concat!(
@@ -140,6 +147,7 @@ mod tests {
             PLANNER_SYSTEM_PROMPT_TEMPLATE,
             WORKER_CLAUDE_SYSTEM_PROMPT,
             WORKER_CODEX_SYSTEM_PROMPT,
+            WORKER_ACP_SYSTEM_PROMPT,
         ] {
             let out = render_system_prompt(template, "track-abc");
             assert!(
@@ -309,6 +317,7 @@ mod tests {
         include_str!("../tests/goldens/worker_prompt_claude.txt");
     const WORKER_PROMPT_CODEX_GOLDEN: &str =
         include_str!("../tests/goldens/worker_prompt_codex.txt");
+    const WORKER_PROMPT_ACP_GOLDEN: &str = include_str!("../tests/goldens/worker_prompt_acp.txt");
 
     /// Regenerate with `REGEN_PROMPT_GOLDENS=1`, then hand-verify the diff: a regen is a review, not a fix.
     #[test]
@@ -326,6 +335,11 @@ mod tests {
                 WORKER_CODEX_SYSTEM_PROMPT,
                 WORKER_PROMPT_CODEX_GOLDEN,
             ),
+            (
+                "worker_prompt_acp.txt",
+                WORKER_ACP_SYSTEM_PROMPT,
+                WORKER_PROMPT_ACP_GOLDEN,
+            ),
         ] {
             let rendered = render_system_prompt(template, "track-golden-1635");
             if regen {
@@ -337,9 +351,13 @@ mod tests {
                 std::fs::write(&path, format!("{rendered}\n")).expect("write regenerated golden");
                 continue;
             }
-            let expected = golden
-                .strip_suffix('\n')
-                .expect("text fixture has its repository newline");
+            let expected = if rendered.ends_with('\n') && !golden.ends_with("\n\n") {
+                golden
+            } else {
+                golden
+                    .strip_suffix('\n')
+                    .expect("text fixture has its repository newline")
+            };
             if rendered != expected {
                 let at = rendered
                     .bytes()

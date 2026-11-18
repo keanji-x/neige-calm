@@ -10,3 +10,4 @@ pub mod host;
 pub(crate) mod profile;
 
 pub(crate) mod attachment;
+pub(crate) mod roles;

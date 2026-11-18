@@ -120,14 +120,27 @@ pub async fn enforce_role_resolving_session<T: WriteTx + ?Sized + Send>(
         }
         ActorId::AiCodexSession(_) => ActorId::AiCodex(card_id),
         ActorId::AiClaudeSession(_) => ActorId::AiClaude(card_id),
-        ActorId::AiManagedSession(_) => {
-            if session.contract != calm_types::worker::WorkerContract::Assistant {
+        ActorId::AiManagedSession(_) => match session.contract {
+            calm_types::worker::WorkerContract::Assistant => ActorId::AiManagedCard(card_id),
+            calm_types::worker::WorkerContract::Executor
+            | calm_types::worker::WorkerContract::Validator => {
+                let provider = calm_types::runtime::AgentProvider::try_from(session.provider).ok();
+                let supported = provider
+                    .and_then(calm_types::provider_worker::ProviderWorkerCapabilities::for_provider)
+                    .is_some_and(|cap| cap.admits(session.contract, session.mode));
+                if !supported || cache.get(&card_id) != Some(CardRole::Worker) {
+                    return Err(RoleViolation::SessionActorUnresolved {
+                        session: session_id,
+                    });
+                }
+                ActorId::AiWorkerCard(card_id)
+            }
+            _ => {
                 return Err(RoleViolation::SessionActorUnresolved {
                     session: session_id,
                 });
             }
-            ActorId::AiManagedCard(card_id)
-        }
+        },
         _ => unreachable!("session actor match above guarantees session variant"),
     };
 
@@ -174,6 +187,7 @@ fn actor_card_id(actor: &ActorId) -> Option<&CardId> {
         ActorId::AiCodex(card)
         | ActorId::AiClaude(card)
         | ActorId::AiManagedCard(card)
+        | ActorId::AiWorkerCard(card)
         | ActorId::AiPlanner(card) => Some(card),
         ActorId::User
         | ActorId::Kernel
@@ -427,6 +441,24 @@ pub struct PrincipalDecisionGate {
 impl PrincipalDecisionGate {
     pub fn new(principal: Principal) -> Self {
         Self { principal }
+    }
+
+    /// User-only task control. Agent recorder/planner authority remains on separate methods.
+    pub async fn decide_user_task_input<T: WriteTx + ?Sized + Send>(
+        &self,
+        tx: &mut T,
+        track: &TrackId,
+    ) -> Result<GateDecision> {
+        if self.principal != Principal::User {
+            return Ok(GateDecision::Deny(
+                "task input requires User principal".into(),
+            ));
+        }
+        Ok(if tx.read_track_area(track).await?.is_some() {
+            GateDecision::Allow
+        } else {
+            GateDecision::Deny("task input track does not exist".into())
+        })
     }
 
     /// May this agent session record into `track`'s report? The criterion is the
@@ -1052,6 +1084,110 @@ mod tests {
 
         assert!(res.is_ok(), "worker session in own scope: {res:?}");
         assert_eq!(tx.worker_session_reads, 1);
+    }
+
+    #[tokio::test]
+    async fn managed_worker_resolver_requires_registered_provider_contract_mode_and_worker_role() {
+        for contract in [WorkerContract::Executor, WorkerContract::Validator] {
+            let card = CardId::from("managed-worker");
+            let (cache, wcc) = seeded_caches(&card, CardRole::Worker);
+            let mut session = worker_session("managed", Some(card.clone()));
+            session.provider = WorkerProviderKind::Antigravity;
+            session.contract = contract;
+            let mut tx = FakeWriteTx::with_worker_session(session);
+            let actor = ActorId::AiManagedSession(WorkerSessionId::from("managed"));
+            assert!(
+                enforce_role_resolving_session(
+                    &mut tx,
+                    &actor,
+                    &area_updated(),
+                    &card_scope(card.as_str(), "w", "c"),
+                    &cache,
+                    &wcc
+                )
+                .await
+                .is_ok()
+            );
+            assert!(
+                enforce_role_resolving_session(
+                    &mut tx,
+                    &actor,
+                    &track_updated(),
+                    &track_scope("w", "c"),
+                    &cache,
+                    &wcc
+                )
+                .await
+                .is_err(),
+                "Worker must not acquire Planner rights"
+            );
+        }
+        for (provider, contract, mode, role, state) in [
+            (
+                WorkerProviderKind::Antigravity,
+                WorkerContract::Executor,
+                SessionMode::Resumable,
+                CardRole::Planner,
+                WorkerSessionState::Running,
+            ),
+            (
+                WorkerProviderKind::Antigravity,
+                WorkerContract::Executor,
+                SessionMode::Resumable,
+                CardRole::Assistant,
+                WorkerSessionState::Running,
+            ),
+            (
+                WorkerProviderKind::Antigravity,
+                WorkerContract::Assistant,
+                SessionMode::Resumable,
+                CardRole::Worker,
+                WorkerSessionState::Running,
+            ),
+            (
+                WorkerProviderKind::Grok,
+                WorkerContract::Executor,
+                SessionMode::Resumable,
+                CardRole::Worker,
+                WorkerSessionState::Running,
+            ),
+            (
+                WorkerProviderKind::Antigravity,
+                WorkerContract::Executor,
+                SessionMode::Ephemeral,
+                CardRole::Worker,
+                WorkerSessionState::Running,
+            ),
+            (
+                WorkerProviderKind::Antigravity,
+                WorkerContract::Executor,
+                SessionMode::Resumable,
+                CardRole::Worker,
+                WorkerSessionState::Superseded,
+            ),
+        ] {
+            let card = CardId::from("managed-worker");
+            let (cache, wcc) = seeded_caches(&card, role);
+            let mut session = worker_session("managed", Some(card.clone()));
+            session.provider = provider;
+            session.contract = contract;
+            session.mode = mode;
+            session.state = state;
+            let mut tx = FakeWriteTx::with_worker_session(session);
+            assert!(
+                enforce_role_resolving_session(
+                    &mut tx,
+                    &ActorId::AiManagedSession(WorkerSessionId::from("managed")),
+                    &area_updated(),
+                    &card_scope(card.as_str(), "w", "c"),
+                    &cache,
+                    &wcc
+                )
+                .await
+                .is_err(),
+                "must deny {provider:?}/{contract:?}/{mode:?}/{role:?}/{state:?}"
+            );
+        }
     }
 
     #[tokio::test]

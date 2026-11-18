@@ -4,13 +4,13 @@ use crate::db::{RouteRepo, write_in_tx_typed};
 use crate::error::CalmError;
 use crate::mcp_server::registry::ToolCallIdentity;
 use crate::model::CardRole;
-use crate::operation::worker_attempt::{current_running_attempt_tx, owned_attempt_tx};
+use crate::operation::worker_attempt::owned_attempt_tx;
 use crate::recorder_admission::{RecorderAdmissionDecisionKind, RecorderAdmissionGate};
 
 impl CardDecisionSink {
     /// Commit the record before a transport attempts its non-authoritative notice.
     pub(crate) async fn commit_planner_message(
-        repo: &dyn RouteRepo,
+        repo: &std::sync::Arc<dyn RouteRepo>,
         identity: &ToolCallIdentity,
         attempt_id: &str,
         worker_card: &str,
@@ -34,14 +34,22 @@ impl CardDecisionSink {
             key.to_owned(),
             text.to_owned(),
         );
-        write_in_tx_typed(repo, move |tx| {
+        let repo_for_tx = repo.clone();
+        write_in_tx_typed(repo.as_ref(), move |tx| {
             Box::pin(async move {
                 recorder
                     .require_admission(tx, RecorderAdmissionDecisionKind::PlannerMessage)
                     .await?;
                 let task = owned_attempt_tx(tx, &attempt, &card, &track).await?;
-                current_running_attempt_tx(tx, &task).await?;
-                Ok(crate::db::sqlite::planner_message_insert_tx(tx, &attempt, &key, &text).await?)
+                crate::task_control::message_tx(
+                    repo_for_tx,
+                    tx,
+                    &task,
+                    &key,
+                    &text,
+                    calm_types::track_fs_dto::TaskMessageSource::Planner,
+                )
+                .await
             })
         })
         .await

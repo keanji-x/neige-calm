@@ -299,7 +299,14 @@ async fn an_acp_provider_session_is_only_a_resumable_planner_or_assistant() {
                         .expect("row");
                     for (contract, mode, allowed) in [
                         (WorkerContract::Planner, SessionMode::Resumable, true),
-                        (WorkerContract::Executor, SessionMode::Resumable, false),
+                        (
+                            WorkerContract::Executor,
+                            SessionMode::Resumable,
+                            calm_types::provider_worker::ProviderWorkerCapabilities::for_provider(
+                                provider.clone(),
+                            )
+                            .is_some(),
+                        ),
                         (WorkerContract::Planner, SessionMode::Ephemeral, false),
                         (WorkerContract::Executor, SessionMode::Ephemeral, false),
                     ] {

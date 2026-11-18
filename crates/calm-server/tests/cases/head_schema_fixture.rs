@@ -160,6 +160,8 @@ const POST_0067_MIGRATION_NAMES: &[&str] = &[
     "0220_track_workspace_source_only.sql",
     "0221_acp_resident_workspace_bindings.sql",
     "0222_agent_task_workers.sql",
+    "0223_operations_terminal_identity_lookup.sql",
+    "0224_task_report_settled_event_version.sql",
 ];
 
 #[test]

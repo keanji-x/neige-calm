@@ -14,7 +14,7 @@ use crate::scheduler::{
 };
 
 /// Keyed refusal sentences (`prompts/plan-cancel/refusals.md`); Rust only maps a refusal to a key.
-const REFUSALS: &str = include_str!("../../../../prompts/plan-cancel/refusals.md");
+const REFUSALS: &str = include_str!("../../prompts/plan-cancel/refusals.md");
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Refusal {
@@ -68,7 +68,7 @@ impl Refusal {
     }
 }
 
-pub(super) fn status_str(status: TaskStatus) -> String {
+pub(crate) fn status_str(status: TaskStatus) -> String {
     serde_json::to_value(status)
         .ok()
         .and_then(|v| v.as_str().map(str::to_string))
@@ -99,7 +99,7 @@ fn refused_for(key: &str, current: &Task, running_refusal: Refusal) -> CalmError
 /// Returns rows moved — `0` means a concurrent cancel already canceled it (the caller's idempotent
 /// path) — and the lease events when no live session was left to mark and the lease was released
 /// here. Any other state the CAS did not move is refused with its current status.
-pub(super) async fn cancel_running_in_tx(
+pub(crate) async fn cancel_running_in_tx(
     tx: &mut Tx<'_>,
     current: &Task,
     key: &str,

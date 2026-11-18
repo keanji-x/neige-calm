@@ -87,9 +87,17 @@ impl Scheduler {
         let identity = {
             let task = task.clone();
             write_in_tx_typed(self.repo.as_ref(), move |tx| {
-                Box::pin(async move { verify_target_identity(tx, &task).await })
+                Box::pin(async move {
+                    if crate::acp_worker::pending_finalize_tx(tx, &task.id).await? {
+                        return Ok(None);
+                    }
+                    verify_target_identity(tx, &task).await.map(Some)
+                })
             })
             .await?
+        };
+        let Some(identity) = identity else {
+            return Ok(false);
         };
         let delivery = match identity {
             VerifyIdentity::Unbound { .. } => return Ok(true),

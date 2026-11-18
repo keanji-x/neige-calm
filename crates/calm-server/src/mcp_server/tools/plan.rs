@@ -25,7 +25,7 @@ use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-mod cancel_running;
+use crate::task_control::cancel as cancel_running;
 mod list;
 
 pub const TOOL_TASK_CANCEL: &str = "neige_task_cancel";
@@ -418,7 +418,7 @@ where
     let track_id_typed = track.id.clone();
     let key_for_tx = key.clone();
 
-    let result = write_with_actor_events_typed::<(), _>(
+    let result = write_with_actor_events_typed(
         ctx.repo.as_ref(),
         None,
         &ctx.events,
@@ -443,6 +443,8 @@ where
                         ));
                     }
                 };
+                let captured =
+                    crate::task_control::capture_worker_identity_tx(tx, &current).await?;
                 let (rows, released) = if in_flight {
                     cancel_running::cancel_running_in_tx(tx, &current, &key).await?
                 } else {
@@ -480,7 +482,7 @@ where
                 if events.is_empty() {
                     return Err(CalmError::Conflict(CANCEL_ALREADY_APPLIED.into()));
                 }
-                Ok(((), events))
+                Ok((captured, events))
             })
         },
     )
@@ -488,7 +490,15 @@ where
 
     match result {
         Err(CalmError::Conflict(m)) if m == CANCEL_ALREADY_APPLIED => Ok(json!({ "ok": true })),
-        Ok(_) => {
+        Ok((captured, _)) => {
+            if let Some((session, turn)) = captured
+                && let Some(operations) = ctx.operation_runtime.get()
+            {
+                operations
+                    .fence_worker_input_identity(&session, turn.as_deref())
+                    .await
+                    .map_err(|e| RpcError::internal(e.to_string()))?;
+            }
             // The canceled worker's cleanup marker is committed; reap it now rather than on the
             // next reconcile tick.
             if in_flight && let Some(poke) = ctx.scheduler_poke.get() {

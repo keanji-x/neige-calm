@@ -1,0 +1,2 @@
+-- event-wire-version: 32
+-- Forward-only wire checkpoint for native Worker report settlement (`task.report_settled`).

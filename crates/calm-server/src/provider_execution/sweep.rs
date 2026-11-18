@@ -18,6 +18,15 @@ impl ProviderExecution {
                 }
             }
         }
+        if self.owner.owns_native_workers() {
+            for (session, claim) in &claims {
+                if matches!(claim.record().purpose, Purpose::WorkerTurn { .. })
+                    && let Err(error) = self.owner.reconcile_native_worker(session, claim).await
+                {
+                    tracing::warn!(%session,%error,"native Worker settlement remains fenced for reconciliation");
+                }
+            }
+        }
         let inventory =
             executions::consumer_inventory(pool.read_pool(), self.owner.consumer()).await?;
         let write_db = (pool).clone();
@@ -113,7 +122,11 @@ pub async fn boot_pass_a(
                 continue;
             };
         }
-        executions::request(tx, &claim.record().execution_id, "stop").await?;
+        // Native ACP task rounds have no workspace_execution row. Their shared carrier
+        // is swept by the ACP host, which alone may confirm native cleanup.
+        if !matches!(claim.record().purpose, Purpose::WorkerTurn { .. }) {
+            executions::request(tx, &claim.record().execution_id, "stop").await?;
+        }
     }
     Ok(())
 }

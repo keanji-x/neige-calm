@@ -233,6 +233,8 @@ pub struct AcpHost {
     tool_names: Option<crate::mcp_server::transport::SessionToolNames>,
     pub(crate) shared_servers:
         BTreeMap<&'static str, tokio::sync::Mutex<Option<super::server::Server>>>,
+    /// Task callbacks and state are supplied by application composition.
+    pub(crate) native_workers: std::sync::Arc<dyn super::roles::NativeWorkers>,
     pub(crate) context_queries: tokio::sync::Semaphore,
     pub(crate) agent_logs: PathBuf,
     readiness: tokio::sync::Mutex<()>,
@@ -243,6 +245,7 @@ pub struct AcpHost {
     pub(crate) _scratch: Option<tempfile::TempDir>,
 }
 impl AcpHost {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn with_services(
         config: Option<AcpPlannerConfig>,
         data_dir: &Path,
@@ -251,6 +254,7 @@ impl AcpHost {
         managed_tokens: crate::mcp_server::managed_tokens::ManagedSessionTokens,
         provider_execution: crate::provider_execution::ProviderExecution,
         completion: std::sync::Arc<dyn HostServices>,
+        native_workers: std::sync::Arc<dyn super::roles::NativeWorkers>,
     ) -> Result<Self> {
         if let Some(config) = &config {
             config.validate()?;
@@ -277,6 +281,7 @@ impl AcpHost {
             managed_tokens,
             tool_names: None,
             shared_servers,
+            native_workers,
             context_queries: tokio::sync::Semaphore::new(1),
             agent_logs: data_dir.join("acp-agent-logs"),
             readiness: tokio::sync::Mutex::new(()),
@@ -366,6 +371,7 @@ pub(crate) trait HostServices: std::fmt::Debug + Send + Sync {
     fn bind(&self, repo: std::sync::Arc<dyn crate::db::Repo>);
     fn bind_registry(&self, registry: crate::harness::HarnessRegistry);
     fn request_progress(&self, session: &str);
+    fn bind_host(&self, host: std::sync::Weak<AcpHost>);
 }
 pub(crate) type DiscoveryCache = tokio::sync::Mutex<Option<DiscoveryEntry>>;
 #[derive(Debug)]

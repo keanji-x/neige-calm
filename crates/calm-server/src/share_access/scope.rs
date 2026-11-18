@@ -219,6 +219,7 @@ async fn allowed(
         }
         if parts.len() < 3
             || parts.contains(&"share-links")
+            || (parts.get(3) == Some(&"tasks") && !get)
             || (parts.len() == 3 && !matches!(*method, Method::GET | Method::PATCH))
         {
             return Ok(false);

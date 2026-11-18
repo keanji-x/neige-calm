@@ -131,3 +131,43 @@ impl WorkerProviderRegistry {
             .map(|provider| provider.tui_input())
     }
 }
+
+struct NativeWorkerProbe {
+    host: Arc<crate::acp_session::host::AcpHost>,
+    harness: crate::harness::HarnessRegistry,
+}
+#[async_trait::async_trait]
+impl provider::worker::managed::ManagedSessionProbe for NativeWorkerProbe {
+    async fn active_turn(&self, session: &str) -> Option<Option<String>> {
+        if let Some(turn) = self.host.native_workers.active_turn(session) {
+            return Some(turn);
+        }
+        provider::worker::managed::ManagedSessionProbe::active_turn(&self.harness, session).await
+    }
+}
+impl WorkerProviderRegistry {
+    pub fn with_native_workers(
+        mut self,
+        host: Arc<crate::acp_session::host::AcpHost>,
+        harness: crate::harness::HarnessRegistry,
+    ) -> Self {
+        let probe = Arc::new(NativeWorkerProbe { host, harness });
+        let entries = Arc::make_mut(&mut self.providers);
+        for cap in calm_types::provider_worker::PROVIDER_WORKER_CAPABILITIES
+            .iter()
+            .filter(|cap| {
+                cap.message_transport
+                    == calm_types::provider_worker::WorkerMessageTransport::NativeSession
+            })
+        {
+            entries.insert(
+                WorkerProviderKind::from(&cap.provider),
+                Arc::new(provider::worker::managed::ManagedProvider::new(
+                    cap.provider.wire_name(),
+                    probe.clone(),
+                )),
+            );
+        }
+        self
+    }
+}

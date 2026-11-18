@@ -1,3 +1,4 @@
+import { exerciseNativeWorker, exerciseProviderRows } from './native-worker.browser-fixture.tsx';
 import { cleanup, fireEvent, render } from '@testing-library/react';
 import { page as browserPage, userEvent } from 'vitest/browser';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -197,4 +198,13 @@ describe('a compact desktop TASKS row', () => {
     for (const status of statuses) expect(status.closest<HTMLElement>('[data-nc-inventory-metadata]')!.getBoundingClientRect().width).toBeLessThanOrEqual(1);
     expect(document.querySelectorAll('[role="img"][data-nc-status]')).toHaveLength(0);
   });
+});
+
+// Controlled fixture: production no-PTY Worker card and stylesheet, no provider credentials.
+it('supports Antigravity native flow, User messages and pending cancellation on desktop', async () => {
+  await exerciseNativeWorker(1200);
+});
+
+it('shows canonical Antigravity and Claude tasks beside the historical Codex alias', async () => {
+  await exerciseProviderRows(1200);
 });

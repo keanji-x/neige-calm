@@ -32,7 +32,7 @@ pub(crate) async fn boot_with_sweep<F: std::future::Future<Output = Result<()>>>
     host: &AcpPlannerHost,
     sweep: impl FnOnce(Vec<String>) -> F,
 ) -> Result<()> {
-    let ids = revoke_owned(repo, None).await?;
+    let ids = revoke_owned(repo, host.native_workers.clone(), None).await?;
     let pass_a_ids = ids.clone();
     if let Err(error) = crate::db::write_in_tx_typed(repo, move |tx| {
         Box::pin(
@@ -65,6 +65,7 @@ pub(crate) async fn boot_with_sweep<F: std::future::Future<Output = Result<()>>>
             false
         }
     };
+    host.native_workers.recover(repo, sweep_confirmed).await?;
     let unproven = if sweep_confirmed {
         Default::default()
     } else {
@@ -117,11 +118,12 @@ pub(crate) async fn sweep_tracks<'a>(
 ) -> Result<()> {
     let tracks: Vec<_> = tracks.into_iter().map(str::to_owned).collect();
     let proof = host.pre_c4.get().cloned();
+    let native_workers = host.native_workers.clone();
     let ids = crate::db::write_in_tx_typed(repo, move |tx| {
         Box::pin(async move {
             let mut ids = Vec::new();
             for track in tracks {
-                let owned = revoke_owned_tx(tx, Some(&track)).await?;
+                let owned = revoke_owned_tx(tx, native_workers.as_ref(), Some(&track)).await?;
                 // A refusal rolls back revocation before any Stop can be requested.
                 crate::provider_execution::PreC4Sweep::require_absent(proof.as_ref(), &owned)?;
                 ids.extend(owned);
@@ -180,19 +182,24 @@ pub(crate) async fn sweep_tracks<'a>(
 
 async fn revoke_owned(
     repo: &dyn crate::db::RepoEventWrite,
+    native_workers: std::sync::Arc<dyn crate::acp_session::roles::NativeWorkers>,
     track: Option<String>,
 ) -> Result<Vec<String>> {
     crate::db::write_in_tx_typed(repo, move |tx| {
-        Box::pin(async move { revoke_owned_tx(tx, track.as_deref()).await })
+        Box::pin(
+            async move { revoke_owned_tx(tx, native_workers.as_ref(), track.as_deref()).await },
+        )
     })
     .await
 }
 
 async fn revoke_owned_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    native_workers: &dyn crate::acp_session::roles::NativeWorkers,
     track: Option<&str>,
 ) -> Result<Vec<String>> {
-    let ids = crate::db::sqlite::acp_managed_session_ids(&mut **tx, track).await?;
+    let mut ids = crate::db::sqlite::acp_managed_session_ids(&mut **tx, track).await?;
+    ids.extend(native_workers.revoke_owned_tx(tx, track).await?);
     sqlx::query(
         r#"UPDATE worker_sessions
               SET mcp_token_hash = NULL

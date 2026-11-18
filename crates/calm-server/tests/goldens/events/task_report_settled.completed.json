@@ -1,0 +1,15 @@
+{
+  "description": "A completed native Worker report becomes visible after round settlement, preserving its result and artifacts.",
+  "wire": {
+    "ev": "task.report_settled",
+    "data": {
+      "idempotency_key": "idem-01",
+      "notification": "notify",
+      "outcome": {
+        "kind": "completed",
+        "result": { "summary": "done" },
+        "artifacts": ["artifact://report.md"]
+      }
+    }
+  }
+}

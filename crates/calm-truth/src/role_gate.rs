@@ -151,6 +151,7 @@ pub fn enforce_role(
     if let ActorId::AiCodex(c)
     | ActorId::AiClaude(c)
     | ActorId::AiManagedCard(c)
+    | ActorId::AiWorkerCard(c)
     | ActorId::AiPlanner(c) = actor
         && c.as_str().is_empty()
     {
@@ -202,7 +203,7 @@ pub fn enforce_role(
                     actor: format!("AiClaude({card_id})"),
                 });
             }
-            ActorId::AiManagedCard(card_id) => {
+            ActorId::AiManagedCard(card_id) | ActorId::AiWorkerCard(card_id) => {
                 // The actor variant is the wire-level claim; the gate sticks to it rather
                 // than re-binding via the cache.
                 return Err(RoleViolation::NotPlannerForTrack {
@@ -249,7 +250,7 @@ pub fn enforce_role(
                     actor: format!("AiClaude({card_id})"),
                 });
             }
-            ActorId::AiManagedCard(card_id) => {
+            ActorId::AiManagedCard(card_id) | ActorId::AiWorkerCard(card_id) => {
                 return Err(RoleViolation::NotPlannerForDispatch {
                     actor: format!("AiManagedCard({card_id})"),
                 });
@@ -290,7 +291,7 @@ pub fn enforce_role(
                     actor: format!("AiClaude({card_id})"),
                 });
             }
-            ActorId::AiManagedCard(card_id) => {
+            ActorId::AiManagedCard(card_id) | ActorId::AiWorkerCard(card_id) => {
                 return Err(RoleViolation::NotKernelForTaskDispatched {
                     actor: format!("AiManagedCard({card_id})"),
                 });
@@ -336,7 +337,7 @@ pub fn enforce_role(
                     actor: format!("AiClaude({card_id})"),
                 });
             }
-            ActorId::AiManagedCard(card_id) => {
+            ActorId::AiManagedCard(card_id) | ActorId::AiWorkerCard(card_id) => {
                 return Err(RoleViolation::NotKernelForTaskContextFrozen {
                     actor: format!("AiManagedCard({card_id})"),
                 });
@@ -405,7 +406,7 @@ pub fn enforce_role(
                     actor: format!("AiClaude({card_id})"),
                 });
             }
-            ActorId::AiManagedCard(card_id) => {
+            ActorId::AiManagedCard(card_id) | ActorId::AiWorkerCard(card_id) => {
                 return Err(RoleViolation::NotKernelForTaskContextAdvanced {
                     actor: format!("AiManagedCard({card_id})"),
                 });
@@ -445,7 +446,7 @@ pub fn enforce_role(
                     actor: format!("AiClaude({card_id})"),
                 });
             }
-            ActorId::AiManagedCard(card_id) => {
+            ActorId::AiManagedCard(card_id) | ActorId::AiWorkerCard(card_id) => {
                 return Err(RoleViolation::NotKernelForTaskGateResult {
                     actor: format!("AiManagedCard({card_id})"),
                 });
@@ -560,7 +561,13 @@ pub fn enforce_role(
         return Err(RoleViolation::SessionActorUnresolved { session: s.clone() });
     }
 
+    if let ActorId::AiWorkerCard(card) = actor
+        && cache.get(card) != Some(CardRole::Worker)
+    {
+        return Err(RoleViolation::UnknownCard { card: card.clone() });
+    }
     let worker = match actor {
+        ActorId::AiWorkerCard(card_id) => Some((card_id, "AiWorkerCard")),
         ActorId::AiCodex(card_id) => Some((card_id, "AiCodex")),
         ActorId::AiClaude(card_id) => Some((card_id, "AiClaude")),
         ActorId::AiManagedCard(card_id) => Some((card_id, "AiManagedCard")),

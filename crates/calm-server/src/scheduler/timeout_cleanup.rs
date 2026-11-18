@@ -1,5 +1,6 @@
 //! Retry cleanup of exactly the ended attempt named by a session's timeout marker.
 use super::*;
+use crate::task_control::write_worker_events;
 use calm_truth::db::sqlite::{
     session_complete_tx, session_get_tx, session_projection_by_id_tx, terminal_get_by_card_tx,
     worker_op_targets_card_tx,
@@ -36,10 +37,19 @@ impl Scheduler {
                     json_extract(handle_state_json, '$.timeout_cleanup.task_id') AS task_id,
                     json_extract(handle_state_json, '$.timeout_cleanup') AS marker
              FROM worker_sessions
-             WHERE provider IN ('codex', 'claude') AND card_id IS NOT NULL
+             WHERE provider IN (SELECT value FROM json_each(?1)) AND card_id IS NOT NULL
                AND json_extract(handle_state_json, '$.timeout_cleanup.requested_at_ms') IS NOT NULL
                AND json_type(handle_state_json, '$.timeout_cleanup.task_id') = 'text'
              ORDER BY updated_at_ms ASC, id ASC",
+        )
+        .bind(
+            serde_json::to_string(
+                &calm_types::provider_worker::PROVIDER_WORKER_CAPABILITIES
+                    .iter()
+                    .map(|cap| cap.provider.wire_name())
+                    .collect::<Vec<_>>(),
+            )
+            .expect("worker provider registry"),
         )
         .fetch_all(pool.read_pool())
         .await;
@@ -102,7 +112,9 @@ impl Scheduler {
             }
         };
         // BEGIN IMMEDIATE rechecks the discovered marker and binds its release to that attempt.
-        write_with_actor_events_typed(
+        // Native settlement may have already released the lease. Commit marker-only
+        // retirement (or a lost CAS) without manufacturing an event for an empty batch.
+        write_worker_events(
             self.repo.as_ref(),
             None,
             &self.events,

@@ -1,0 +1,11 @@
+@layer ui {
+  .frame { display: flex; flex-direction: column; min-inline-size: 0; block-size: 100%; }
+  .body { display: flex; flex-direction: column; gap: var(--space-3); min-block-size: 0; min-inline-size: 0; padding: var(--space-4); overflow: auto; font: var(--type-ui); color: var(--text); }
+  .body p { margin: 0; overflow-wrap: anywhere; }
+  .metadata { color: var(--text-2); font: var(--type-detail); letter-spacing: var(--type-detail-tracking); }
+  .flow { flex: 1 1 auto; min-block-size: 8rem; min-inline-size: 0; max-block-size: 24rem; overflow: auto; }
+  .controls label { display: flex; flex-direction: column; gap: var(--space-2); min-inline-size: 0; }
+  .controls textarea { inline-size: 100%; box-sizing: border-box; min-block-size: 4rem; resize: vertical; border: 1px solid var(--hairline); border-radius: var(--radius-sm); padding: var(--space-2); background: var(--surface-card); color: var(--text); font: inherit; }
+  .controls { display: flex; flex-wrap: wrap; align-items: start; gap: var(--space-2); }
+  .controls label, .controls p { flex-basis: 100%; }
+}

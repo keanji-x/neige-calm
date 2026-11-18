@@ -331,7 +331,7 @@ pub(crate) struct WorkspaceTrackRelease {
     pub(crate) sweep: Option<WorkspaceTrackSweep>,
 }
 
-pub(super) async fn append_workspace_events_tx(
+pub(crate) async fn append_workspace_events_tx(
     tx: &mut Tx<'_>,
     events: Vec<(ActorId, EventScope, Event)>,
 ) -> Result<Vec<BroadcastEnvelope>> {
@@ -349,7 +349,7 @@ pub(super) async fn append_workspace_events_tx(
     Ok(envelopes)
 }
 
-pub(super) async fn workspace_scope_tx(
+pub(crate) async fn workspace_scope_tx(
     tx: &mut Tx<'_>,
     card_id: &str,
     track_id: &str,

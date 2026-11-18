@@ -90,6 +90,15 @@ pub const PROVIDER_WORKER_CAPABILITIES: &[ProviderWorkerCapabilities] = &[
         executor: true,
         validator: true,
     },
+    ProviderWorkerCapabilities {
+        provider: AgentProvider::Antigravity,
+        operation: WorkerOperationKind::AcpWorker,
+        message_transport: WorkerMessageTransport::NativeSession,
+        cancel_strategy: WorkerCancelStrategy::AcpCancel,
+        resumable: true,
+        executor: true,
+        validator: true,
+    },
 ];
 impl ProviderWorkerCapabilities {
     pub fn for_provider(provider: AgentProvider) -> Option<&'static Self> {
@@ -184,9 +193,7 @@ mod tests {
         assert!(task_provider("claude", Some("codex")).is_err());
         assert!(task_provider("agent", None).is_err());
         assert!(task_provider("terminal", Some("antigravity")).is_err());
-        assert!(task_provider("agent", Some("antigravity")).is_err());
-        assert!(ProviderWorkerCapabilities::for_provider(AgentProvider::Antigravity).is_none());
-        let cap = ProviderWorkerCapabilities::for_provider(AgentProvider::Codex).unwrap();
+        let cap = ProviderWorkerCapabilities::for_provider(AgentProvider::Antigravity).unwrap();
         assert!(cap.admits(WorkerContract::Validator, SessionMode::Resumable));
         assert!(!cap.admits(WorkerContract::Planner, SessionMode::Resumable));
         assert!(!cap.admits(WorkerContract::Executor, SessionMode::Ephemeral));
@@ -200,11 +207,8 @@ mod declaration_tests {
     use serde_json::json;
     #[test]
     fn report_blocks_agent_selection_rejects_conflicts_null_and_subtrack() {
-        let base = json!({"key":"work", "kind":"agent", "provider":"codex", "goal":"inspect", "ready":true,"declared_by":"spec"});
+        let base = json!({"key":"work", "kind":"agent", "provider":"antigravity", "goal":"inspect", "ready":true,"declared_by":"spec"});
         assert!(validate_payload(KIND_TASK, &base).is_ok());
-        let mut antigravity = base.clone();
-        antigravity["provider"] = json!("antigravity");
-        assert!(validate_payload(KIND_TASK, &antigravity).is_err());
         for field in ["provider", "model", "reasoning_effort"] {
             for value in [json!(null), json!(" ")] {
                 let mut input = base.clone();
@@ -216,9 +220,8 @@ mod declaration_tests {
             }
         }
         let mut alias = base.clone();
-        alias["kind"] = json!("claude");
-        assert!(validate_payload(KIND_TASK, &alias).is_err());
         alias["kind"] = json!("codex");
+        assert!(validate_payload(KIND_TASK, &alias).is_err());
         alias["provider"] = json!("codex");
         assert!(validate_payload(KIND_TASK, &alias).is_ok());
         alias["spawn"] = json!("sub-track");

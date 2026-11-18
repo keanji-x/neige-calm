@@ -140,6 +140,7 @@ pub(crate) async fn attach<'a>(
         }
     }
     let existing = server.bindings.get(request.worker);
+    let had_existing_binding = existing.is_some();
     if existing.is_some_and(|binding| {
         !request.reuse_binding
             || binding.closing
@@ -311,7 +312,7 @@ pub(crate) async fn attach<'a>(
                 cleanup,
             })
         }
-        Err(error @ SetupFailure::Refused(_)) => {
+        Err(error @ SetupFailure::Refused(_)) if had_existing_binding => {
             guard.0 = None;
             let server = owned.as_mut().expect("shared ACP installed");
             if let Some(binding) = server.bindings.get_mut(request.worker) {

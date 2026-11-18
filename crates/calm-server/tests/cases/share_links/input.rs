@@ -347,3 +347,30 @@ async fn guest_receipt_replays_after_current_session_pointer_is_cleared() {
         StatusCode::CONFLICT
     );
 }
+
+#[tokio::test]
+async fn guest_cannot_message_or_cancel_task_worker() {
+    let fx = Fixture::new().await;
+    let mut link = fx.create(true).await;
+    link["cookie"] = super::tokens::unlock(&fx, &link).await.into();
+    let msg_path = format!("/api/tracks/{}/tasks/t1/messages", fx.track);
+    let cancel_path = format!("/api/tracks/{}/tasks/t1/cancel", fx.track);
+    assert_eq!(
+        send(
+            &fx,
+            &link,
+            &msg_path,
+            None,
+            json!({"attempt_id":"a1","idempotency_key":"k1","text":"hi"})
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        send(&fx, &link, &cancel_path, None, json!({"attempt_id":"a1"}))
+            .await
+            .0,
+        StatusCode::FORBIDDEN
+    );
+}

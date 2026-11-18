@@ -230,7 +230,8 @@ impl EventScope {
 // 29: provider-neutral managed Assistant session actors.
 // 30: canonical presentation cursors; old raw item IDs retain their original meaning.
 // 31: owner-declared task notification; pre-v31 source bytes remain immutable.
-pub const SYNC_EVENT_VERSION: u32 = 31;
+// 32: native Worker report settlement (`task.report_settled`).
+pub const SYNC_EVENT_VERSION: u32 = 32;
 
 /// Declared by the task owner; Legacy exists only for reading earlier stored events.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -641,6 +642,15 @@ pub enum Event {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
         agent_message: Option<String>,
+    },
+
+    /// Native Worker report release completed after the exact ACP turn settled. The original
+    /// outcome event remains suppressed; this durable notification survives replay and deletion.
+    #[serde(rename = "task.report_settled")]
+    TaskReportSettled {
+        idempotency_key: String,
+        notification: PlannerNotification,
+        outcome: crate::acp_worker::WorkerReportOutcome,
     },
 
     /// One Git delivery settled (#1727 S4): the candidate the script pinned or why none was minted,
@@ -1154,7 +1164,7 @@ impl Event {
                 entity_kind: None,
                 entity_id: None,
             },
-            Event::TaskCompleted { .. } => EventMetadata {
+            Event::TaskCompleted { .. } | Event::TaskReportSettled { .. } => EventMetadata {
                 kind_tag,
                 plugin_id: None,
                 entity_kind: None,
@@ -1277,6 +1287,7 @@ impl Event {
             Event::CodexWorkerRequested { .. } => "codex.worker_requested",
             Event::TerminalWorkerRequested { .. } => "terminal.worker_requested",
             Event::TaskCompleted { .. } => "task.completed",
+            Event::TaskReportSettled { .. } => "task.report_settled",
             Event::TaskFailed { .. } => "task.failed",
             Event::PlanUpdated { .. } => "plan.updated",
             Event::TaskDispatched { .. } => "task.dispatched",
@@ -1338,9 +1349,9 @@ impl Event {
 
     pub fn task_notification(&self) -> Option<PlannerNotification> {
         match self {
-            Self::TaskCompleted { notification, .. } | Self::TaskFailed { notification, .. } => {
-                Some(*notification)
-            }
+            Self::TaskCompleted { notification, .. }
+            | Self::TaskFailed { notification, .. }
+            | Self::TaskReportSettled { notification, .. } => Some(*notification),
             _ => None,
         }
     }
@@ -1468,6 +1479,7 @@ pub fn topics(ev: &Event) -> Vec<String> {
         Event::CodexWorkerRequested { .. }
         | Event::TerminalWorkerRequested { .. }
         | Event::TaskCompleted { .. }
+        | Event::TaskReportSettled { .. }
         | Event::TaskFailed { .. }
         | Event::TaskDispatched { .. }
         | Event::TaskGitDeliverySettled { .. }

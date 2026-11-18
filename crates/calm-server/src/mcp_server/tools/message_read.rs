@@ -5,7 +5,7 @@ use crate::mcp_server::registry::{
 };
 use crate::mcp_server::tools::emit::required_attempt_id;
 use crate::model::{CardRole, TaskStatus};
-use crate::operation::worker_attempt::{current_running_attempt_tx, owned_attempt_tx};
+use crate::operation::worker_attempt::{current_message_attempt_tx, owned_attempt_tx};
 use serde_json::{Value, json};
 use std::sync::Arc;
 
@@ -42,7 +42,7 @@ async fn read_messages(
             let messages = if reported {
                 crate::db::sqlite::planner_messages_for_attempt_tx(tx, &attempt).await?
             } else {
-                current_running_attempt_tx(tx, &task).await?;
+                current_message_attempt_tx(tx, &task).await?;
                 crate::db::sqlite::planner_messages_read_tx(tx, &attempt).await?
             };
             let messages: Vec<_> = messages

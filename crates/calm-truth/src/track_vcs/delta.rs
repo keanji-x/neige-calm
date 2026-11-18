@@ -469,6 +469,9 @@ pub(super) fn paths_changed_by_event(event: &Event, track_id: &TrackId) -> PathD
         | Event::TerminalWorkerRequested {
             idempotency_key, ..
         }
+        | Event::TaskReportSettled {
+            idempotency_key, ..
+        }
         | Event::TaskCompleted {
             idempotency_key, ..
         }

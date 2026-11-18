@@ -106,6 +106,9 @@ pub(crate) async fn stop_session(
     session: &str,
     reason: StopReason,
 ) -> Result<()> {
+    if host.native_workers.stop_if_owned(host, session).await? {
+        return Ok(());
+    }
     stop_execution(host, session, reason).await?;
     let repo = host.completion.repo()?;
     let provider = repo

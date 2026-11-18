@@ -565,6 +565,7 @@ pub(crate) async fn probe_supervisor_for_terminal_at(
 pub mod acp_planner;
 pub(crate) mod acp_session;
 mod acp_wiring;
+pub mod acp_worker;
 /// The Today summary's activity source; one caller (`routes::today_summary`), no MCP surface.
 pub mod activity_window;
 pub mod agent_providers;
@@ -874,3 +875,5 @@ mod child_track_result;
 
 #[cfg(target_os = "linux")]
 pub mod offline_audit;
+
+pub(crate) mod task_control;

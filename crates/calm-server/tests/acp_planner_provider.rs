@@ -87,6 +87,25 @@ async fn boot_as_with_creation_mode(
     boot_registration(root, provider, env, min_agent_version, mode, None).await
 }
 
+pub(super) async fn boot_as_scenario(
+    root: &Root,
+    provider: &str,
+    env: Value,
+    min_agent_version: &str,
+    scenario: &str,
+) -> Stack {
+    boot_as_scenario_with_auth_and_mode(
+        root,
+        provider,
+        env,
+        min_agent_version,
+        None,
+        None,
+        scenario,
+    )
+    .await
+}
+
 async fn boot_registration(
     root: &Root,
     provider: &str,

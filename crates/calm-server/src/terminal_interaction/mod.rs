@@ -22,7 +22,9 @@ mod actions;
 mod client;
 mod input_control;
 mod message;
-pub use message::{MESSAGE_BYTES_MAX, MessageInvalid, message_header};
+pub use message::{
+    MESSAGE_BYTES_MAX, MessageInvalid, message_header, message_header_from, validate_message_text,
+};
 mod observation;
 mod operations;
 mod persisted_exit;

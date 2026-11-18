@@ -89,11 +89,15 @@ impl ProviderExecutionOwner for Owner {
                     | KnownEnd::ClaudeWorkerTurn(_)
                     | KnownEnd::AcpTurn(_)
                     | KnownEnd::AcpRefused
-                    | KnownEnd::AcpCompaction,
+                    | KnownEnd::AcpCompaction
+                    | KnownEnd::AcpWorkerTurn(_),
                 ) => {
                     return Err(conflict("wrong Claude completion purpose"));
                 }
             },
+            Purpose::WorkerTurn { .. } => {
+                return Err(conflict("wrong Claude completion purpose"));
+            }
             Purpose::Turn { turn_id } | Purpose::Compaction { turn_id } => {
                 let terminal = foreground_settled(&evidence);
                 match known {
@@ -233,7 +237,8 @@ impl ProviderExecutionOwner for Owner {
                         | KnownEnd::ClaudeWorkerTurn(_)
                         | KnownEnd::AcpRefused
                         | KnownEnd::AcpTurn(_)
-                        | KnownEnd::AcpCompaction,
+                        | KnownEnd::AcpCompaction
+                        | KnownEnd::AcpWorkerTurn(_),
                     ) => {
                         return Err(conflict("wrong Claude completion purpose"));
                     }

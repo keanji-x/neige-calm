@@ -41,7 +41,7 @@ pub(crate) mod planner_start_fence;
 pub(crate) mod stdin_payload;
 pub mod task_gate_run;
 pub(crate) mod task_launch;
-mod task_prompt;
+pub(crate) mod task_prompt;
 pub mod task_verify_adapter;
 pub mod terminal_adapter;
 pub(crate) mod terminal_disposal;
@@ -92,7 +92,8 @@ const OPERATION_LEASE_MS: TimestampMs = 60_000;
 
 /// Authoritative registry of operation adapters whose payload is bound to a
 /// task row and must therefore enforce the stale-context admission fence.
-pub const TASK_BOUND_ADAPTER_KINDS: [&str; 6] = [
+pub const TASK_BOUND_ADAPTER_KINDS: [&str; 7] = [
+    "acp-worker",
     "codex-worker",
     "claude-worker",
     "terminal-worker",
@@ -907,6 +908,18 @@ pub trait ProviderAdapter: Send + Sync {
     /// [`OperationRuntime::commit_keyed`] commits in one transaction.
     fn as_tx_only(&self) -> Option<&dyn TxOnlyAdapter> {
         None
+    }
+
+    /// A native task adapter stops its exact session without granting PTY capabilities.
+    fn fence_worker_session(&self, _session: &str, _turn: Option<&str>) -> bool {
+        false
+    }
+
+    async fn stop_worker_session(
+        &self,
+        _runtime: &crate::session_projection_repo::WorkerSessionProjection,
+    ) -> Result<bool> {
+        Ok(false)
     }
 
     async fn validate(&self, input: &Value) -> Result<()>;

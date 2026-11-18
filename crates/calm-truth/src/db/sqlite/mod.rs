@@ -57,6 +57,10 @@ pub mod worktree_events;
 pub use session_conversation::{
     PLANNER_START_CARD_KEY, PLANNER_START_OPERATION_KIND, TERMINAL_OPERATION_PHASES,
 };
+mod acp_worker;
+mod worker_cleanup;
+pub use acp_worker::{acp_worker_state_cas_tx, acp_worker_state_tx};
+pub use worker_cleanup::{WorkerCleanupVerdict, worker_operation_cleanup_tx};
 mod acp_cleanup;
 pub mod acp_resident;
 mod acp_submission;

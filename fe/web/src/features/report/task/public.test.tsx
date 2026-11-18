@@ -2,6 +2,7 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it } from 'vitest';
 
+import type { ReportTaskRow } from '../../../../../core/domain/report.ts';
 import { ReportTaskBlock } from './public.tsx';
 
 afterEach(cleanup);
@@ -25,7 +26,7 @@ describe('ReportTaskBlock', () => {
     }} />);
     expect(screen.getByText('Task')).toBeTruthy();
     expect(screen.getByText('ingest-resolver')).toBeTruthy();
-    expect(screen.getByText('codex')).toBeTruthy();
+    expect(screen.getByText('Codex')).toBeTruthy();
     expect(screen.getByText('Declaration not ready')).toBeTruthy();
   });
 
@@ -38,10 +39,55 @@ describe('ReportTaskBlock', () => {
     expect(fields()).toEqual([]);
     openTask();
     expect(fields()).toEqual([
+      'Mechanism', 'codex',
+      'Provider', 'Codex',
+      'Requested model / effort', 'Provider default / Provider default',
+      'Effective model', '未记录 · 未记录',
+      'Effective effort', '未记录 · 未记录',
       'Done when', 'No direct call sites left.',
       'Checks', 'cargo fmt --check',
       'Declared by', 'Planner agent',
     ]);
+  });
+
+  it.each([
+    { model: 'attempt-model', effort: 'attempt-effort', expected: 'attempt-model / attempt-effort' },
+    { model: null, effort: null, expected: 'Provider default / Provider default' },
+  ])('uses frozen execution selection over a divergent declaration ($expected)', ({ model, effort, expected }) => {
+    const task: ReportTaskRow = {
+      blockId: 'b-1', key: 't', state: 'ready', declaration: null, status: 'running',
+      statusDetail: null, kind: 'agent', provider: 'codex', requestedModel: 'new-model',
+      requestedEffort: 'new-effort', workerCardId: 'worker', pendingReason: null,
+      execution: {
+        attemptId: 'attempt-1', generation: 1, status: 'running', label: 'Running',
+        statusDetail: null, workerCardId: 'worker', blockingReason: null, createdAtMs: 1, finishedAtMs: null,
+        workerSelection: {
+          mechanism: 'agent', provider: 'antigravity', requested_model: model, requested_effort: effort,
+          effective_model: 'observed-model', effective_effort: 'observed-effort',
+          selection_source: { model: 'provider_default_reported', effort: 'provider_default_reported' },
+          capabilities: { provider: 'antigravity', operation: 'acp-worker', message_transport: 'native_session',
+            cancel_strategy: 'acp_cancel', resumable: true, executor: true, validator: true },
+          turn_phase: 'submitting', cleanup_pending: false,
+        },
+      },
+    };
+    const { container } = render(<ReportTaskBlock blockId="b-1" task={task} payload={{
+      key: 't', kind: 'agent', provider: 'codex', declared_by: 'user', ready: true, goal: 'Ship it.',
+      model: 'new-model', reasoning_effort: 'new-effort',
+    }} />);
+    expect(container.querySelector('summary')!.textContent).toContain('Antigravity');
+    openTask();
+    expect(fields()).toEqual([
+      'Mechanism', 'agent',
+      'Provider', 'Antigravity',
+      'Requested model / effort', expected,
+      'Effective model', 'observed-model · Provider default',
+      'Effective effort', 'observed-effort · Provider default',
+      'Declared by', 'You',
+    ]);
+    expect(container.textContent).not.toContain('new-model');
+    expect(container.textContent).not.toContain('new-effort');
+    expect(container.textContent).not.toContain('Codex');
   });
 
   it('offers no controls: a report does not write back', () => {
@@ -76,7 +122,7 @@ describe('ReportTaskBlock', () => {
     const summary = details!.querySelector('summary')!;
     expect(summary.textContent).toContain('Task');
     expect(summary.textContent).toContain('ingest-resolver');
-    expect(summary.textContent).toContain('codex');
+    expect(summary.textContent).toContain('Codex');
     expect(summary.textContent).toContain('Declaration ready');
     expect(summary.textContent).not.toContain('Route the ingest call sites');
     expect(summary.querySelector('dl')).toBeNull();
@@ -110,5 +156,22 @@ describe('ReportTaskBlock', () => {
     }} />);
     expect(screen.queryByText('Withdrawn')).toBeNull();
     expect(screen.getByText('Declaration ready')).toBeTruthy();
+  });
+
+  it('keeps an explicit canonical request separate from unrecorded actual values', () => {
+    render(<ReportTaskBlock blockId="b-agent" payload={{
+      key: 'inspect', kind: 'agent', provider: 'antigravity', declared_by: 'user', ready: true,
+      goal: 'Inspect the recorded evidence.', access: 'read_only', model: 'gemini-fixture', reasoning_effort: 'deep',
+    }} />);
+    expect(screen.getByText('Antigravity')).toBeTruthy();
+    openTask();
+    expect(fields()).toEqual([
+      'Mechanism', 'agent',
+      'Provider', 'Antigravity',
+      'Requested model / effort', 'gemini-fixture / deep',
+      'Effective model', '未记录 · 未记录',
+      'Effective effort', '未记录 · 未记录',
+      'Declared by', 'You',
+    ]);
   });
 });

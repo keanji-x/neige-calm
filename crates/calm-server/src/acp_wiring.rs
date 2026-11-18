@@ -10,6 +10,7 @@ impl AcpPlannerHost {
         mcp_socket: PathBuf,
         managed_tokens: crate::mcp_server::managed_tokens::ManagedSessionTokens,
     ) -> Result<Self> {
+        let native_workers = std::sync::Arc::new(crate::acp_worker::Workers::default());
         let (execution, services) = crate::acp_planner::execution::owner();
         Self::with_services(
             config,
@@ -19,6 +20,7 @@ impl AcpPlannerHost {
             managed_tokens,
             execution,
             services,
+            native_workers,
         )
     }
     pub fn unconfigured_scratch() -> Result<Self> {

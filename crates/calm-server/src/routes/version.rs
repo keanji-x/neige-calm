@@ -62,7 +62,8 @@ pub use calm_types::compatibility::REST_API_VERSION as API_VERSION;
 // Track template selection and workspace isolation upgrades require compatible clients.
 // Provider availability requires the effective authentication method (#3682).
 // Per-task provider and model selection requires compatible task schemas (#3679).
-pub const WEB_COMPAT_VERSION: u32 = 73;
+// Native Antigravity task workers and task.report_settled require compatible clients (#3679).
+pub const WEB_COMPAT_VERSION: u32 = 74;
 
 /// Kernel compatibility values sourced from live constants.
 #[derive(Debug, Clone, Serialize)]

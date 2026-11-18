@@ -11,6 +11,7 @@ use calm_server::model::{
     Area, AreaKind, Card, CardRuntimeView, Overlay, Track, TrackWorkspace, TrackWorkspaceKind,
 };
 use calm_server::session_projection_repo::{AgentProvider, WorkerSessionKind, WorkerSessionState};
+use calm_types::acp_worker::WorkerReportOutcome;
 use calm_types::event::{AskAction, AskAnswer, AskDelivery, AskQuestion, TaskContextRef};
 use calm_types::git_candidate::{DeliveryFailureCode, DeliverySettlement, DeliveryWakeReason};
 use calm_types::proposal::{ProposalAnchor, ProposalDecision, ProposalOp};
@@ -763,6 +764,31 @@ golden_test!(
 );
 
 golden_test!(
+    task_report_settled_completed,
+    "task_report_settled.completed.json",
+    Event::TaskReportSettled {
+        idempotency_key: "idem-01".into(),
+        notification: calm_types::event::PlannerNotification::Notify,
+        outcome: WorkerReportOutcome::Completed {
+            result: json!({"summary": "done"}),
+            artifacts: vec![ArtifactRef::from("artifact://report.md")],
+        },
+    }
+);
+
+golden_test!(
+    task_report_settled_failed,
+    "task_report_settled.failed.json",
+    Event::TaskReportSettled {
+        idempotency_key: "idem-01".into(),
+        notification: calm_types::event::PlannerNotification::Suppress,
+        outcome: WorkerReportOutcome::Failed {
+            reason: "native round interrupted".into(),
+        },
+    }
+);
+
+golden_test!(
     plan_updated_full,
     "plan_updated.full.json",
     Event::PlanUpdated {
@@ -1435,7 +1461,7 @@ fn alias_kinds_survive_from_kind_and_payload() {
 }
 
 /// Every `Event` variant's kind tag, in declaration order.
-const ALL_KIND_TAGS: [&str; 60] = [
+const ALL_KIND_TAGS: [&str; 61] = [
     "area.updated",
     "area.deleted",
     "track.updated",
@@ -1467,6 +1493,7 @@ const ALL_KIND_TAGS: [&str; 60] = [
     "terminal.worker_requested",
     "task.completed",
     "task.failed",
+    "task.report_settled",
     "plan.updated",
     "task.dispatched",
     "task.context_frozen",
@@ -1527,7 +1554,7 @@ fn goldens_cover_every_event_variant() {
         covered.insert(ev);
     }
     assert_eq!(
-        files, 96,
+        files, 98,
         "golden file count changed — update the per-variant tests"
     );
     for tag in ALL_KIND_TAGS {
@@ -1575,6 +1602,7 @@ fn kind_tag_list_matches_enum() {
             Event::TerminalWorkerRequested { .. } => "terminal.worker_requested",
             Event::TaskCompleted { .. } => "task.completed",
             Event::TaskFailed { .. } => "task.failed",
+            Event::TaskReportSettled { .. } => "task.report_settled",
             Event::PlanUpdated { .. } => "plan.updated",
             Event::TaskDispatched { .. } => "task.dispatched",
             Event::TaskContextFrozen { .. } => "task.context_frozen",
@@ -1612,7 +1640,7 @@ fn kind_tag_list_matches_enum() {
     assert_eq!(tag_of(&sample), sample.kind_tag());
     assert_eq!(
         ALL_KIND_TAGS.len(),
-        60,
+        61,
         "ALL_KIND_TAGS length drifted from the Event enum"
     );
 }

@@ -11,11 +11,11 @@ export type ActorId = { "kind": "User" } | { "kind": "Kernel" } | { "kind": "Ker
 
 export type AgentProvider = "opencode" | "codex" | "claude" | "grok" | "antigravity";
 
-export type Area = { id: AreaId, name: string, color: string, sort: number, kind: AreaKind, 
+export type Area = { id: AreaId, name: string, color: string, sort: number, kind: AreaKind,
 /**
  * Built-in Track template preselected by the official New Track surface; `None` keeps "No template".
  */
-default_template_id: string | null, 
+default_template_id: string | null,
 /**
  * Exact attached Git working directory preselected for a new Track; `None` keeps the server-managed default.
  */
@@ -68,7 +68,7 @@ export type AskDelivery = "wake" | "hold";
  * One question of an `ask.requested`: what the user is asked, and the answers offered. The first
  * option is the recommended one; no options means a free-text answer.
  */
-export type AskQuestion = { title: string, 
+export type AskQuestion = { title: string,
 /**
  * Complete plain-text context frozen with this question. Never clipped by title bounds.
  */
@@ -83,26 +83,26 @@ export type AttachmentId = string;
 /**
  * One block of a report of the area; `insert` is ``@`/AreaName/TrackName/report.md#<block_id>` ``.
  */
-export type BlockMention = { 
+export type BlockMention = {
 /**
  * The block's heading in the Report outline; a block with no heading is not offered.
  */
-label: string, block_id: string, 
+label: string, block_id: string,
 /**
  * The title of the track whose report holds the block.
  */
 track_title: string, track_id: TrackId, insert: string, };
 
-export type Card = { id: CardId, track_id: TrackId, 
+export type Card = { id: CardId, track_id: TrackId,
 /**
  * `"terminal"` for built-in PTY cards, `"ui://<plugin>/<view>"` for plugin-provided cards.
  * `[legacy]` `"plugin:<plugin-id>:<view-id>"` may still appear on persisted rows.
  */
-kind: string, sort: number, 
+kind: string, sort: number,
 /**
  * Opaque JSON blob.
  */
-payload: unknown, title?: string, runtime?: CardRuntimeView, 
+payload: unknown, title?: string, runtime?: CardRuntimeView,
 /**
  * System-card guard: `true` for user-facing cards, `false` for kernel-owned cards the user cannot
  * remove. Defaults to `true` because `bool::default()` is the unsafe fallback for a deny-by-omission auth bit.
@@ -125,11 +125,11 @@ export type CardRole = "worker" | "planner" | "reportcard" | "assistant";
  * Live runtime projection read from `worker_sessions` when a card is fetched or serialized. Not
  * part of the idempotency contract: it may differ between a first POST response and a retry.
  */
-export type CardRuntimeView = { worker_session_id: string, kind: WorkerSessionKind, status: WorkerSessionState, updated_at_ms?: number, provider?: AgentProvider, terminal_id?: string, thread_id?: string, session_id?: string, source?: string, thread_status?: string, 
+export type CardRuntimeView = { worker_session_id: string, kind: WorkerSessionKind, status: WorkerSessionState, updated_at_ms?: number, provider?: AgentProvider, terminal_id?: string, thread_id?: string, session_id?: string, source?: string, thread_status?: string,
 /**
  * When the card's last non-interrupted turn ended, or absent when it has none.
  */
-last_turn_completed_ms?: number, 
+last_turn_completed_ms?: number,
 /**
  * A Claude card's child: the first token `claude --version` printed when it was started
  * (#2516). Absent on other runtimes, and when that run gave no answer.
@@ -146,13 +146,13 @@ export type ConversationActionAvailability = { "kind": "available" } | { "kind":
 
 export type ConversationActionUnavailableReason = "prior_invocation_not_recorded" | "invocation_not_fully_frozen" | "attachments_not_frozen" | "erased_or_withdrawn" | "unsupported_binding" | "unsupported_source" | "already_resolved" | "already_kept" | "not_held";
 
-export type ConversationActiveInput = { 
+export type ConversationActiveInput = {
 /**
  * Execution and held submissions are independent facts.
  */
 current_execution_id: string | null, submissions: Array<ConversationSubmissionDelivery>, };
 
-export type ConversationAttemptDelivery = { attempt_id: string, 
+export type ConversationAttemptDelivery = { attempt_id: string,
 /**
  * Decimal text preserves the full persisted u64 CAS identity in browsers.
  */
@@ -206,11 +206,11 @@ export type ConversationReadContract = "conversation_v1";
 
 export type ConversationResolutionActions = { keep: ConversationActionAvailability, retry: ConversationActionAvailability, };
 
-export type ConversationSubmissionDelivery = { 
+export type ConversationSubmissionDelivery = {
 /**
  * Zero names Initial; positive ordinals are supplemental claims of that execution.
  */
-ordinal: number, carrier_id: string, logical_turn_id: string, submission_id: string, 
+ordinal: number, carrier_id: string, logical_turn_id: string, submission_id: string,
 /**
  * Null explicitly means no crossing has been recorded for this submission.
  */
@@ -269,112 +269,112 @@ export type EnrollmentRedeemed = { enrollmentId: string, attemptId: string, sess
  * The full set of WS event envelopes the kernel emits on `/api/events`. ts-rs requires every
  * payload type referenced here to also derive `TS`.
  */
-export type Event = { "ev": "area.updated", "data": Area } | { "ev": "area.deleted", "data": { id: AreaId, } } | { "ev": "track.updated", "data": TrackUpdatedPayload } | { "ev": "track.deleted", "data": { id: TrackId, area_id: AreaId, } } | { "ev": "card.added", "data": Card } | { "ev": "card.updated", "data": Card } | { "ev": "card.deleted", "data": { id: CardId, track_id: TrackId, } } | { "ev": "worker_session.started", "data": { worker_session_id: string, card_id: string, kind: WorkerSessionKind, agent_provider: AgentProvider | null, status: WorkerSessionState, } } | { "ev": "worker_session.status_changed", "data": { worker_session_id: string, card_id: string, old_status: WorkerSessionState, new_status: WorkerSessionState, } } | { "ev": "worker_session.superseded", "data": { old_worker_session_id: string, new_worker_session_id: string, card_id: string, } } | { "ev": "harness.item.added", "data": { worker_session_id: string, card_id: CardId, track_id: TrackId, item_db_id: number, item_uuid: string | null, item_type: string | null, turn_id: string | null, method: string, } } | { "ev": "harness.phase.changed", "data": { worker_session_id: string, card_id: CardId, track_id: TrackId, old_phase: HarnessPhaseTag, new_phase: HarnessPhaseTag, } } | { "ev": "harness.transcript.cleared", "data": { worker_session_id: string, card_id: CardId, track_id: TrackId, 
+export type Event = { "ev": "area.updated", "data": Area } | { "ev": "area.deleted", "data": { id: AreaId, } } | { "ev": "track.updated", "data": TrackUpdatedPayload } | { "ev": "track.deleted", "data": { id: TrackId, area_id: AreaId, } } | { "ev": "card.added", "data": Card } | { "ev": "card.updated", "data": Card } | { "ev": "card.deleted", "data": { id: CardId, track_id: TrackId, } } | { "ev": "worker_session.started", "data": { worker_session_id: string, card_id: string, kind: WorkerSessionKind, agent_provider: AgentProvider | null, status: WorkerSessionState, } } | { "ev": "worker_session.status_changed", "data": { worker_session_id: string, card_id: string, old_status: WorkerSessionState, new_status: WorkerSessionState, } } | { "ev": "worker_session.superseded", "data": { old_worker_session_id: string, new_worker_session_id: string, card_id: string, } } | { "ev": "harness.item.added", "data": { worker_session_id: string, card_id: CardId, track_id: TrackId, item_db_id: number, item_uuid: string | null, item_type: string | null, turn_id: string | null, method: string, } } | { "ev": "harness.phase.changed", "data": { worker_session_id: string, card_id: CardId, track_id: TrackId, old_phase: HarnessPhaseTag, new_phase: HarnessPhaseTag, } } | { "ev": "harness.transcript.cleared", "data": { worker_session_id: string, card_id: CardId, track_id: TrackId,
 /**
  * Number of `harness_items` rows deleted by this reset; `None` on unmeasured historical rows.
  */
-cleared_item_count: number | null, 
+cleared_item_count: number | null,
 /**
  * Summed byte length of those rows' `params` payloads; `None` on unmeasured historical rows.
  */
-cleared_params_bytes: number | null, 
+cleared_params_bytes: number | null,
 /**
  * Card age at reset in milliseconds; `None` on unmeasured historical rows.
  */
-card_age_ms_at_clear: number | null, } } | { "ev": "harness.transcript.rewound", "data": { worker_session_id: string, card_id: CardId, track_id: TrackId, turn_id: string, 
+card_age_ms_at_clear: number | null, } } | { "ev": "harness.transcript.rewound", "data": { worker_session_id: string, card_id: CardId, track_id: TrackId, turn_id: string,
 /**
  * Number of transcript rows deleted with the turn.
  */
-removed_item_count: number, } } | { "ev": "harness.user_message.enqueued", "data": { worker_session_id: string, card_id: CardId, track_id: TrackId, char_count: number, } } | { "ev": "harness.queue.changed", "data": { worker_session_id: string, card_id: CardId, track_id: TrackId, entry_id: string, change: HarnessQueueChange, actor: ActorId, } } | { "ev": "track.report_edited", "data": { track_id: TrackId, card_id: CardId, author: EditAuthor, 
+removed_item_count: number, } } | { "ev": "harness.user_message.enqueued", "data": { worker_session_id: string, card_id: CardId, track_id: TrackId, char_count: number, } } | { "ev": "harness.queue.changed", "data": { worker_session_id: string, card_id: CardId, track_id: TrackId, entry_id: string, change: HarnessQueueChange, actor: ActorId, } } | { "ev": "track.report_edited", "data": { track_id: TrackId, card_id: CardId, author: EditAuthor,
 /**
  * Submitting plugin id when `author == EditAuthor::Plugin`; `None` for every other author.
  */
-author_plugin_id?: string, edit_id: string, summary_before: string, summary_after: string, body_before: string, body_after: string, agent_message?: string, } } | { "ev": "track.wake_requested", "data": { track_id: TrackId, source: string, key: string, text: string, } } | { "ev": "assistant.input_requested", "data": { card_id: CardId, track_id: TrackId, original_worker: string, source: SystemAssistantSource, subject: string, version: number, text: string, } } | { "ev": "overlay.set", "data": Overlay } | { "ev": "overlay.deleted", "data": { plugin_id: string, entity_kind: string, entity_id: string, kind: string, } } | { "ev": "terminal.deleted", "data": { id: string, card_id: CardId, } } | { "ev": "plugin.state", "data": { id: string, state: string, 
+author_plugin_id?: string, edit_id: string, summary_before: string, summary_after: string, body_before: string, body_after: string, agent_message?: string, } } | { "ev": "track.wake_requested", "data": { track_id: TrackId, source: string, key: string, text: string, } } | { "ev": "assistant.input_requested", "data": { card_id: CardId, track_id: TrackId, original_worker: string, source: SystemAssistantSource, subject: string, version: number, text: string, } } | { "ev": "overlay.set", "data": Overlay } | { "ev": "overlay.deleted", "data": { plugin_id: string, entity_kind: string, entity_id: string, kind: string, } } | { "ev": "terminal.deleted", "data": { id: string, card_id: CardId, } } | { "ev": "plugin.state", "data": { id: string, state: string,
 /**
  * Crash reason / initialize-rejected message, surfaced to the WS so the UI can show it without a
  * separate `/log` fetch; `None` for healthy transitions.
  */
-last_error?: string, } } | { "ev": "plugin.data.changed", "data": { plugin_id: string, } } | { "ev": "plugin.tool.registered", "data": { plugin_id: string, tool_name: string, } } | { "ev": "codex.hook", "data": { 
+last_error?: string, } } | { "ev": "plugin.data.changed", "data": { plugin_id: string, } } | { "ev": "plugin.tool.registered", "data": { plugin_id: string, tool_name: string, } } | { "ev": "codex.hook", "data": {
 /**
  * Owning card id — topic key `card:<card_id>`.
  */
-card_id: CardId, 
+card_id: CardId,
 /**
  * Snake_case discriminator: `hook.codex.<event_name>`; defaults to `hook.codex.unknown` if missing.
  */
-kind: string, 
+kind: string,
 /**
  * Stable hook ingest key used by the server and planner harness to
  * suppress duplicate lifecycle posts.
  */
-hook_idempotency_key: string, 
+hook_idempotency_key: string,
 /**
  * Original codex hook JSON, verbatim.
  */
-payload: unknown, } } | { "ev": "claude.hook", "data": { 
+payload: unknown, } } | { "ev": "claude.hook", "data": {
 /**
  * Owning card id — topic key `card:<card_id>`.
  */
-card_id: CardId, 
+card_id: CardId,
 /**
  * Hook discriminator supplied by the future Claude hook route.
  */
-kind: string, 
+kind: string,
 /**
  * Stable hook ingest key used by the server and planner harness to
  * suppress duplicate lifecycle posts.
  */
-hook_idempotency_key: string, 
+hook_idempotency_key: string,
 /**
  * Original Claude hook JSON, verbatim.
  */
-payload: unknown, } } | { "ev": "codex.worker_requested", "data": { idempotency_key: string, goal: string, context: unknown, acceptance_criteria?: string, agent_message?: string, } } | { "ev": "terminal.worker_requested", "data": { idempotency_key: string, cmd: string, cwd?: string, agent_message?: string, } } | { "ev": "task.completed", "data": { notification: PlannerNotification, idempotency_key: string, result: unknown, artifacts: Array<ArtifactRef>, agent_message?: string, } } | { "ev": "task.failed", "data": { notification: PlannerNotification, idempotency_key: string, reason: string, details?: unknown, agent_message?: string, } } | { "ev": "task.git_delivery_settled", "data": { task_id: string, idempotency_key: string, track_id: TrackId, card_id: CardId, delivery_id: string, ordinal: number, result: DeliverySettlement, wake_reason: DeliveryWakeReason, } } | { "ev": "plan.updated", "data": { track_id: TrackId, changed_keys: Array<string>, agent_message?: string, } } | { "ev": "task.dispatched", "data": { idempotency_key: string, kind: string, agent_message?: string, } } | { "ev": "task.context_frozen", "data": { track_id: TrackId, task_key: string, idempotency_key: string, task_id: string, refs: Array<TaskContextRef>, doc_revs: { [key in string]: number }, truncated: boolean, } } | { "ev": "task.context_advanced", "data": { track_id: TrackId, task_key: string, task_id: string, changed_refs: Array<TaskContextChangedRef>, verdict: string, rationale: string, } } | { "ev": "workspace.leased", "data": { track_id: TrackId, card_id: CardId, lease_id: string, path: string, } } | { "ev": "workspace.released", "data": { track_id: TrackId, card_id: CardId, lease_id: string, } } | { "ev": "forge.pr.merged", "data": { track_id: TrackId, subject: ForgeMergeSubject, head_sha: string, merge_sha: string, } } | { "ev": "ask.requested", "data": { track_id: TrackId, questions: Array<AskQuestion>, delivery: AskDelivery, action?: AskAction, 
+payload: unknown, } } | { "ev": "codex.worker_requested", "data": { idempotency_key: string, goal: string, context: unknown, acceptance_criteria?: string, agent_message?: string, } } | { "ev": "terminal.worker_requested", "data": { idempotency_key: string, cmd: string, cwd?: string, agent_message?: string, } } | { "ev": "task.completed", "data": { notification: PlannerNotification, idempotency_key: string, result: unknown, artifacts: Array<ArtifactRef>, agent_message?: string, } } | { "ev": "task.failed", "data": { notification: PlannerNotification, idempotency_key: string, reason: string, details?: unknown, agent_message?: string, } } | { "ev": "task.report_settled", "data": { idempotency_key: string, notification: PlannerNotification, outcome: WorkerReportOutcome, } } | { "ev": "task.git_delivery_settled", "data": { task_id: string, idempotency_key: string, track_id: TrackId, card_id: CardId, delivery_id: string, ordinal: number, result: DeliverySettlement, wake_reason: DeliveryWakeReason, } } | { "ev": "plan.updated", "data": { track_id: TrackId, changed_keys: Array<string>, agent_message?: string, } } | { "ev": "task.dispatched", "data": { idempotency_key: string, kind: string, agent_message?: string, } } | { "ev": "task.context_frozen", "data": { track_id: TrackId, task_key: string, idempotency_key: string, task_id: string, refs: Array<TaskContextRef>, doc_revs: { [key in string]: number }, truncated: boolean, } } | { "ev": "task.context_advanced", "data": { track_id: TrackId, task_key: string, task_id: string, changed_refs: Array<TaskContextChangedRef>, verdict: string, rationale: string, } } | { "ev": "workspace.leased", "data": { track_id: TrackId, card_id: CardId, lease_id: string, path: string, } } | { "ev": "workspace.released", "data": { track_id: TrackId, card_id: CardId, lease_id: string, } } | { "ev": "forge.pr.merged", "data": { track_id: TrackId, subject: ForgeMergeSubject, head_sha: string, merge_sha: string, } } | { "ev": "ask.requested", "data": { track_id: TrackId, questions: Array<AskQuestion>, delivery: AskDelivery, action?: AskAction,
 /**
  * The provider item the question was translated from; absent for a `neige_user_ask` call.
  */
-source_item_id?: string, } } | { "ev": "ask.answered", "data": { ask_id: number, track_id: TrackId, answers: Array<AskAnswer>, } } | { "ev": "ask.withdrawn", "data": { ask_id: number, track_id: TrackId, } } | { "ev": "proposal.submitted", "data": { track_id: TrackId, proposal_id: string, 
+source_item_id?: string, } } | { "ev": "ask.answered", "data": { ask_id: number, track_id: TrackId, answers: Array<AskAnswer>, } } | { "ev": "ask.withdrawn", "data": { ask_id: number, track_id: TrackId, } } | { "ev": "proposal.submitted", "data": { track_id: TrackId, proposal_id: string,
 /**
  * Submitting plugin, injected kernel-side from the callback connection (never trusted from plugin input).
  */
-plugin_id: string, 
+plugin_id: string,
 /**
  * Proposal subject kind — `"report"` is the only accepted value today.
  */
-subject_kind: string, 
+subject_kind: string,
 /**
  * Opaque Automerge canonical-heads token of the snapshot the plugin proposed against.
  */
-base_doc_heads: string, ops: Array<ProposalOp>, 
+base_doc_heads: string, ops: Array<ProposalOp>,
 /**
  * Human-facing rationale rendered in the adjudication UI.
  */
-note: string, 
+note: string,
 /**
  * Pending-scoped idempotency key: re-submits while pending return the original proposal id;
  * resolution releases the key.
  */
-idem_key: string, } } | { "ev": "proposal.resolved", "data": { track_id: TrackId, proposal_id: string, plugin_id: string, decision: ProposalDecision, } } | { "ev": "forge.scan.completed", "data": { track_id: TrackId, overlapping_prs: Array<number>, } } | { "ev": "forge.pr.opened", "data": { track_id: TrackId, pr_number: number, head_sha: string, } } | { "ev": "forge.pr.published", "data": { track_id: TrackId, pr_number: number, head_sha: string, } } | { "ev": "forge.pr.diff.read", "data": { track_id: TrackId, pr_number: number, base_sha: string, head_sha: string, artifact_path: string, } } | { "ev": "forge.pr.checks", "data": { track_id: TrackId, pr_number: number, conclusion: string, 
+idem_key: string, } } | { "ev": "proposal.resolved", "data": { track_id: TrackId, proposal_id: string, plugin_id: string, decision: ProposalDecision, } } | { "ev": "forge.scan.completed", "data": { track_id: TrackId, overlapping_prs: Array<number>, } } | { "ev": "forge.pr.opened", "data": { track_id: TrackId, pr_number: number, head_sha: string, } } | { "ev": "forge.pr.published", "data": { track_id: TrackId, pr_number: number, head_sha: string, } } | { "ev": "forge.pr.diff.read", "data": { track_id: TrackId, pr_number: number, base_sha: string, head_sha: string, artifact_path: string, } } | { "ev": "forge.pr.checks", "data": { track_id: TrackId, pr_number: number, conclusion: string,
 /**
  * Absent only for historical events or operations frozen before snapshot capture.
  */
-snapshot?: ForgeChecksSnapshot, 
+snapshot?: ForgeChecksSnapshot,
 /**
  * The read's failed checks; absent on events recorded before #2170.
  */
-failed_checks?: Array<ForgeFailedCheck>, } } | { "ev": "forge.ci.evidence.read", "data": { track_id: TrackId, pr_number: number, head_sha: string, artifact_path: string, } } | { "ev": "forge.issue.read", "data": { track_id: TrackId, issue_number: number, artifact_path: string, } } | { "ev": "forge.issue.created", "data": { track_id: TrackId, issue_number: number, issue_url: string, } } | { "ev": "forge.issue.searched", "data": { track_id: TrackId, artifact_path: string, } } | { "ev": "forge.issue.closed", "data": { track_id: TrackId, issue_number: number, } } | { "ev": "worktree.provisioned", "data": { track_id: TrackId, card_id: CardId, path: string, } } | { "ev": "worktree.committed", "data": { track_id: TrackId, card_id: CardId, commit_sha: string, branch: string, 
+failed_checks?: Array<ForgeFailedCheck>, } } | { "ev": "forge.ci.evidence.read", "data": { track_id: TrackId, pr_number: number, head_sha: string, artifact_path: string, } } | { "ev": "forge.issue.read", "data": { track_id: TrackId, issue_number: number, artifact_path: string, } } | { "ev": "forge.issue.created", "data": { track_id: TrackId, issue_number: number, issue_url: string, } } | { "ev": "forge.issue.searched", "data": { track_id: TrackId, artifact_path: string, } } | { "ev": "forge.issue.closed", "data": { track_id: TrackId, issue_number: number, } } | { "ev": "worktree.provisioned", "data": { track_id: TrackId, card_id: CardId, path: string, } } | { "ev": "worktree.committed", "data": { track_id: TrackId, card_id: CardId, commit_sha: string, branch: string,
 /**
  * #1727 S4: set by the kernel delivery path only; absent on legacy auto-commits.
  */
-delivery_id?: string, 
+delivery_id?: string,
 /**
  * #1727 S4: the delivery script's ancestry observation of `commit_sha` against the lease base.
  */
-base_is_ancestor?: boolean, } } | { "ev": "worktree.removed", "data": { track_id: TrackId, card_id: CardId, path: string, } } | { "ev": "task.gate_result", "data": { task_id: string, idempotency_key: string, passed: boolean, failing_step?: string, exit_code?: number, log_tail: string, log_path: string, attempt: number, agent_message?: string, 
+base_is_ancestor?: boolean, } } | { "ev": "worktree.removed", "data": { track_id: TrackId, card_id: CardId, path: string, } } | { "ev": "task.gate_result", "data": { task_id: string, idempotency_key: string, passed: boolean, failing_step?: string, exit_code?: number, log_tail: string, log_path: string, attempt: number, agent_message?: string,
 /**
  * #1727 S4: the verdict's classification (`gate-red` / `gate-timeout` / `gate-infra` /
  * `gate-target-mismatch`); absent on a passed verdict and on pre-slice-4 producers.
  */
-status_detail?: string, 
+status_detail?: string,
 /**
  * #1727 S4: what the verdict was checked against (D3); absent on pre-slice-4 producers.
  */
@@ -413,7 +413,7 @@ export type ForgeCheckLocator = { url: string, } | { id: string, };
 /**
  * Evidence captured by the checks read, never reconstructed from a later PR head.
  */
-export type ForgeChecksSnapshot = { head_sha: string, mergeable: string, 
+export type ForgeChecksSnapshot = { head_sha: string, mergeable: string,
 /**
  * Absent only on historical snapshots, never inferred from their conclusion.
  */
@@ -422,7 +422,7 @@ all_checks_completed?: boolean, };
 /**
  * One check the checks read classified as failed, and where to read it.
  */
-export type ForgeFailedCheck = { name: string, 
+export type ForgeFailedCheck = { name: string,
 /**
  * Absent only on historical failures recorded before diagnostic capture.
  */
@@ -453,11 +453,11 @@ export type GitHubPullChanges = { additions: number, deletions: number, changed_
  * `queue_entry` binds identity and actual revision as one fact. Legacy or non-user input
  * has no versioned reference, including released origins that omitted this metadata.
  */
-export type HarnessInputOrigin = { 
+export type HarnessInputOrigin = {
 /**
  * The observation's serde `type` tag, e.g. `task_completed`, `track_wake`, `user_message`.
  */
-observation: string, 
+observation: string,
 /**
  * The `events.id` that produced the observation (for a folded entry, the newest one);
  * `null` when no event did, e.g. a user message or the Track goal seed.
@@ -473,11 +473,11 @@ export type HarnessInputPresentation = "user" | "system" | "system_worker_turn_f
 /**
  * One observation in the exact order and wording sent to `turn/start`.
  */
-export type HarnessInputSegment = { presentation: HarnessInputPresentation, text: string, 
+export type HarnessInputSegment = { presentation: HarnessInputPresentation, text: string,
 /**
  * The images this segment carried into `turn/start`.
  */
-attachments: Array<PlannerAttachment>, 
+attachments: Array<PlannerAttachment>,
 /**
  * The queue entry this segment was built from. Every segment a turn issues or a steer
  * delivers carries one. Absent only on rows written before #2206 and on the echo of a
@@ -493,7 +493,7 @@ origin?: HarnessInputOrigin, };
  */
 export type HarnessInterruptionReason = "max_turn_duration";
 
-export type HarnessItem = { id: number, worker_session_id: string, card_id: CardId, track_id: TrackId, thread_id: string, turn_id: string | null, item_uuid: string | null, item_type: string | null, method: string, params: string, input_segments?: Array<HarnessInputSegment>, created_at_ms: number, 
+export type HarnessItem = { id: number, worker_session_id: string, card_id: CardId, track_id: TrackId, thread_id: string, turn_id: string | null, item_uuid: string | null, item_type: string | null, method: string, params: string, input_segments?: Array<HarnessInputSegment>, created_at_ms: number,
 /**
  * Readable reason for a `turn/completed` row: the provider's reduced `error.message`, or a
  * confirmed kernel interruption cause when the provider gives no readable message. `params`
@@ -505,7 +505,7 @@ turn_error_text: string | null, };
  * `GET /api/cards/{id}/harness/live`: reply text the running turn is streaming and has not stored
  * yet (#1923). Each item leaves this answer once its `item/completed` row is in the transcript.
  */
-export type HarnessLiveReplies = { 
+export type HarnessLiveReplies = {
 /**
  * The turn the items belong to: the turn that started last, until it ends with nothing left to
  * store; `null` before any turn of this harness and after one that ended so. A turn that ends
@@ -518,7 +518,7 @@ turn_id: string | null, items: Array<HarnessLiveReply>, };
 /**
  * One reply as far as it has streamed.
  */
-export type HarnessLiveReply = { 
+export type HarnessLiveReply = {
 /**
  * The `item.id` its `item/completed` row will carry as `item_uuid`.
  */
@@ -559,7 +559,7 @@ export type InitialInputUnavailableReason = "legacy-operation" | "creation-incom
 
 export type InputInvocation = { "kind": "recorded", configuration: FrozenInputInvocation, } | { "kind": "prior_invocation_not_recorded" };
 
-export type KeepConversationInputRequest = { carrier_id: string, submission_id: string, attempt_id: string, 
+export type KeepConversationInputRequest = { carrier_id: string, submission_id: string, attempt_id: string,
 /**
  * Exact decimal revision from the run read, never a JavaScript number.
  */
@@ -594,15 +594,15 @@ export type MobileStatus = { provider: MobileProvider, tailnet: TailnetStatus | 
  */
 export type NoCandidateReason = { "kind": "delivery_pending", delivery_id: string, } | { "kind": "delivery_failed", delivery_id: string, } | { "kind": "no_delivery_row" };
 
-export type Overlay = { id: string, plugin_id: string, 
+export type Overlay = { id: string, plugin_id: string,
 /**
  * `"track"` or `"card"`.
  */
-entity_kind: string, entity_id: string, 
+entity_kind: string, entity_id: string,
 /**
  * Plugin-defined string. Kernel does not interpret.
  */
-kind: string, 
+kind: string,
 /**
  * Opaque JSON blob.
  */
@@ -623,11 +623,11 @@ export type PendingPair = { id: string, deviceName: string, verificationCode: st
 /**
  * One attachment as the frontend sees it in a queue entry or a transcript segment.
  */
-export type PlannerAttachment = { id: AttachmentId, 
+export type PlannerAttachment = { id: AttachmentId,
 /**
  * Derived from `id`, never stored separately.
  */
-contentType: string, size: number, 
+contentType: string, size: number,
 /**
  * Where to read the bytes; derived by [`attachment_url`]. The server's host path is NOT here and must not be.
  */
@@ -729,7 +729,7 @@ export type SamplePhase = { "kind": "prepare", reason: string, } | { "kind": "fi
 /**
  * `PUT /api/cards/{id}/planner/permission-mode`'s answer: the mode now stored on the card.
  */
-export type SetPlannerPermissionModeResponse = { card_id: CardId, 
+export type SetPlannerPermissionModeResponse = { card_id: CardId,
 /**
  * The stored mode, echoed rather than assumed.
  */
@@ -758,7 +758,7 @@ export type ShareScope = { "kind": "track", "id": string } | { "kind": "area", "
 /**
  * Where a body came from. Stored verbatim as the row's `origin` column.
  */
-export type SourceOrigin = { "kind": "plugin", plugin_id: string, tool: string, args_sha256: string, 
+export type SourceOrigin = { "kind": "plugin", plugin_id: string, tool: string, args_sha256: string,
 /**
  * Canonicalization version behind `args_sha256` (`v1`: compact serde_json text with sorted keys).
  */
@@ -789,11 +789,11 @@ export type SystemInputPresentation = Exclude<HarnessInputPresentation, 'user'>;
 /**
  * A report tag of the area; `insert` is ``@`tag:<tag>` ``.
  */
-export type TagMention = { 
+export type TagMention = {
 /**
  * The tag.
  */
-label: string, 
+label: string,
 /**
  * How many of the area's reports carry the tag.
  */
@@ -848,86 +848,86 @@ export type TaskWorkerSelection = { mechanism: string, provider: AgentProvider, 
 
 export type TerminalPresentation = { source: CardCreationSource, in_workbench: boolean, };
 
-export type Track = { id: TrackId, area_id: AreaId, title: string, sort: number, pinned_at: number | null, 
+export type Track = { id: TrackId, area_id: AreaId, title: string, sort: number, pinned_at: number | null,
 /**
  * Unix-ms time the track was closed, or `None` while it is open. Closed tracks do not schedule.
  */
-closed_at: number | null, 
+closed_at: number | null,
 /**
  * Unix-ms time a person granted Area admin authority; absent on historical events.
  */
-admin_granted_at: number | null, 
+admin_granted_at: number | null,
 /**
  * Wire-compatibility alias of `workspace.path`, serialized as `cwd`; Rust readers must use `workspace.path`.
  */
-cwd: string, 
+cwd: string,
 /**
  * Currently selected Track working method. Switching preserves authored Report content.
  */
-template_id: string | null, 
+template_id: string | null,
 /**
  * The plugin owning the selected working method. Earlier owners retain manifest-bound grants.
  */
-plugin_scope: string | null, 
+plugin_scope: string | null,
 /**
  * Server-owned structural marker. Public track creation cannot set this.
  */
-purpose: string | null, 
+purpose: string | null,
 /**
  * Template input is validated at creation and otherwise remains opaque.
  */
-template_input: unknown, 
+template_input: unknown,
 /**
  * The user recipe ([`TrackRecipe`]) this track was instantiated from; may name a recipe that no longer exists.
  */
-recipe_id: string | null, 
+recipe_id: string | null,
 /**
  * The recipe's `revision` at the moment this track was created.
  */
-recipe_revision: number | null, 
+recipe_revision: number | null,
 /**
  * The Track whose Planner created this one as a top-level Track; `None` for every other
  * creation. May name a Track that no longer exists.
  */
-creator_track_id: string | null, 
+creator_track_id: string | null,
 /**
  * The raw idempotency key that creator passed; set exactly when `creator_track_id` is.
  */
 creator_key: string | null, workspace: TrackWorkspace, created_at: number, updated_at: number, };
 
-export type TrackConversationCreated = { initialInput: ConversationInitialInputReceiptResult, 
+export type TrackConversationCreated = { initialInput: ConversationInitialInputReceiptResult,
 /**
  * Person-owned archive time, or null while the conversation is in the active list.
  */
-archivedAt: number | null, provider: AgentProvider, 
+archivedAt: number | null, provider: AgentProvider,
 /**
  * The source conversation of a discussion branch; absent for ordinary conversations.
  */
-sourceCardId?: string, 
+sourceCardId?: string,
 /**
  * The assistant card's id; the conversation's identity everywhere.
  */
-id: string, 
+id: string,
 /**
  * The track this conversation lives on.
  */
-trackId: string, 
+trackId: string,
 /**
  * The conversation's own name, or null before it has one.
  */
-title: string | null, 
+title: string | null,
 /**
  * Always `"track-assistant"`, derived from the card's persisted marker.
  */
-kind: string, 
+kind: string,
 /**
  * The live session's state, or **null when the card has no session row**. Never fill it with an invented value.
  */
-state: WorkerSessionState | null, 
+state: WorkerSessionState | null,
 /**
  * The session's last update, falling back to the card's own.
  */
-updatedAt: number, 
+updatedAt: number,
 /**
  * When the conversation's last non-interrupted turn ended, or `null` when there is none.
  */
@@ -936,39 +936,39 @@ lastTurnCompletedAt: number | null, };
 /**
  * One row of `GET /api/tracks/{track_id}/conversations`.
  */
-export type TrackConversationSummary = { 
+export type TrackConversationSummary = {
 /**
  * Person-owned archive time, or null while the conversation is in the active list.
  */
-archivedAt: number | null, provider: AgentProvider, 
+archivedAt: number | null, provider: AgentProvider,
 /**
  * The source conversation of a discussion branch; absent for ordinary conversations.
  */
-sourceCardId?: string, 
+sourceCardId?: string,
 /**
  * The assistant card's id; the conversation's identity everywhere.
  */
-id: string, 
+id: string,
 /**
  * The track this conversation lives on.
  */
-trackId: string, 
+trackId: string,
 /**
  * The conversation's own name, or null before it has one.
  */
-title: string | null, 
+title: string | null,
 /**
  * Always `"track-assistant"`, derived from the card's persisted marker.
  */
-kind: string, 
+kind: string,
 /**
  * The live session's state, or **null when the card has no session row**. Never fill it with an invented value.
  */
-state: WorkerSessionState | null, 
+state: WorkerSessionState | null,
 /**
  * The session's last update, falling back to the card's own.
  */
-updatedAt: number, 
+updatedAt: number,
 /**
  * When the conversation's last non-interrupted turn ended, or `null` when there is none.
  */
@@ -1000,7 +1000,7 @@ export type TrackId = string;
 /**
  * A report of the area; `insert` is ``@`/AreaName/TrackName/report.md` ``, the path `neige cat` reads.
  */
-export type TrackMention = { 
+export type TrackMention = {
 /**
  * The track title.
  */
@@ -1010,19 +1010,19 @@ label: string, track_id: TrackId, insert: string, };
  * A user-defined starting point for a new track: a saved report whose `title` doubles as the
  * summary and whose `neige-block` fences are its tasks.
  */
-export type TrackRecipe = { id: string, 
+export type TrackRecipe = { id: string,
 /**
  * Picker label *and* the instantiated report's summary.
  */
-title: string, 
+title: string,
 /**
  * Report body. Its `neige-block` fences are the tasks.
  */
-body: string, 
+body: string,
 /**
  * Optimistic-lock anchor. Writers pass the revision they read and the UPDATE validates + bumps in one statement.
  */
-revision: number, created_at: number, 
+revision: number, created_at: number,
 /**
  * Display only — never a lock anchor. See `revision`.
  */
@@ -1032,23 +1032,23 @@ updated_at: number, };
  * The payload persisted in a track-report card's `payload` JSON column; `summary` is the one-line
  * preview, `body` the Markdown source the TrackReportCard renders.
  */
-export type TrackReportPayload = { 
+export type TrackReportPayload = {
 /**
  * Tier A persistence contract; older rows remain readable and are lazily upgraded at the next persist.
  */
-schemaVersion: number, 
+schemaVersion: number,
 /**
  * Document-wide optimistic-concurrency revision, mirrored from the authoritative CRDT root.
  */
-docRev: number, 
+docRev: number,
 /**
  * One-line summary used by sidebars / track-list previews; empty string is valid.
  */
-summary: string, 
+summary: string,
 /**
  * Markdown source. Sections are derived at render time by splitting at H1 (`^# `) headings.
  */
-body: string, 
+body: string,
 /**
  * Block mirror of the authoritative CRDT block map; this field and `body` are both projections the
  * persist boundary rewrites on every write. v1 rows may omit it.
@@ -1065,15 +1065,15 @@ export type TrackSourceList = { sources: Array<TrackSourceSummary>, };
 /**
  * A captured source without its body.
  */
-export type TrackSourceSummary = { source_id: string, provenance: SourceProvenance, origin: SourceOrigin, title: string, published_at?: string, 
+export type TrackSourceSummary = { source_id: string, provenance: SourceProvenance, origin: SourceOrigin, title: string, published_at?: string,
 /**
  * `origin.content_id`, surfaced for the panel header.
  */
-content_id?: string, 
+content_id?: string,
 /**
  * `origin.url` (manual sources only).
  */
-url?: string, body_bytes: number, body_sha256: string, 
+url?: string, body_bytes: number, body_sha256: string,
 /**
  * RFC 3339, UTC.
  */
@@ -1082,48 +1082,48 @@ captured_at: string, quotes: Array<SourceQuote>, };
 /**
  * Payload for `Event::TrackUpdated`; `track` is flattened to preserve the historical wire shape.
  */
-export type TrackUpdatedPayload = { agent_message?: string, id: TrackId, area_id: AreaId, title: string, sort: number, pinned_at: number | null, 
+export type TrackUpdatedPayload = { agent_message?: string, id: TrackId, area_id: AreaId, title: string, sort: number, pinned_at: number | null,
 /**
  * Unix-ms time the track was closed, or `None` while it is open. Closed tracks do not schedule.
  */
-closed_at: number | null, 
+closed_at: number | null,
 /**
  * Unix-ms time a person granted Area admin authority; absent on historical events.
  */
-admin_granted_at: number | null, 
+admin_granted_at: number | null,
 /**
  * Wire-compatibility alias of `workspace.path`, serialized as `cwd`; Rust readers must use `workspace.path`.
  */
-cwd: string, 
+cwd: string,
 /**
  * Currently selected Track working method. Switching preserves authored Report content.
  */
-template_id: string | null, 
+template_id: string | null,
 /**
  * The plugin owning the selected working method. Earlier owners retain manifest-bound grants.
  */
-plugin_scope: string | null, 
+plugin_scope: string | null,
 /**
  * Server-owned structural marker. Public track creation cannot set this.
  */
-purpose: string | null, 
+purpose: string | null,
 /**
  * Template input is validated at creation and otherwise remains opaque.
  */
-template_input: unknown, 
+template_input: unknown,
 /**
  * The user recipe ([`TrackRecipe`]) this track was instantiated from; may name a recipe that no longer exists.
  */
-recipe_id: string | null, 
+recipe_id: string | null,
 /**
  * The recipe's `revision` at the moment this track was created.
  */
-recipe_revision: number | null, 
+recipe_revision: number | null,
 /**
  * The Track whose Planner created this one as a top-level Track; `None` for every other
  * creation. May name a Track that no longer exists.
  */
-creator_track_id: string | null, 
+creator_track_id: string | null,
 /**
  * The raw idempotency key that creator passed; set exactly when `creator_track_id` is.
  */
@@ -1137,16 +1137,16 @@ export type TrackWire = Track & { workspace: TrackWorkspaceWire };
 /**
  * A track's typed workspace. `path` is its single stored path.
  */
-export type TrackWorkspace = { kind: TrackWorkspaceKind, 
+export type TrackWorkspace = { kind: TrackWorkspaceKind,
 /**
  * Absolute path.
  */
-path: string, 
+path: string,
 /**
  * One-shot, monotonic. `Some` ⇒ neither `path` nor `kind` may change again. The system-area
  * launchpad stays unfrozen because it is repointed.
  */
-frozen_at: number | null, 
+frozen_at: number | null,
 /**
  * The kernel-made git worktree (`<repo_root>/.claude/worktrees/track-<id>`, branch
  * `neige/track-<id>`) an attached track's conversation agents run in. `None` for managed,
@@ -1159,16 +1159,16 @@ worktree?: string, };
  */
 export type TrackWorkspaceKind = "managed" | "attached";
 
-export type TrackWorkspaceWire = { isolation: WorkspaceIsolation, kind: TrackWorkspaceKind, 
+export type TrackWorkspaceWire = { isolation: WorkspaceIsolation, kind: TrackWorkspaceKind,
 /**
  * Absolute path.
  */
-path: string, 
+path: string,
 /**
  * One-shot, monotonic. `Some` ⇒ neither `path` nor `kind` may change again. The system-area
  * launchpad stays unfrozen because it is repointed.
  */
-frozen_at: number | null, 
+frozen_at: number | null,
 /**
  * The kernel-made git worktree (`<repo_root>/.claude/worktrees/track-<id>`, branch
  * `neige/track-<id>`) an attached track's conversation agents run in. `None` for managed,
@@ -1188,7 +1188,7 @@ export type UnlockedShareLink = { scope: ShareScope, expiresAt: number, };
 /**
  * `201` body of `POST /api/cards/{id}/planner/attachments`.
  */
-export type UploadAttachmentResponse = { attachmentId: AttachmentId, contentType: string, size: number, 
+export type UploadAttachmentResponse = { attachmentId: AttachmentId, contentType: string, size: number,
 /**
  * Absolute REST path the browser reads the bytes back from. Durable only once the attachment is
  * bound: a staged upload never sent is swept after the 24h orphan TTL, after which this path answers 400.
@@ -1231,7 +1231,7 @@ export type WorkerSessionId = string;
 
 export type WorkerSessionKind = "terminal" | "codex" | "claude" | "shared-spec" | "managed-assistant";
 
-export type WorkerSessionProjection = { id: string, card_id: string, kind: WorkerSessionKind, agent_provider: AgentProvider | null, status: WorkerSessionState, terminal_run_id: string | null, thread_id: string | null, session_id: string | null, active_turn_id: string | null, handle_state_json: unknown | null, created_at_ms: number, updated_at_ms: number, completed_at_ms: number | null, 
+export type WorkerSessionProjection = { id: string, card_id: string, kind: WorkerSessionKind, agent_provider: AgentProvider | null, status: WorkerSessionState, terminal_run_id: string | null, thread_id: string | null, session_id: string | null, active_turn_id: string | null, handle_state_json: unknown | null, created_at_ms: number, updated_at_ms: number, completed_at_ms: number | null,
 /**
  * When the card's last non-interrupted turn ended; `None` when the card has no completed turn.
  */

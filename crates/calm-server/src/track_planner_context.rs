@@ -384,7 +384,8 @@ impl TrackPlannerContextProjector {
                 .ok()
                 .flatten()
                 .map(|c| c.track_id.to_string()),
-            Event::TaskCompleted { .. }
+            Event::TaskReportSettled { .. }
+            | Event::TaskCompleted { .. }
             | Event::TaskFailed { .. }
             | Event::TaskDispatched { .. }
             | Event::TaskGateResult { .. }

@@ -40,6 +40,10 @@ pub enum ActorId {
     #[serde(skip)]
     #[ts(skip)]
     AiManagedCard(CardId),
+    /// Internal surrogate minted only for a capability-checked current Worker session.
+    #[serde(skip)]
+    #[ts(skip)]
+    AiWorkerCard(CardId),
     #[schema(value_type = String)]
     AiPlannerSession(WorkerSessionId),
     #[schema(value_type = String)]
@@ -84,6 +88,7 @@ impl std::fmt::Display for ActorId {
             Self::AiCodex(id) => write!(f, "ai:codex:{}", id.as_str()),
             Self::AiClaude(id) if id.as_str().is_empty() => f.write_str("ai:claude"),
             Self::AiClaude(id) => write!(f, "ai:claude:{}", id.as_str()),
+            Self::AiWorkerCard(id) => write!(f, "ai:worker-card:{}", id.as_str()),
             Self::AiManagedCard(id) if id.as_str().is_empty() => f.write_str("ai:managed-card"),
             Self::AiManagedCard(id) => write!(f, "ai:managed-card:{}", id.as_str()),
             Self::AiPlannerSession(id) if id.as_str().is_empty() => {

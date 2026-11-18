@@ -1,3 +1,4 @@
+import { exerciseNativeWorker, exerciseProviderRows } from './native-worker.browser-fixture.tsx';
 /* The mobile Task row's strike-through, measured: a class assertion cannot say whether the word is struck. `.mobileRowStruck` lives inside `@media (width < 60rem)`, evaluated against the iframe the suite renders into. */
 import { cleanup, render } from '@testing-library/react';
 import { page as browserPage, userEvent } from 'vitest/browser';
@@ -67,4 +68,13 @@ describe('a withdrawn declaration on the mobile Tasks page', () => {
     expect(getComputedStyle(badges[1]).textDecorationLine).toBe('line-through');
     expect(getComputedStyle(badges[0]).textDecorationLine).toBe('none');
   });
+});
+
+// Controlled fixture: production no-PTY Worker card and stylesheet at a narrow viewport.
+it('keeps Antigravity native flow and User controls usable on mobile', async () => {
+  await exerciseNativeWorker(420);
+});
+
+it('shows canonical Antigravity and Claude tasks beside the historical Codex alias', async () => {
+  await exerciseProviderRows(420);
 });

@@ -503,6 +503,17 @@ export const taskFailedSchema = z.object({
   }),
 });
 
+/** Accepted ACP reports notify only after the native round and cleanup settle. */
+export const taskReportSettledSchema = z.object({
+  ev: z.literal('task.report_settled'),
+  data: z.object({ notification: z.enum(['notify', 'suppress', 'legacy']), idempotency_key: z.string(),
+    outcome: z.discriminatedUnion('kind', [
+      z.object({ kind: z.literal('completed'), result: z.unknown(), artifacts: z.array(z.string()) }),
+      z.object({ kind: z.literal('failed'), reason: z.string() }),
+    ]),
+  }),
+});
+
 /** #1727 S4: how one Git delivery settled — a pinned candidate or the kernel's failure classification. */
 export const deliverySettlementSchema = z.discriminatedUnion('kind', [
   z.object({
@@ -1037,6 +1048,7 @@ export const wireEventSchema = z.discriminatedUnion('ev', [
   codexWorkerRequestedSchema,
   terminalWorkerRequestedSchema,
   taskCompletedSchema,
+  taskReportSettledSchema,
   taskFailedSchema,
   taskGitDeliverySettledSchema,
   planUpdatedSchema,
