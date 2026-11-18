@@ -6,15 +6,16 @@ use serde_json::json;
 
 #[tokio::test]
 async fn agent_backend_nondefault_forwarder_observes_default_deletion_seal() {
-    let root = tempfile::tempdir().unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().canonicalize().unwrap();
     let mut cfg = Config::parse_from(["calm-server"]);
-    cfg.data_dir = Some(root.path().to_owned());
-    let config = root.path().join("backends.json");
+    cfg.data_dir = Some(root.clone());
+    let config = root.join("backends.json");
     std::fs::write(&config, json!({
         "cooldown_after_concurrency_limit_secs":60,"cooldown_default_secs":300,"cooldown_max_secs":3600,
         "backends": (["default", "other"].map(|id| json!({
             "provider":"codex", "id":id, "weight":1, "accepts_new_sessions":true,
-            "credentials":{"kind":"codex_home", "path":root.path().join(if id == "default" { "codex-home" } else { id })}
+            "credentials":{"kind":"codex_home", "path":root.join(if id == "default" { "codex-home" } else { id })}
         })))
     }).to_string()).unwrap();
     cfg.agent_backend_config = Some(config);
