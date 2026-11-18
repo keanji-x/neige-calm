@@ -10,7 +10,8 @@ use calm_types::planner_attachment::AttachmentId;
 use crate::error::{CalmError, Result};
 use crate::ids::CardId;
 use crate::routes::fs::{
-    WorkspaceSymlinks, open_workspace_directory, open_workspace_root_directory,
+    WorkspaceSymlinks, open_workspace_directory, open_workspace_directory_from_fd,
+    open_workspace_root_directory,
 };
 
 /// One path component, validated: it cannot describe a traversal.
@@ -138,26 +139,57 @@ pub struct Entry {
 
 /// Resolve a card's two directories, creating `bound/` if it is not there yet.
 /// `mkdirat` against the card's own descriptor rather than `create_dir_all` on a joined path, which follows every component; `EEXIST` is not an error because two requests on one card can race.
-pub async fn open_card_dirs(root: &Path, card_id: &CardId) -> Result<CardDirs> {
-    let card = open_workspace_directory(root, card_id.as_str(), WorkspaceSymlinks::Refused)
-        .await
-        .map_err(opaque("this card's directory"))?;
-    mkdir_in(card, BOUND).await?;
+/// The attachment root is a Neige-owned lexical name, not a trusted filesystem root.
+/// Only its persisted workspace ancestor may use host aliases.
+pub(super) fn workspace_for_root(root: &Path) -> Result<&Path> {
+    let neige = root
+        .parent()
+        .filter(|_| root.file_name().is_some_and(|name| name == ATTACHMENTS));
+    neige
+        .filter(|path| {
+            path.file_name()
+                .is_some_and(|name| name == super::NEIGE_DIR)
+        })
+        .and_then(Path::parent)
+        .filter(|path| path.is_absolute())
+        .ok_or_else(|| CalmError::Internal("planner attachments: invalid attachment root".into()))
+}
 
-    let staging = open_workspace_directory(
-        root,
-        &format!("{}/{STAGING}", card_id.as_str()),
+pub(super) fn relative_file(card: &CardId, directory: &str, id: &AttachmentId) -> String {
+    format!(
+        "{}/{}/{}/{directory}/{}",
+        super::NEIGE_DIR,
+        ATTACHMENTS,
+        card.as_str(),
+        id.as_str()
+    )
+}
+
+pub async fn open_card_dirs(root: &Path, card_id: &CardId) -> Result<CardDirs> {
+    crate::routes::fs::require_secure_workspace()?;
+    let workspace = workspace_for_root(root)?;
+    let card = open_workspace_directory(
+        workspace,
+        &format!("{}/{}/{}", super::NEIGE_DIR, ATTACHMENTS, card_id.as_str()),
         WorkspaceSymlinks::Refused,
     )
     .await
-    .map_err(opaque("this card's staging directory"))?;
-    let bound = open_workspace_directory(
-        root,
-        &format!("{}/{BOUND}", card_id.as_str()),
-        WorkspaceSymlinks::Refused,
-    )
-    .await
-    .map_err(opaque("this card's bound directory"))?;
+    .map_err(opaque("this card's directory"))?;
+    card_dirs(card).await
+}
+
+async fn card_dirs(card: OwnedFd) -> Result<CardDirs> {
+    let card = mkdir_in(card, BOUND).await?;
+    let staging_parent = card
+        .try_clone()
+        .map_err(|error| opaque("this card's directory")(error.into()))?;
+    let staging =
+        open_workspace_directory_from_fd(staging_parent, STAGING, WorkspaceSymlinks::Refused)
+            .await
+            .map_err(opaque("this card's staging directory"))?;
+    let bound = open_workspace_directory_from_fd(card, BOUND, WorkspaceSymlinks::Refused)
+        .await
+        .map_err(opaque("this card's bound directory"))?;
     Ok(CardDirs {
         staging: StagingFd(staging),
         bound: BoundFd(bound),
@@ -165,51 +197,51 @@ pub async fn open_card_dirs(root: &Path, card_id: &CardId) -> Result<CardDirs> {
 }
 
 const BOUND: &str = "bound";
-
-/// Create the whole chain up to `staging/`, then resolve both directories.
-/// Every level is `mkdirat` against the descriptor of the level above, never `create_dir_all` on a joined path; `EEXIST` is not an error at any level.
-pub async fn create_card_dirs(workspace: &Path, root: &Path, card_id: &CardId) -> Result<CardDirs> {
-    let workspace_fd = open_workspace_root_directory(workspace)
-        .await
-        .map_err(opaque("the track workspace"))?;
-    mkdir_in(workspace_fd, super::NEIGE_DIR).await?;
-
-    let neige = open_workspace_directory(workspace, super::NEIGE_DIR, WorkspaceSymlinks::Refused)
-        .await
-        .map_err(opaque("the server-owned subtree"))?;
-    mkdir_in(neige, ATTACHMENTS).await?;
-
-    let root_fd = open_workspace_root_directory(root)
-        .await
-        .map_err(opaque("the attachment root"))?;
-    mkdir_in(root_fd, card_id.as_str()).await?;
-
-    let card = open_workspace_directory(root, card_id.as_str(), WorkspaceSymlinks::Refused)
-        .await
-        .map_err(opaque("this card's directory"))?;
-    mkdir_in(card, STAGING).await?;
-
-    open_card_dirs(root, card_id).await
-}
-
 const ATTACHMENTS: &str = "attachments";
 const STAGING: &str = "staging";
 
+/// Each mkdir/open continues through the held parent. No untrusted ancestor is
+/// reopened as a trusted root, including after a directory replacement.
+pub async fn create_card_dirs(workspace: &Path, root: &Path, card_id: &CardId) -> Result<CardDirs> {
+    crate::routes::fs::require_secure_workspace()?;
+    if workspace_for_root(root)? != workspace {
+        return Err(CalmError::Internal(
+            "planner attachments: mismatched workspace root".into(),
+        ));
+    }
+    let workspace = open_workspace_root_directory(workspace)
+        .await
+        .map_err(opaque("the track workspace"))?;
+    let neige = ensure_child_directory(workspace, super::NEIGE_DIR).await?;
+    let root = ensure_child_directory(neige, ATTACHMENTS).await?;
+    let card = ensure_child_directory(root, card_id.as_str()).await?;
+    let card = mkdir_in(card, STAGING).await?;
+    card_dirs(card).await
+}
+
+async fn ensure_child_directory(parent: OwnedFd, name: &str) -> Result<OwnedFd> {
+    let parent = mkdir_in(parent, name).await?;
+    open_workspace_directory_from_fd(parent, name, WorkspaceSymlinks::Refused)
+        .await
+        .map_err(opaque("an attachment directory"))
+}
+
 /// `mkdirat` one name relative to an owned descriptor, tolerating `EEXIST`.
 /// The descriptor is MOVED in and dropped inside the closure: a `RawFd` copied into `spawn_blocking` while its owner stayed in the async frame gets closed on client disconnect and reused by another thread.
-async fn mkdir_in(parent: std::os::fd::OwnedFd, name: &str) -> Result<()> {
+async fn mkdir_in(parent: std::os::fd::OwnedFd, name: &str) -> Result<OwnedFd> {
     use nix::sys::stat::{Mode, mkdirat};
-    let name = name.to_string();
+    let name = Name::parse(name)
+        .ok_or_else(|| CalmError::Internal("planner attachments: invalid directory name".into()))?;
     tokio::task::spawn_blocking(move || {
         match mkdirat(
             Some(parent.as_raw_fd()),
             name.as_str(),
             Mode::from_bits_truncate(0o700),
         ) {
-            Ok(()) | Err(nix::errno::Errno::EEXIST) => Ok(()),
+            Ok(()) | Err(nix::errno::Errno::EEXIST) => Ok(parent),
             Err(error) => Err(error),
         }
-        // `parent` is dropped here, after the syscall, never before it.
+        // `parent` is returned after the syscall, or dropped on failure.
     })
     .await
     .map_err(join_failed)?
@@ -228,6 +260,9 @@ async fn mkdir_in(parent: std::os::fd::OwnedFd, name: &str) -> Result<()> {
 /// The opener's errors name host paths: they go to the log, the client is told only which directory.
 fn opaque(what: &'static str) -> impl Fn(CalmError) -> CalmError {
     move |error: CalmError| {
+        if matches!(error, CalmError::SecureWorkspaceUnavailable(_)) {
+            return error;
+        }
         tracing::error!(
             target: "planner_attachments::dir",
             directory = what,

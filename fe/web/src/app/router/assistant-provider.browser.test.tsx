@@ -132,6 +132,20 @@ it('renders, selects and sends a managed identifier independently of legacy UI l
   expect(fixture.requests.find(request => request.method === 'POST' && request.path.endsWith('/conversations'))?.body).toMatchObject({ provider: 'opencode', model: 'selected' });
 });
 
+it('shows the server host requirement on the disabled image button in a managed workspace', async () => {
+  await page.viewport(1280, 800);
+  const refusal = { code: 'secure_workspace_unavailable', error: 'Upgrade the server host to use secure image attachments.' };
+  const fixture = renderAssistantProviderFixture({ answers: [{ ...CLAUDE, capabilities: { ...CLAUDE.capabilities, images: true } }],
+    existingProvider: 'claude', runAttachmentsUnavailable: refusal });
+  await page.getByRole('button', { name: 'Conversation Saved Assistant' }).click();
+  await expect.element(page.getByText('Saved reply', { exact: true })).toBeVisible();
+  const attach = page.getByRole('button', { name: 'Attach an image' });
+  await expect.element(attach).toBeDisabled();
+  await attach.hover();
+  await expect.element(page.getByText(refusal.error, { exact: true })).toBeVisible();
+  expect(fixture.requests.filter(request => request.path.endsWith('/planner/attachments'))).toEqual([]);
+});
+
 it.each([false, true])('combines images=%s with a run that supports attachments', async images => {
   const fixture = renderAssistantProviderFixture({ answers: [{ ...CLAUDE, capabilities: { ...CLAUDE.capabilities, images } }],
     existingProvider: 'claude', runAttachmentsSupported: true });

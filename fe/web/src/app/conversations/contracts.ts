@@ -75,6 +75,7 @@ export type ConversationStore = Readonly<{
     replaces: ReplacedTurn | null) => Promise<void> | null;
   /** Whether this card's track can take image attachments at all. */
   attachmentsSupported: boolean;
+  attachmentsUnavailableReason: string | undefined;
   historyReplacementSupported: boolean;
   /** How full this conversation's context is; `null` when the harness has never said. */
   contextUsage: PlannerRunTokenUsage | null;

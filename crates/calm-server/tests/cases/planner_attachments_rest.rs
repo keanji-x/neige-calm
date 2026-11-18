@@ -35,7 +35,8 @@ struct Boot {
 /// One managed workspace with a real git repository, one planner card and one worker card; `kind` picks `Managed` (the supported shape) or `Attached`.
 async fn boot_with_kind(kind: TrackWorkspaceKind) -> Boot {
     let tmp = TempDir::new().unwrap();
-    let workspace_root = tmp.path().join("workspaces");
+    // Managed preparation rejects ancestor links; Darwin temp_dir may use the /var alias.
+    let workspace_root = tmp.path().canonicalize().unwrap().join("workspaces");
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let area = repo
         .area_create(
@@ -461,11 +462,41 @@ async fn the_per_card_budget_refuses_rather_than_reclaiming() {
 }
 
 #[tokio::test]
+async fn managed_run_declares_the_host_capability_before_upload() {
+    let b = boot().await;
+    let card = b.planner_card.id.to_string();
+    let (status, run) = crate::support::planner_queue_fixture::get(
+        b.app.clone(),
+        format!("/api/cards/{card}/planner/run?contract=conversation_v1"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{run}");
+    let (status, body) = upload(&b.app, &card, Some("user"), "image/png", png(b"x")).await;
+    if status == StatusCode::CREATED {
+        assert_eq!(run["attachments_supported"], true);
+        assert!(run.get("attachments_unavailable").is_none());
+    } else {
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(body["code"], "secure_workspace_unavailable");
+        assert_eq!(run["attachments_supported"], false);
+        assert_eq!(run["attachments_unavailable"], body);
+    }
+}
+
+#[tokio::test]
 async fn an_attached_workspace_is_refused_and_nothing_is_created() {
     let b = boot_with_kind(TrackWorkspaceKind::Attached).await;
     let card = b.planner_card.id.to_string();
     let (status, body) = upload(&b.app, &card, Some("user"), "image/png", png(b"x")).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    let (status, run) = crate::support::planner_queue_fixture::get(
+        b.app.clone(),
+        format!("/api/cards/{card}/planner/run"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{run}");
+    assert_eq!(run["attachments_supported"], false);
+    assert_eq!(run["attachments_unavailable"], body);
     assert!(
         body["error"]
             .as_str()
@@ -1185,3 +1216,6 @@ async fn a_client_that_disappears_mid_body_leaves_no_part() {
         file_names(&b.staging())
     );
 }
+
+#[path = "planner_attachments_rest/confinement.rs"]
+mod confinement;

@@ -535,6 +535,10 @@ jobs:
         run: |
           env -u NEIGE_CODEX_BIN cargo nextest run --locked -p calm-server --test api_suite \
             -E 'test(/^domain_api_suite::in_process_renderer_e2e::/) & test(fd_resources_)' --no-tests fail --test-threads 8
+      - name: native image attachment upload, read and binding
+        run: |
+          env -u NEIGE_CODEX_BIN cargo nextest run --locked -p calm-server --test planner_harness_suite \
+            -E 'test(/^planner_attachments_(rest|bind)::/)' --no-tests fail --test-threads 8
 
   # PRs compile the Rust suite once; the shards below only download and run it. This job also runs
   # hosted on main pushes, because it is the only one that saves the `rust-test` cache PRs restore.

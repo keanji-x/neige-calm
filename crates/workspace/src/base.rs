@@ -243,7 +243,7 @@ fn git_stdout_line(dir: &Path, args: &[&str]) -> Result<OsString> {
         .bounded_output(std::time::Instant::now() + GIT_BOUND)
         .map_err(|e| {
             Error::Internal(format!(
-                "spawn git {} in {}: {e}",
+                "run bounded git {} in {}: {e}",
                 args.join(" "),
                 dir.display()
             ))
@@ -326,7 +326,7 @@ pub fn worktree_head_ref(worktree: &Path) -> Result<Option<String>> {
         .bounded_output(std::time::Instant::now() + GIT_BOUND)
         .map_err(|e| {
             Error::Internal(format!(
-                "spawn git {} in {}: {e}",
+                "run bounded git {} in {}: {e}",
                 args.join(" "),
                 worktree.display()
             ))

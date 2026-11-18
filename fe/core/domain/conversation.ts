@@ -290,6 +290,8 @@ export type PlannerRun = Readonly<{
    * the server is older than the feature.
    */
   attachments_supported: boolean;
+  /** The admission error to show before upload. Older servers omit it. */
+  attachments_unavailable?: Readonly<{ code: string; error: string }>;
   /** Whether the bound Planner backend implements manual context compaction. */
   manual_compact_supported: boolean;
   compact_outcome: CompactOutcome | null;
@@ -361,6 +363,7 @@ export function plannerRunOperation(cardId: string): ApiOperation<PlannerRun> {
       recovery: runRecoverySchema.nullable(),
       /* Absent on older servers, and false is the safe read. */
       attachments_supported: z.boolean().optional().default(false),
+      attachments_unavailable: z.object({ code: z.string(), error: z.string() }).optional(),
       manual_compact_supported: z.boolean(),
       compact_outcome: z.object({ operation_id: z.string(), thread_id: z.string(), turn_id: z.string().nullable(),
         status: z.enum(['started', 'completed', 'interrupted', 'failed', 'unconfirmed', 'refused']),

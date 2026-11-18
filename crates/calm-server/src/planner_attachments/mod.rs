@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use calm_types::planner_attachment::{AttachmentFormat, AttachmentId};
 
-use crate::error::{CalmError, Result};
+use crate::error::{CalmError, ErrorBody, Result};
 use crate::ids::CardId;
 use crate::model::{TrackWorkspace, TrackWorkspaceKind};
 
@@ -87,31 +87,47 @@ pub(crate) fn image_input_root(
             "This conversation backend does not support images".into(),
         ));
     }
-    attachment_root(workspace, workspace_root)
+    let root = attachment_root(workspace, workspace_root)?;
+    crate::routes::fs::require_secure_workspace()?;
+    Ok(root)
 }
 
 /// Images require the same live Human source as their eventual message author.
 /// Guest delegation accepts text only; provider support alone is not a grant.
 pub(crate) fn require_image_input_source(source: &crate::auth::HumanInputSource) -> Result<()> {
-    source.current_human_principal().map(drop)
+    source
+        .current_human_principal()
+        .map(drop)
+        .map_err(|error| match error {
+            CalmError::Forbidden(_) => CalmError::Forbidden(
+                "Sign in with a workspace account to attach images. Shared links accept text only."
+                    .into(),
+            ),
+            other => other,
+        })
 }
 
 /// Project the same credential/provider/workspace admission used by uploads for either
 /// historical or canonical conversation reads. This is advisory, never a grant.
-pub(crate) async fn image_input_supported(
+pub(crate) async fn image_input_refusal(
     repo: &dyn crate::db::RepoRead,
     provider: &crate::session_projection_repo::AgentProvider,
     track_id: &crate::ids::TrackId,
     workspace_root: &Path,
     source: Option<&crate::auth::HumanInputSource>,
-) -> Result<bool> {
-    if !source.is_some_and(|source| require_image_input_source(source).is_ok()) {
-        return Ok(false);
+) -> Result<Option<ErrorBody>> {
+    if let Err(error) = source
+        .ok_or(CalmError::Unauthorized)
+        .and_then(require_image_input_source)
+    {
+        return Ok(Some(error.body()));
     }
-    Ok(match repo.track_get(track_id.as_str()).await? {
-        Some(track) => image_input_root(provider, &track.workspace, workspace_root).is_ok(),
-        None => false,
-    })
+    let Some(track) = repo.track_get(track_id.as_str()).await? else {
+        return Ok(Some(CalmError::NotFound("Track not found".into()).body()));
+    };
+    Ok(image_input_root(provider, &track.workspace, workspace_root)
+        .err()
+        .map(|error| error.body()))
 }
 
 const STAGING: &str = "staging";
@@ -139,20 +155,22 @@ pub fn bound_file_path(root: &Path, card_id: &CardId, id: &AttachmentId) -> Path
     root.join(card_id.as_str()).join(BOUND).join(id.as_str())
 }
 
-/// The one place an [`AttachmentId`] becomes bytes: resolved and opened atomically with `openat2` under `RESOLVE_BENEATH` with every symlink refused — `RESOLVE_BENEATH` alone still follows `card-a/staging -> ../card-b/bound`.
+/// The one place an [`AttachmentId`] becomes bytes: resolved and opened by the secure workspace owner with every descendant symlink refused — `RESOLVE_BENEATH` alone still follows `card-a/staging -> ../card-b/bound`.
 /// `bound/` first, then `staging/`. The opener's errors name host paths, so they are logged and replaced.
 pub async fn open_attachment(
     root: &Path,
     card_id: &CardId,
     id: &AttachmentId,
 ) -> Result<OpenAttachment> {
+    crate::routes::fs::require_secure_workspace()?;
+    let workspace = dir::workspace_for_root(root)?;
     for (dir, location) in [
         (BOUND, AttachmentLocation::Bound),
         (STAGING, AttachmentLocation::Staging),
     ] {
-        let relative = format!("{}/{dir}/{}", card_id.as_str(), id.as_str());
+        let relative = dir::relative_file(card_id, dir, id);
         match crate::routes::fs::open_workspace_regular_file(
-            root,
+            workspace,
             &relative,
             crate::routes::fs::WorkspaceSymlinks::Refused,
         )
@@ -167,6 +185,7 @@ pub async fn open_attachment(
                 });
             }
             // No `openat2` on this platform is not "this card does not have that attachment" and must not be reported as one.
+            Err(error @ CalmError::SecureWorkspaceUnavailable(_)) => return Err(error),
             Err(CalmError::Internal(error)) => {
                 tracing::error!(
                     target: "planner_attachments",

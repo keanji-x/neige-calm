@@ -88,6 +88,9 @@ pub enum CalmError {
     #[error("Today adoption refused: {}", .0.code())]
     TodayAdoptionRefused(crate::routes::today::AdoptionRefusal),
 
+    #[error("secure workspace unavailable: {0}")]
+    SecureWorkspaceUnavailable(String),
+
     #[error("bad request: {0}")]
     BadRequest(String),
 
@@ -232,6 +235,7 @@ impl CalmError {
             CalmError::IdempotencyKeyConcurrent(_) => "idempotency_key_concurrent",
             CalmError::TodaySummaryNoActivity(_) => "today_summary_no_activity",
             CalmError::TodayAdoptionRefused(reason) => reason.code(),
+            CalmError::SecureWorkspaceUnavailable(_) => "secure_workspace_unavailable",
             CalmError::BadRequest(_) | CalmError::InvalidField { .. } => "bad_request",
             CalmError::InvalidBody(_) => "invalid_body",
             CalmError::UnsupportedMediaType(_) => "unsupported_media_type",
@@ -287,7 +291,8 @@ impl CalmError {
             | CalmError::PlannerTurnNotReplaceable(_)
             | CalmError::TodaySummaryNoActivity(_)
             | CalmError::TodayAdoptionRefused(_) => StatusCode::CONFLICT,
-            CalmError::BadRequest(_)
+            CalmError::SecureWorkspaceUnavailable(_)
+            | CalmError::BadRequest(_)
             | CalmError::InvalidField { .. }
             | CalmError::IdempotencyKeyInvalid(_)
             | CalmError::PluginInstall(_)
@@ -334,6 +339,7 @@ impl CalmError {
             | CalmError::IdempotencyKeyReused(m)
             | CalmError::IdempotencyKeyConcurrent(m)
             | CalmError::TodaySummaryNoActivity(m)
+            | CalmError::SecureWorkspaceUnavailable(m)
             | CalmError::BadRequest(m)
             | CalmError::InvalidBody(m)
             | CalmError::UnsupportedMediaType(m)

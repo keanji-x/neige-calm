@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { PlannerAttachment, UploadAttachmentResponse } from '../../../../core/api/generated/wire.ts';
 import { useState } from '../../ui/state/public.ts';
 import {
-  ATTACHED_WORKSPACE_REASON, PlannerAttachButton, PlannerAttachmentDrawer, usePlannerAttachments,
+  PlannerAttachButton, PlannerAttachmentDrawer, usePlannerAttachments,
   NO_UPLOAD, type AttachmentStore, type PlannerAttachments, type UploadAttachment, type UploadState,
 } from './attachments.tsx';
 
@@ -49,7 +49,7 @@ function Harness({ upload, supported = true, card = 'card-1' }: {
     <>
       <PlannerAttachButton
         attachments={attachments}
-        support={{ available: supported, reason: ATTACHED_WORKSPACE_REASON }}
+        support={{ available: supported }}
       />
       <PlannerAttachmentDrawer attachments={attachments} />
     </>
@@ -184,11 +184,11 @@ describe('planner attachments', () => {
     expect(latest?.ids).toEqual([uploaded(0).attachmentId]);
   });
 
-  it('is unavailable with a reason on a track that cannot take attachments', async () => {
+  it('uses a generic unavailable message when the server supplies no reason', async () => {
     render(<Harness upload={vi.fn<UploadAttachment>()} supported={false} />);
     expect(attachBlocked()).toBe(true);
     await userEvent.hover(attachButton());
-    expect(await screen.findByText(ATTACHED_WORKSPACE_REASON)).toBeTruthy();
+    expect(await screen.findByText('Image attachments are unavailable in this conversation.')).toBeTruthy();
   });
 });
 
