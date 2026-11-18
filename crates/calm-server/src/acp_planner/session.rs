@@ -253,6 +253,12 @@ impl AcpPlannerSession {
         }
         provider::control::InterruptOutcome::NoTarget
     }
+    /// The retained driver publishes the receipt and retires its execution claim.
+    /// Process settlement alone does not permit completing the session carrier.
+    pub(crate) async fn join_turn(&self) -> Result<()> {
+        join_driver(&self.shared).await
+    }
+
     pub async fn shutdown(&self) -> Result<()> {
         self.shared.state.lock().expect("ACP state").closed = true;
         let _issue = self.shared.issue.lock().await;

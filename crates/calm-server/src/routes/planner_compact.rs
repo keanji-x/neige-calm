@@ -62,7 +62,10 @@ pub(crate) async fn compact_planner_card(
         .write
         .verify_role(&card.id)
         .ok_or_else(|| CalmError::NotFound(format!("card {id}")))?;
-    if human_harness_binding(&card, role).is_none() {
+    if human_harness_binding(s.repo.as_ref(), &card, role)
+        .await?
+        .is_none()
+    {
         return Err(CalmError::Forbidden(
             "This card has no planner conversation.".into(),
         ));

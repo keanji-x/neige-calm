@@ -86,9 +86,16 @@ pub async fn acp_registration_claim(
                 .await?
                 .ok_or_else(|| CalmError::Conflict("ACP registration track changed"))?,
         };
-        if !PrincipalDecisionGate::new(principal)
-            .recorder_grant(&mut *tx, &session.track_id)
-            .await?
+        let card = session.card_id.as_ref()
+            .ok_or_else(|| CalmError::Conflict("ACP registration owner changed"))?;
+        let shape = super::card_execution_shape_tx(&mut tx, card.as_str()).await?;
+        let binding = crate::planner_binding::PlannerBinding::from_shape(&shape.kind, shape.role, &shape.payload)
+            .ok_or_else(|| CalmError::Conflict("ACP registration owner changed"))?;
+        if binding.profile == calm_types::harness::HarnessProfile::PlainChat
+            || !binding.matches_session_contract(&session)
+            || !matches!(PrincipalDecisionGate::new(principal)
+                .decide_card_write(&mut *tx, &session.track_id, card, shape.role).await?,
+                crate::decision_gate::GateDecision::Allow)
         {
             return Err(CalmError::Conflict("ACP registration owner changed").into());
         }
@@ -307,7 +314,7 @@ async fn prepare_tx(
     if acp_submission_unresolved_tx(tx, &receipt.worker_session_id).await? {
         return Err(CalmError::Conflict("ACP receipt remains blocking"));
     }
-    let inserted = sqlx::query(concat!("INSERT INTO ","acp_submissions(worker_session_id,client_id,turn_id,thread_id,native_session_id,input_json",",state,created_at_ms,shared_restart_owner_json) SELECT ?1,?2,?3,?4,?5,?6,'sending',?7,?9 WHERE EXISTS(SELECT 1 FROM ","worker_sessions ws JOIN cards c ON c.session_id=ws.id AND c.id=ws.card_id WHERE ws.id=?1 ","AND ws.provider IN (SELECT value FROM json_each(?8)) AND ws.mode='resumable' AND c.track_id=ws.track_id ","AND ((ws.contract='planner' AND c.role='planner' AND json_extract(c.payload,'$.planner_provider')=ws.provider) ","OR (ws.contract='assistant' AND c.role='assistant' AND c.kind='codex' ","AND json_extract(c.payload,'$.harness_profile')='assistant' ","AND json_extract(c.payload,'$.assistant_provider')=ws.provider)) ","AND ws.thread_id=?4 AND ws.agent_session_id=?5 AND ws.state IN ","('starting','running','idle','turn_pending'))"))
+    let inserted = sqlx::query(concat!("INSERT INTO ","acp_submissions(worker_session_id,client_id,turn_id,thread_id,native_session_id,input_json",",state,created_at_ms,shared_restart_owner_json) SELECT ?1,?2,?3,?4,?5,?6,'sending',?7,?9 WHERE EXISTS(SELECT 1 FROM ","worker_sessions ws JOIN cards c ON c.session_id=ws.id AND c.id=ws.card_id WHERE ws.id=?1 ","AND ws.provider IN (SELECT value FROM json_each(?8)) AND ws.mode='resumable' AND c.track_id=ws.track_id ","AND ((ws.contract='planner' AND c.role='planner' AND json_extract(c.payload,'$.planner_provider')=ws.provider) ","OR (ws.contract='assistant' AND c.role='assistant' AND c.kind='codex' ","AND json_extract(c.payload,'$.harness_profile')='assistant' ","AND json_extract(c.payload,'$.assistant_provider')=ws.provider) ","OR (ws.contract='executor' AND c.role='worker' AND c.kind='codex' ","AND json_extract(c.payload,'$.harness_profile')='task_worker' ","AND json_extract(c.payload,'$.worker_provider')=ws.provider)) ","AND ws.thread_id=?4 AND ws.agent_session_id=?5 AND ws.state IN ","('starting','running','idle','turn_pending'))"))
         .bind(&receipt.worker_session_id).bind(&receipt.client_id).bind(&receipt.turn_id).bind(&receipt.thread_id).bind(&receipt.native_session_id).bind(&receipt.input_json).bind(at_ms).bind(acp_provider_db_strings()).bind(owner.map(sqlx::types::Json)).execute(&mut **tx).await?;
     if inserted.rows_affected() != 1 {
         return Err(CalmError::Conflict(

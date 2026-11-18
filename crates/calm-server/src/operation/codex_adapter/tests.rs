@@ -802,3 +802,6 @@ mod agent_backend_binding_tests;
 
 #[cfg(test)]
 mod task_worker_tests;
+
+#[cfg(test)]
+mod task_worker_acp_tests;

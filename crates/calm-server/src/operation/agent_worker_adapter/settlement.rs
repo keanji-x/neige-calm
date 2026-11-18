@@ -37,14 +37,17 @@ pub(crate) async fn settle(
     let card = card.to_owned();
     let worker = worker.to_owned();
     let scope_write = write.clone();
-    write_with_actor_events_typed(repo, None, bus, write, move |tx| {
+    let envelopes = write_in_tx_typed(repo, move |tx| {
         Box::pin(async move {
             let events = settle_tx(tx, &scope_write, attempt, card, worker).await?;
-            Ok(((), events))
+            super::super::workspace_lease::append_workspace_events_tx(tx, events).await
         })
     })
-    .await
-    .map(|_| ())
+    .await?;
+    for envelope in envelopes {
+        bus.emit_envelope(envelope);
+    }
+    Ok(())
 }
 
 async fn settle_tx(

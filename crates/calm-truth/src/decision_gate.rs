@@ -121,7 +121,33 @@ pub async fn enforce_role_resolving_session<T: WriteTx + ?Sized + Send>(
         ActorId::AiCodexSession(_) => ActorId::AiCodex(card_id),
         ActorId::AiClaudeSession(_) => ActorId::AiClaude(card_id),
         ActorId::AiManagedSession(_) => {
-            if session.contract != calm_types::worker::WorkerContract::Assistant {
+            let task_worker = session.contract == calm_types::worker::WorkerContract::Executor
+                && cache.get(&card_id) == Some(CardRole::Worker)
+                && session.provider.protocol() == Some(calm_types::runtime::AgentProtocol::Acp)
+                && tx
+                    .read_card_binding(&card_id)
+                    .await
+                    .map_err(|_| RoleViolation::SessionResolutionError {
+                        session: session_id.clone(),
+                    })?
+                    .is_some_and(|(kind, payload, _)| {
+                        crate::planner_binding::PlannerBinding::from_shape(
+                            &kind,
+                            CardRole::Worker,
+                            &payload,
+                        )
+                        .is_some_and(|binding| {
+                            binding.profile == calm_types::harness::HarnessProfile::TaskWorker
+                                && binding.matches_session_contract_parts(
+                                    session.mode,
+                                    session.provider,
+                                    session.contract,
+                                )
+                        })
+                    });
+            let assistant = session.contract == calm_types::worker::WorkerContract::Assistant
+                && cache.get(&card_id) == Some(CardRole::Assistant);
+            if !assistant && !task_worker {
                 return Err(RoleViolation::SessionActorUnresolved {
                     session: session_id,
                 });

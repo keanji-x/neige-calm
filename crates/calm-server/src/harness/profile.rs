@@ -53,8 +53,21 @@ pub(crate) async fn require_human_harness_card_tx(
     card_id: &str,
 ) -> crate::error::Result<()> {
     let shape = crate::db::sqlite::card_execution_shape_tx(tx, card_id).await?;
-    if calm_truth::planner_binding::profile_from_shape(&shape.kind, shape.role, &shape.payload)
-        .is_some_and(|profile| !profile.accepts_human_input())
+    let profile =
+        calm_truth::planner_binding::profile_from_shape(&shape.kind, shape.role, &shape.payload);
+    let task_bound = crate::db::sqlite::card_has_task_binding_tx(tx, card_id).await?;
+    let managed = crate::db::sqlite::session_projection_projectable_for_card_tx(tx, card_id)
+        .await?
+        .is_some_and(|session| {
+            session.kind == crate::session_projection_repo::WorkerSessionKind::ManagedWorker
+        });
+    if shape
+        .payload
+        .get(calm_truth::validation::WORKER_PROVIDER_PAYLOAD_KEY)
+        .is_some()
+        || task_bound
+        || managed
+        || !profile.is_some_and(HarnessProfileExt::accepts_human_input)
     {
         return Err(crate::error::CalmError::Forbidden(
             "TaskWorker accepts no human input".into(),

@@ -287,6 +287,11 @@ pub(super) async fn spawn(
                 tracing::warn!(%error,worker=%runner.worker,"native cancel unconfirmed; stopping managed execution");
             }
         }
+        if (result.is_err() || cancel_requested)
+            && let Err(error) = runner.turn.join_interrupted().await
+        {
+            tracing::warn!(%error, worker=%runner.worker, "worker native cleanup did not join; stopping managed execution");
+        }
         if let Err(error) = result {
             tracing::error!(%error,worker=%runner.worker,"worker event loop failed");
         }

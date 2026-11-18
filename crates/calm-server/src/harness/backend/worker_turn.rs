@@ -101,6 +101,23 @@ impl WorkerTurn {
         }
     }
 
+    /// ACP cancellation is a local signal; its receipt writer still owns the carrier.
+    pub(crate) async fn join_interrupted(&self) -> Result<()> {
+        match &self.backend.0 {
+            Arm::Acp(session) => {
+                tokio::time::timeout(std::time::Duration::from_secs(10), session.join_turn())
+                    .await
+                    .map_err(|error| {
+                        CalmError::ServiceUnavailable(format!(
+                            "ACP interrupt cleanup did not join: {error}"
+                        ))
+                    })?
+            }
+            Arm::Codex(..) => Ok(()),
+            Arm::Claude(_) => unreachable!("TaskWorker has no Claude constructor"),
+        }
+    }
+
     pub(crate) async fn interrupt(&self, turn: &str) -> InterruptOutcome<InterruptDiagnostic> {
         match &self.backend.0 {
             Arm::Codex(daemon, _) => {

@@ -1247,8 +1247,14 @@ async fn side_source_cannot_be_forged_through_rest() {
         Some(json!({"text": "question", "side": {"source_card_id": parent["id"], "context": "text"}}))).await;
     assert_eq!(status, StatusCode::CREATED, "{child}");
     for value in [json!("forged-source"), json!(17), Value::Null] {
-        let (status, response) = b.request("PATCH", &format!("/api/cards/{}", child["id"].as_str().unwrap()), None,
-            Some(json!({"payload": {"schemaVersion": 1, "harness_profile": "assistant", "side_source_card_id": value}}))).await;
+        let (status, response) = b
+            .request(
+                "PATCH",
+                &format!("/api/cards/{}", child["id"].as_str().unwrap()),
+                None,
+                Some(json!({"payload": {"schemaVersion": 1, "side_source_card_id": value}})),
+            )
+            .await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{response}");
     }
     b.shutdown_harnesses().await;
@@ -1264,7 +1270,7 @@ async fn side_source_survives_rest_and_trusted_payload_replacement() {
     let (_, child) = b.request("POST", &format!("/api/tracks/{track}/conversations"), Some("sticky-child"),
         Some(json!({"text": "question", "side": {"source_card_id": parent["id"], "context": "text"}}))).await;
     let id = child["id"].as_str().unwrap();
-    let replacement = json!({"schemaVersion": 1, "harness_profile": "assistant"});
+    let replacement = json!({"schemaVersion": 1});
     let (status, updated) = b
         .request(
             "PATCH",
@@ -1275,6 +1281,7 @@ async fn side_source_survives_rest_and_trusted_payload_replacement() {
         .await;
     assert_eq!(status, StatusCode::OK, "{updated}");
     assert_eq!(updated["payload"]["side_source_card_id"], parent["id"]);
+    assert_eq!(updated["payload"]["harness_profile"], "assistant");
     let write_db = (b.repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async  {
         let mut tx = write_session.begin_immediate().await.unwrap();

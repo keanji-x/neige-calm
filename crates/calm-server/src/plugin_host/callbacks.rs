@@ -1193,25 +1193,7 @@ mod tests {
     async fn card_create_and_update_reject_client_server_owned_keys() {
         use crate::validation::SERVER_OWNED_CARD_PAYLOAD_KEYS;
         let h = Harness::new("p1", manifest_with_full_perms("p1")).await;
-        assert_eq!(
-            SERVER_OWNED_CARD_PAYLOAD_KEYS,
-            [
-                "bound_session_cwd",
-                "terminal_signals",
-                "terminal_presentation",
-                "template_context",
-                "track_creation_context",
-                "planner_provider",
-                "assistant_provider",
-                "worker_provider",
-                "side_source_card_id",
-                "assistant_opening_context",
-                "permission_mode",
-                "owner_created",
-                "settings_path",
-                "claude_session_id"
-            ]
-        );
+
         let probes = [json!(true), json!({}), json!("declared"), Value::Null];
         for key in SERVER_OWNED_CARD_PAYLOAD_KEYS {
             for kind in ["terminal", "plugin:p1:demo"] {

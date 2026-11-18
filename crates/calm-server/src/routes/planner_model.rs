@@ -114,7 +114,10 @@ pub(crate) async fn set_planner_model(
         .write
         .verify_role(&card.id)
         .ok_or_else(|| CalmError::NotFound(format!("card {id}")))?;
-    if human_harness_binding(&card, role).is_none() {
+    if human_harness_binding(s.repo.as_ref(), &card, role)
+        .await?
+        .is_none()
+    {
         return Err(CalmError::Forbidden(format!(
             "card {id} is not a planner codex card",
         )));

@@ -10,6 +10,20 @@ use crate::{
 };
 use sqlx::{Sqlite, Transaction};
 
+/// A task's durable card binding survives malformed or historical harness markers.
+/// Both the task row and the scheduler's creation operation are authoritative evidence.
+pub async fn card_has_task_binding_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    card_id: &str,
+) -> Result<bool> {
+    let bound: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM tasks WHERE worker_card_id=?1)")
+            .bind(card_id)
+            .fetch_one(&mut **tx)
+            .await?;
+    Ok(bound || super::card_is_worker_spawn_target_tx(tx, card_id).await?)
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn task_worker_create_tx(
     tx: &mut Transaction<'_, Sqlite>,
@@ -68,6 +82,46 @@ mod tests {
     use crate::db::sqlite::session_conversation_tests::card;
     use crate::db::sqlite::{SqlxRepo, session_get_tx, session_projection_by_id_tx};
     use serde_json::json;
+
+    #[tokio::test]
+    async fn task_worker_acp_session_actor_reports_only_on_its_own_card() {
+        use crate::event::{Event, EventScope};
+        use crate::ids::ActorId;
+        let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+        let (_, track_id) = card(&repo).await;
+        let track = repo.track_get(&track_id).await.unwrap().unwrap();
+        let db = repo.db().clone();
+        db.writer().with_writer(|writer| Box::pin(async move {
+            let mut tx = writer.begin_immediate().await.unwrap();
+            for provider in [AgentProvider::OpenCode, AgentProvider::Antigravity, AgentProvider::Grok] {
+                let card_id = format!("worker-{}", provider.wire_name());
+                let worker = format!("session-{card_id}");
+                let op = format!("op-{card_id}");
+                sqlx::query(concat!("INSERT INTO operations(id,operation_key,kind,idempotency_key,payload_hash,",
+                    "target_type,target_json,payload_json,phase,created_at_ms,updated_at_ms) ",
+                    "VALUES(?1,?1,'agent-worker',?1,'fixture','card','{}','{}','pending',1,1)"))
+                    .bind(&op).execute(&mut **tx).await.unwrap();
+                task_worker_create_tx(&mut tx, card_id.clone(), worker.clone(), op.clone(), NewCard {
+                    track_id: track.id.clone(), kind: "codex".into(), title: None, sort: None,
+                    payload: json!({"schemaVersion":1,"harness_profile":"task_worker",
+                        "worker_provider":provider,"idempotency_key":op}),
+                }, provider.clone(), Some("registration".into()), repo.card_role_cache()).await.unwrap();
+                super::super::session_set_status_tx(&mut tx, &worker, WorkerSessionState::Running).await.unwrap();
+                let actor = ActorId::for_agent_session(CardRole::Worker, &provider, worker.into());
+                let event = Event::TaskCompleted { notification: calm_types::event::PlannerNotification::Notify,
+                    idempotency_key: op, result: json!(null), artifacts: vec![], agent_message: None };
+                let scope = EventScope::Card { card: card_id.clone().into(), track: track.id.clone(), area: track.area_id.clone() };
+                crate::decision_gate::enforce_role_resolving_session_from_tx(&mut *tx, &actor, &event, &scope)
+                    .await.expect("ACP worker may report its own outcome");
+                let foreign = EventScope::Card { card: "foreign".into(), track: track.id.clone(), area: track.area_id.clone() };
+                assert!(crate::decision_gate::enforce_role_resolving_session_from_tx(&mut *tx, &actor, &event, &foreign).await.is_err());
+                sqlx::query("UPDATE cards SET payload=json_set(payload,'$.harness_profile','plain_chat') WHERE id=?1")
+                    .bind(&card_id).execute(&mut **tx).await.unwrap();
+                assert!(crate::decision_gate::enforce_role_resolving_session_from_tx(&mut *tx, &actor, &event, &scope).await.is_err());
+            }
+            tx.rollback().await.unwrap();
+        })).await.unwrap();
+    }
 
     #[tokio::test]
     async fn task_worker_storage_creates_terminal_free_managed_executor_for_each_provider() {
@@ -156,5 +210,105 @@ mod tests {
         }
         assert_eq!(content.content.matches("cargo check").count(), 1);
         assert!(!content.content.contains("inProgress"));
+    }
+}
+
+#[cfg(test)]
+mod admission_tests {
+    use super::*;
+    use crate::db::sqlite::{AcpSubmission, AcpSubmissionState, SqlxRepo};
+    use serde_json::json;
+
+    async fn worker(provider: AgentProvider) -> (SqlxRepo, String, String) {
+        let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+        let (_, track) = super::super::session_conversation_tests::card(&repo).await;
+        let db = repo.db().clone();
+        let roles = repo.card_role_cache().clone();
+        db.writer().with_writer(|writer| Box::pin(async move {
+            let mut tx = writer.begin_immediate().await.unwrap();
+            sqlx::query(concat!("INSERT INTO operations(id,operation_key,kind,idempotency_key,payload_hash,",
+                "target_type,target_json,payload_json,phase,created_at_ms,updated_at_ms) ",
+                "VALUES('op','op','agent-worker','attempt','fixture','card','{}','{}','pending',1,1)"))
+                .execute(&mut **tx).await.unwrap();
+            task_worker_create_tx(&mut tx, "worker-card".into(), "worker-session".into(), "op".into(),
+                NewCard { track_id: track.into(), kind: "codex".into(), title: None, sort: None,
+                    payload: json!({"schemaVersion":1,"harness_profile":"task_worker",
+                        "worker_provider":provider,"idempotency_key":"attempt"}) },
+                provider.clone(), (provider != AgentProvider::Codex).then(|| "registration".into()),
+                &roles).await.unwrap();
+            super::super::session_bind_attribution_tx(&mut tx, &"worker-session".into(),
+                crate::session_projection_repo::ThreadAttribution {
+                    worker_session_id: "worker-session".into(), provider,
+                    thread_id: Some("thread".into()), session_id: Some("native".into()), active_turn_id: None,
+                }).await.unwrap();
+            tx.commit().await.unwrap();
+        })).await.unwrap();
+        (repo, "worker-card".into(), "worker-session".into())
+    }
+
+    #[tokio::test]
+    async fn task_worker_acp_receipt_admits_executor() {
+        for provider in [
+            AgentProvider::OpenCode,
+            AgentProvider::Antigravity,
+            AgentProvider::Grok,
+        ] {
+            let (repo, _, worker) = worker(provider).await;
+            let receipt = AcpSubmission {
+                worker_session_id: worker.clone(),
+                client_id: "client".into(),
+                turn_id: "turn".into(),
+                thread_id: "thread".into(),
+                native_session_id: "native".into(),
+                input_json: json!({"input":null,"prompt":[],"queue":[]}).to_string(),
+                state: AcpSubmissionState::Sending,
+                outcome_json: None,
+                kept_cleanup: None,
+            };
+            super::super::acp_submission_prepare(&repo.db().clone(), &receipt, 1, None)
+                .await
+                .unwrap();
+            assert!(
+                super::super::acp_submission_get(repo.pool(), &worker, "client")
+                    .await
+                    .unwrap()
+                    .is_some()
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn task_worker_harness_identity_is_server_owned_and_sticky() {
+        let (repo, card, _) = worker(AgentProvider::Codex).await;
+        let rejected = crate::validation::reject_client_supplied_server_owned_keys(
+            &json!({"schemaVersion":1,"harness_profile":"plain_chat"}),
+        );
+        assert!(matches!(
+            rejected,
+            Err(crate::TruthError::Core(
+                calm_types::error::CoreError::BadRequest(_)
+            ))
+        ));
+        repo.db()
+            .writer()
+            .with_writer(|writer| {
+                Box::pin(async move {
+                    let mut tx = writer.begin_immediate().await.unwrap();
+                    let updated = super::super::card_update_tx(
+                        &mut tx,
+                        &card,
+                        crate::model::CardPatch {
+                            payload: Some(json!({"schemaVersion":1})),
+                            ..Default::default()
+                        },
+                    )
+                    .await
+                    .unwrap();
+                    assert_eq!(updated.payload["harness_profile"], "task_worker");
+                    tx.rollback().await.unwrap();
+                })
+            })
+            .await
+            .unwrap();
     }
 }

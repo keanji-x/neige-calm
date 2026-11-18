@@ -37,12 +37,24 @@ pub(crate) fn card_runs_headless_harness(card: &Card, role: CardRole) -> bool {
     crate::harness::profile::PlannerBinding::from_card(card, role).is_some()
 }
 
-pub(crate) fn human_harness_binding(
+pub(crate) async fn human_harness_binding(
+    repo: &dyn RouteRepo,
     card: &Card,
     role: CardRole,
-) -> Option<crate::harness::profile::PlannerBinding> {
-    crate::harness::profile::PlannerBinding::from_card(card, role)
+) -> Result<Option<crate::harness::profile::PlannerBinding>> {
+    let Some(binding) = crate::harness::profile::PlannerBinding::from_card(card, role)
         .filter(|binding| binding.profile.accepts_human_input())
+    else {
+        return Ok(None);
+    };
+    let card_id = card.id.to_string();
+    crate::db::write_in_tx_typed(repo, move |tx| {
+        Box::pin(async move {
+            crate::harness::profile::require_human_harness_card_tx(tx, &card_id).await
+        })
+    })
+    .await?;
+    Ok(Some(binding))
 }
 
 async fn card_daemon<'a>(
@@ -386,7 +398,10 @@ pub(crate) async fn interrupt_planner_card(
         .write
         .verify_role(&card.id)
         .ok_or_else(|| CalmError::NotFound(format!("card {id}")))?;
-    if human_harness_binding(&card, role).is_none() {
+    if human_harness_binding(s.repo.as_ref(), &card, role)
+        .await?
+        .is_none()
+    {
         return Err(CalmError::Forbidden(format!(
             "card {id} is not a planner codex card",
         )));
@@ -732,7 +747,8 @@ async fn harness_card_to_start(s: &RouteState, id: &str) -> Result<(Card, Harnes
         .write
         .verify_role(&card.id)
         .ok_or_else(|| CalmError::NotFound(format!("card {id}")))?;
-    let binding = human_harness_binding(&card, role)
+    let binding = human_harness_binding(s.repo.as_ref(), &card, role)
+        .await?
         .ok_or_else(|| CalmError::Forbidden(format!("card {id} accepts no human control")))?;
     Ok((card, binding.profile))
 }

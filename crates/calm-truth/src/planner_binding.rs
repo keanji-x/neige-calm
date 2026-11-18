@@ -1,7 +1,8 @@
 //! Persisted conversation binding shared by creation, authorization and replacement.
 use crate::model::{Card, CardRole};
 use crate::validation::{
-    ASSISTANT_PROVIDER_PAYLOAD_KEY, PLANNER_PROVIDER_PAYLOAD_KEY, WORKER_PROVIDER_PAYLOAD_KEY,
+    ASSISTANT_PROVIDER_PAYLOAD_KEY, HARNESS_PROFILE_PAYLOAD_KEY, PLANNER_PROVIDER_PAYLOAD_KEY,
+    WORKER_PROVIDER_PAYLOAD_KEY,
 };
 use calm_types::{harness::HarnessProfile, runtime::AgentProvider};
 use serde_json::Value;
@@ -119,6 +120,15 @@ pub fn profile_from_shape(kind: &str, role: CardRole, payload: &Value) -> Option
     if kind != "codex" {
         return None;
     }
+    // A managed worker cannot acquire human conversation capabilities through a stale marker.
+    if payload.get(WORKER_PROVIDER_PAYLOAD_KEY).is_some() {
+        return (role == CardRole::Worker
+            && payload
+                .get(HARNESS_PROFILE_PAYLOAD_KEY)
+                .and_then(Value::as_str)
+                == Some("task_worker"))
+        .then_some(HarnessProfile::TaskWorker);
+    }
     match role {
         CardRole::Planner => Some(HarnessProfile::Planner),
         CardRole::Worker
@@ -233,4 +243,17 @@ fn task_worker_binding_requires_worker_marker_and_supported_provider() {
         serde_json::to_value(calm_types::runtime::WorkerSessionKind::ManagedWorker).unwrap(),
         json!("managed-worker")
     );
+}
+
+#[cfg(test)]
+#[test]
+fn task_worker_provider_never_decodes_as_plain_chat() {
+    use serde_json::json;
+    for provider in [json!("codex"), json!("opencode"), json!(null)] {
+        for marker in [json!("plain_chat"), json!("assistant"), json!(null)] {
+            let payload = json!({"harness_profile":marker,"worker_provider":provider});
+            assert!(profile_from_shape("codex", CardRole::Worker, &payload).is_none());
+            assert!(PlannerBinding::from_shape("codex", CardRole::Worker, &payload).is_none());
+        }
+    }
 }

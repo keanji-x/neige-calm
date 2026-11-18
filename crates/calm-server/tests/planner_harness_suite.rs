@@ -160,3 +160,6 @@ mod w_provider_owner;
 
 #[path = "cases/c4_provider_release.rs"]
 mod c4_provider_release;
+
+#[path = "cases/task_worker_human_isolation.rs"]
+mod task_worker_human_isolation;

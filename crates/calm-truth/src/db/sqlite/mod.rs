@@ -530,4 +530,4 @@ mod session_backend_tests;
 pub mod claude_session_launch;
 
 mod task_worker;
-pub use task_worker::task_worker_create_tx;
+pub use task_worker::{card_has_task_binding_tx, task_worker_create_tx};

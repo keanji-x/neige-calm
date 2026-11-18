@@ -654,6 +654,26 @@ async fn agent_worker_turn_ended_preserves_reported_outcome() {
     )
     .await
     .unwrap();
+    // The report may already have released the lease: an empty event batch still retires the session.
+    crate::operation::agent_worker_adapter::settlement::settle(
+        f.repo.as_ref(),
+        &f.scheduler.events,
+        &f.scheduler.write,
+        &f.task.id,
+        f.card.id.as_str(),
+        "session-a",
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        f.repo
+            .session_get(&WorkerSessionId::from("session-a"))
+            .await
+            .unwrap()
+            .unwrap()
+            .state,
+        WorkerSessionState::Exited
+    );
     let task = f.repo.task_get(&f.task.id).await.unwrap().unwrap();
     assert_eq!(task.status, TaskStatus::Failed);
     assert_eq!(task.status_detail.as_deref(), Some("worker-timeout"));
