@@ -133,6 +133,91 @@ impl Drop for OwnedSpawnWitness {
 
 #[cfg(target_os = "macos")]
 #[tokio::test]
+async fn healthy_nonleader_is_refused_before_takeover_handshake() {
+    use calm_truth::db::{DaemonRecovery, RecoveryId};
+    use std::os::unix::fs::MetadataExt;
+
+    let root = tempfile::tempdir().unwrap();
+    let sock = root.path().join("run/codex-appserver.sock");
+    std::fs::create_dir_all(sock.parent().unwrap()).unwrap();
+    let marker = root.path().join("listener-term");
+    let mut leader = OwnedTakeoverChild(
+        std::process::Command::new("/bin/sleep")
+            .arg("120")
+            .process_group(0)
+            .spawn()
+            .unwrap(),
+    );
+    let group = leader.id() as i32;
+    let mut peer = OwnedTakeoverChild(
+        std::process::Command::new(fake_codex_bin())
+            .args(["app-server", "--listen"])
+            .arg(format!("unix://{}", sock.display()))
+            .env("FAKE_CODEX_SIGTERM_MARKER", &marker)
+            .process_group(group)
+            .spawn()
+            .unwrap(),
+    );
+    let pid = peer.id() as i32;
+    let birth = wait_for_start_time_and_socket(pid, &sock).await;
+    let original_socket = std::fs::metadata(&sock).unwrap();
+    let cfg = quiet_heal_cfg(&root);
+    let home = Arc::new(calm_server::shared_codex_home::SharedCodexHome::new(
+        root.path().join("codex-home"),
+    ));
+    home.seed_from(None).unwrap();
+
+    for stored_group in [group, pid] {
+        for state in [SharedDaemonState::Running, SharedDaemonState::Starting] {
+            for scope in [None, Some(RecoveryId::fresh())] {
+                let repo = repo().await;
+                persist_running_daemon(&repo, &root, pid, stored_group, &sock, birth).await;
+                repo.db()
+                    .writer()
+                    .execute(
+                        sqlx::query(
+                            "UPDATE codex_backend_daemons SET state=?, recovery_phase=?, recovery_id=? WHERE backend_id='default'",
+                        )
+                        .bind(state.as_db_str())
+                        .bind(if scope.is_some() { "recorded" } else { "legacy" })
+                        .bind(scope.map(|id| id.to_string())),
+                    )
+                    .await
+                    .unwrap();
+                let daemon = SharedCodexAppServer::new(&cfg, home.clone(), repo.clone());
+                daemon
+                    .start_or_takeover()
+                    .await
+                    .expect_err("live nonleader must remain fenced");
+                assert_eq!(daemon.status_snapshot().state, SharedDaemonState::Failed);
+                let row = repo.shared_daemon_runtime_get("default").await.unwrap();
+                assert_eq!(
+                    (row.pid, row.pgid, row.process_start_time),
+                    (Some(pid), Some(stored_group), Some(birth))
+                );
+                assert!(matches!(row.recovery, DaemonRecovery::Recorded { .. }));
+                if let Some(id) = scope {
+                    assert_eq!(row.recovery.scope_id(), Some(id));
+                }
+                assert!(
+                    !sock.with_extension("methods").exists(),
+                    "takeover sent an RPC"
+                );
+                let socket = std::fs::metadata(&sock).unwrap();
+                assert_eq!(
+                    (socket.dev(), socket.ino()),
+                    (original_socket.dev(), original_socket.ino())
+                );
+                assert!(!marker.exists());
+                assert!(peer.try_wait().unwrap().is_none());
+                assert!(leader.try_wait().unwrap().is_none());
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
 async fn healthy_takeover_runtime_read_failure_then_repair_adopts_original_pid() {
     for state in [SharedDaemonState::Running, SharedDaemonState::Starting] {
         for recorded in [false, true] {
