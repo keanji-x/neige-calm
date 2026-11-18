@@ -329,6 +329,7 @@ describe('Track mobile presentation', () => {
     { label: 'Network', path: '/settings/network' },
     { label: 'Appearance', path: '/settings/appearance' },
     { label: 'Plugins', path: '/settings/plugins' },
+    { label: 'Workers', path: '/settings/workers' },
   ] as const)('opens the $label category from the index and returns through browser Back', async ({ label, path }) => {
     await page.viewport(390, 844);
     const router = setup('/settings');
@@ -347,7 +348,7 @@ describe('Track mobile presentation', () => {
     expect(router.history.location.state.__TSR_index).toBe(0);
   });
 
-  it.each(['network', 'appearance', 'plugins'] as const)('returns a cold %s detail link safely to the index', async (section) => {
+  it.each(['network', 'appearance', 'plugins', 'workers'] as const)('returns a cold %s detail link safely to the index', async (section) => {
     await page.viewport(390, 844);
     const router = setup(`/settings/${section}`);
     await page.getByRole('button', { name: 'Back to Settings' }).click();

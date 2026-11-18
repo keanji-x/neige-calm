@@ -166,6 +166,10 @@ impl ProviderAdapter for CodexWorkerAdapter {
             .card_get(&card_id)
             .await?
             .ok_or_else(|| CalmError::NotFound(format!("card {card_id}")))?;
+        let _ = crate::worker_model_defaults::from_payload(
+            &card.payload,
+            calm_types::worker_model::WorkerModelProvider::Codex,
+        )?;
         let mcp_token = mint_card_mcp_token(ctx, &card_id, &session_id).await?;
 
         let handle = spawn_codex_worker_via_shared_daemon(CodexWorkerSpawnCtx {

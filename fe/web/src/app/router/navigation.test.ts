@@ -46,6 +46,9 @@ describe('filePathFromSearchString', () => {
 });
 
 describe('pathFor', () => {
+  it('gives Workers a dedicated URL', () => {
+    expect(pathFor({ name: 'settings-workers' })).toBe('/settings/workers');
+  });
   it('gives the mobile Network category a dedicated URL', () => {
     expect(pathFor({ name: 'settings-network' })).toBe('/settings/network');
     expect(pathFor({ name: 'settings' })).toBe('/settings');

@@ -59,3 +59,5 @@ pub mod track_wire;
 pub mod report_knowledge;
 
 pub mod system_assistant;
+
+pub mod worker_model;

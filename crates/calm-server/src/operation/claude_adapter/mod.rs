@@ -387,6 +387,7 @@ fn build_claude_worker_command_line(
     claude_session_id: &str,
     track_id: &str,
     prompt: &str,
+    selection: &provider::TurnModelSelection,
 ) -> Result<String> {
     let worker_system_prompt = crate::planner_card::render_system_prompt(
         crate::planner_card::SeededCardRole::WorkerClaude.prompt_template(),
@@ -403,6 +404,7 @@ fn build_claude_worker_command_line(
     command_line.push_str(&worker_mcp::mcp_flags(&worker_mcp::mcp_config_path(
         settings_path,
     )?));
+    command_line.push_str(&crate::worker_model_defaults::claude_flags(selection));
     command_line.push_str(" -- ");
     command_line.push_str(&sh_single_quote(prompt));
     Ok(command_line)
@@ -982,6 +984,18 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
                 );
             });
             return Ok(SpawnOutcome::Ready(SpawnHandle::NoOp));
+        }
+
+        // Replays consume the frozen command, but must still refuse a corrupt card snapshot
+        // before writing settings, rotating MCP credentials or starting a terminal.
+        let card = ctx
+            .repo
+            .card_get(&card_id)
+            .await?
+            .ok_or_else(|| CalmError::NotFound(format!("card {card_id}")))?;
+        let provider = calm_types::worker_model::WorkerModelProvider::Claude;
+        if crate::worker_model_defaults::from_payload(&card.payload, provider)?.is_none() {
+            crate::worker_model_defaults::warn_legacy_selection(&card_id, provider);
         }
 
         let mcp_server = self.mcp_server.as_ref().ok_or_else(|| {
