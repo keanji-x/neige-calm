@@ -165,7 +165,7 @@ impl Executor {
         let result = process::spawn(
             cwd.directory(),
             &record.request.specification,
-            CapabilityToken::fresh()?,
+            process::identity_nonce()?,
             output_log,
         )
         .map(|(process, native)| (process, native, ()));

@@ -1,7 +1,13 @@
 use super::*;
 use std::time::{Duration, Instant};
 
-async fn no_child_launch_failure(posix_spawn_error: bool) {
+enum LaunchFailure {
+    Nonce,
+    NulArgument,
+    MissingProgram,
+}
+
+async fn no_child_launch_failure(failure: LaunchFailure) {
     use super::super::{Executor, protocol_test_support::*};
     use crate::execution::ExecutorConfig;
     let temp = tempfile::tempdir().unwrap();
@@ -16,14 +22,19 @@ async fn no_child_launch_failure(posix_spawn_error: bool) {
     let (mut request, held) = private(&executor, &source);
     request.specification.program = "/bin/sh".into();
     request.specification.args = vec!["-c".into(), "printf payload > payload-ran".into()];
-    if posix_spawn_error {
-        request.specification.program = temp.path().join("absent-program");
-    } else {
-        request.specification.args.push("nul\0argument".into());
+    match failure {
+        LaunchFailure::NulArgument => request.specification.args.push("nul\0argument".into()),
+        LaunchFailure::MissingProgram => {
+            request.specification.program = temp.path().join("absent-program");
+        }
+        LaunchFailure::Nonce => {}
     }
     prepare(&executor, &request, &held).await;
     let launch = consume(&request);
-    let first = executor.launch(launch.clone()).await.unwrap();
+    let first = {
+        let _fault = matches!(failure, LaunchFailure::Nonce).then(|| FaultGuard::set(Fault::Nonce));
+        executor.launch(launch.clone()).await.unwrap()
+    };
     assert!(
         matches!(
             first,
@@ -100,12 +111,17 @@ async fn no_child_launch_failure(posix_spawn_error: bool) {
 
 #[tokio::test]
 async fn native_macos_no_child_nul_argv_is_durable_and_preserves_successor() {
-    no_child_launch_failure(false).await;
+    no_child_launch_failure(LaunchFailure::NulArgument).await;
 }
 
 #[tokio::test]
 async fn native_macos_no_child_posix_spawn_error_is_durable_and_preserves_successor() {
-    no_child_launch_failure(true).await;
+    no_child_launch_failure(LaunchFailure::MissingProgram).await;
+}
+
+#[tokio::test]
+async fn native_macos_no_child_nonce_failure_is_durable_and_preserves_successor() {
+    no_child_launch_failure(LaunchFailure::Nonce).await;
 }
 
 #[tokio::test]
@@ -400,6 +416,7 @@ fn native_macos_suspended_wait_event_allows_resume() {
 #[derive(Clone, Copy, PartialEq)]
 pub(super) enum Fault {
     None,
+    Nonce,
     Setup,
     Observe,
     Group,

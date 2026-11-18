@@ -521,10 +521,10 @@ jobs:
         run: |
           env -u NEIGE_CODEX_BIN cargo nextest run --locked -p calm-proc-supervisor --test integration_suite \
             -E 'test(/^execution_resources::/)' --no-tests fail --test-threads 8
-      - name: output completion
+      - name: native execution launch and output
         run: |
           env -u NEIGE_CODEX_BIN cargo nextest run --locked -p calm-proc-supervisor --lib \
-            -E 'test(/^execution::output::/)' --no-tests fail --test-threads 8
+            -E 'test(/^execution::(launch|process|output)::/)' --no-tests fail --test-threads 8
       - name: control process terminal ownership
         run: |
           env -u NEIGE_CODEX_BIN cargo nextest run --locked -p plugin --lib \
@@ -535,6 +535,10 @@ jobs:
         run: |
           env -u NEIGE_CODEX_BIN cargo nextest run --locked -p calm-server --test api_suite \
             -E 'test(/^domain_api_suite::in_process_renderer_e2e::/) & test(fd_resources_)' --no-tests fail --test-threads 8
+      - name: native Claude protocol and worker sink
+        run: |
+          env -u NEIGE_CODEX_BIN cargo nextest run --locked -p calm-server --lib \
+            -E 'test(/^claude_planner::protocol_tests::/) | test(/^claude_worker::sink_tests::/)' --no-tests fail --test-threads 8
 
   # PRs compile the Rust suite once; the shards below only download and run it. This job also runs
   # hosted on main pushes, because it is the only one that saves the `rust-test` cache PRs restore.

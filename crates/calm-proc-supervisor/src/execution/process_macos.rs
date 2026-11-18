@@ -313,6 +313,12 @@ impl Drop for SpawnAttributes {
         }
     }
 }
+pub(super) fn identity_nonce() -> anyhow::Result<CapabilityToken> {
+    #[cfg(test)]
+    tests::fault(tests::Fault::Nonce)?;
+    Ok(CapabilityToken::fresh()?)
+}
+
 fn spawn_suspended(
     cwd: &File,
     specification: &ExecutionSpecification,
