@@ -416,7 +416,9 @@ One write per provider can be pending. Editing during it remains possible, but
 nothing is queued. Draft generations prevent late successes from confirming even
 an edit-away-and-back draft or clearing newer text. Successful-read counters
 withdraw superseded acknowledgements, including unchanged reads under a frozen
-clock. Refused writes and unconfirmed outcomes stay distinct and keep drafts;
+clock. If a poll or the other provider's save reads an older value while the
+write is pending, a later read of the submitted pair confirms the unedited draft.
+Refused writes and unconfirmed outcomes stay distinct and keep drafts;
 neither refresh nor blur retries a failure. The owner explicitly saves or clears
 again after reviewing the result. These defaults affect only Workers created
 afterwards: existing Workers keep their original selection and need no restart.

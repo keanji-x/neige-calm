@@ -648,6 +648,15 @@ async fn worker_model_defaults_codex_replay_rejects_malformed_snapshot_without_t
 }
 
 #[tokio::test]
+async fn worker_model_defaults_codex_replay_rejects_positional_pair_without_token_rotation() {
+    rejects_snapshot_without_token_rotation(
+        json!({"provider":"codex","selection":{"kind":"explicit","value":["a","high"]}}),
+        true,
+    )
+    .await;
+}
+
+#[tokio::test]
 async fn worker_model_defaults_codex_replay_rejects_provider_mismatch_without_token_rotation() {
     rejects_snapshot_without_token_rotation(
         json!({"provider":"claude","selection":{"kind":"inherit"}}),

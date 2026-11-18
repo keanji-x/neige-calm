@@ -97,10 +97,12 @@ it('takes model and effort suggestions from the supplied catalog without committ
 it.each([false, true])('a late %s clear/save acknowledgement never overwrites or confirms a newer draft, including edit-away-and-back', async clear => {
   const request = deferred();
   const onSave = vi.fn(() => request.promise);
-  render(<WorkersPane {...stored('{"model":"old","effort":null}', { onSave })} />);
+  const original = '{"model":"old","effort":null}';
+  const view = render(<WorkersPane {...stored(original, { onSave })} />);
   await userEvent.click(screen.getByRole('button', { name: clear ? 'Clear Codex defaults' : 'Save Codex defaults' }));
   await userEvent.type(screen.getByLabelText('Codex model'), 'x{Backspace}');
   await act(async () => { request.resolve({ ok: true }); await request.promise; });
+  view.rerender(<WorkersPane {...stored(clear ? undefined : original, { onSave, readRevision: 2 })} />);
   expect((screen.getByLabelText<HTMLInputElement>('Codex model')).value).toBe('old');
   expect(codex().queryByText('Saved.')).toBeNull();
   expect(codex().getByText('Your edit is not saved.')).toBeTruthy();
@@ -123,18 +125,30 @@ it('keeps a failed draft and never retries it on blur, Enter or refreshed reads'
   expect(onSave).toHaveBeenCalledTimes(2);
 });
 
-it('uses read revisions to reject an obsolete success even when a newer GET returns the same original value', async () => {
+it.each(['Save', 'Clear'])('reconciles %s with later reads of the same provider while preserving its draft', async action => {
   const request = deferred();
   const p = stored('{"model":"original","effort":null}', { onSave: () => request.promise });
   const view = render(<WorkersPane {...p} />);
   await userEvent.clear(screen.getByLabelText('Codex model'));
   await userEvent.type(screen.getByLabelText('Codex model'), 'submitted');
-  await userEvent.click(screen.getByRole('button', { name: 'Save Codex defaults' }));
+  await userEvent.click(screen.getByRole('button', { name: `${action} Codex defaults` }));
   view.rerender(<WorkersPane {...p} readRevision={2} />);
   await act(async () => { request.resolve({ ok: true }); await request.promise; });
   expect(codex().queryByText('Saved.')).toBeNull();
   expect(codex().getByText(/Changed elsewhere/)).toBeTruthy();
   expect((screen.getByLabelText<HTMLInputElement>('Codex model')).value).toBe('submitted');
+
+  const confirmed = action === 'Clear' ? undefined : '{"model":"submitted","effort":null}';
+  for (const readRevision of [3, 4]) {
+    view.rerender(<WorkersPane {...stored(confirmed, { readRevision })} />);
+    expect(codex().queryByText(/Changed elsewhere/)).toBeNull();
+    expect(codex().queryByText('Your edit is not saved.')).toBeNull();
+    expect(codex().getByText('Saved.')).toBeTruthy();
+    expect(screen.getByLabelText<HTMLInputElement>('Codex model').value).toBe(action === 'Clear' ? '' : 'submitted');
+  }
+  view.rerender(<WorkersPane {...stored('{"model":"next","effort":null}', { readRevision: 5 })} />);
+  expect(codex().queryByText('Saved.')).toBeNull();
+  expect(screen.getByLabelText<HTMLInputElement>('Codex model').value).toBe('next');
 });
 
 it('seeds clean fields from new reads but preserves dirty fields and withdraws superseded confirmations', async () => {

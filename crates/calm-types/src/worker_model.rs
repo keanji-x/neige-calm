@@ -38,6 +38,11 @@ fn required_nullable<'de, D: Deserializer<'de>>(d: D) -> Result<Option<String>, 
 }
 impl WorkerModelDefaults {
     pub fn parse(value: &str) -> Result<Self, String> {
+        // Serde also accepts a positional array for a named struct. Keep parsing
+        // the original object so duplicate model or effort keys are still errors.
+        if !value.trim_start().starts_with('{') {
+            return Err("worker model defaults must be a JSON object".into());
+        }
         let parsed: Self = serde_json::from_str(value).map_err(|e| e.to_string())?;
         parsed.validate()?;
         Ok(parsed)
@@ -84,7 +89,12 @@ impl WorkerModelSelection {
         let Some(value) = payload.get(WORKER_MODEL_SELECTION_KEY) else {
             return Ok(None);
         };
-        let snapshot: Self = serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
+        let snapshot = Self::deserialize(value).map_err(|e| e.to_string())?;
+        // Only the published object shape is valid at every level. Serde's
+        // positional structs and extra null content on unit variants also decode.
+        if serde_json::to_value(&snapshot).map_err(|e| e.to_string())? != *value {
+            return Err("worker model selection does not match its published JSON shape".into());
+        }
         if let WorkerModelChoice::Explicit(pair) = &snapshot.selection {
             pair.validate()?;
         }
@@ -100,6 +110,7 @@ mod tests {
     fn worker_model_defaults_pair_requires_both_members_and_valid_strings() {
         for input in [
             "{}",
+            r#"["model","high"]"#,
             r#"{"model":null}"#,
             r#"{"effort":null}"#,
             r#"{"model":"x","effort":42}"#,
@@ -141,6 +152,10 @@ mod tests {
             json!(42),
             json!({"provider":"codex"}),
             json!({"provider":"unknown","selection":{"kind":"inherit"}}),
+            json!(["codex", {"kind":"inherit"}]),
+            json!({"provider":"codex","selection":["explicit", {"model":"a","effort":null}]}),
+            json!({"provider":"codex","selection":{"kind":"explicit","value":["a",null]}}),
+            json!({"provider":"codex","selection":{"kind":"inherit","value":null}}),
         ] {
             assert!(
                 WorkerModelSelection::from_payload(&json!({WORKER_MODEL_SELECTION_KEY:value}))

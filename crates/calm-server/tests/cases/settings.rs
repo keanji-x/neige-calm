@@ -636,6 +636,7 @@ async fn worker_model_defaults_invalid_patch_writes_nothing() {
         for value in [
             "broken",
             "{}",
+            r#"["model","high"]"#,
             r#"{"model":42,"effort":null}"#,
             r#"{"model":"","effort":null}"#,
             r#"{"model":"model","effort":null,"extra":1}"#,

@@ -41,7 +41,7 @@ function sameStored(raw: string | undefined, value: WorkerModelDefaults | null):
     : parsed.value.model === value.model && parsed.value.effort === value.effort);
 }
 type SaveState = Readonly<{ phase: 'idle' }
-  | { phase: 'pending' | 'saved'; generation: number; value: WorkerModelDefaults | null }
+  | { phase: 'pending' | 'acknowledged'; generation: number; value: WorkerModelDefaults | null }
   | { phase: 'failed'; message: string }>;
 
 function ProviderDefaults({ provider, value, catalog, catalogError, onRetryCatalog, loaded, readRevision, onSave, loadError }:
@@ -57,16 +57,17 @@ function ProviderDefaults({ provider, value, catalog, catalogError, onRetryCatal
   latestRead.current = { value, readRevision };
   if (loaded && (!seed.loaded || seed.value !== value || seed.readRevision !== readRevision)) {
     setSeed({ value, readRevision, loaded });
-    if (!dirty && !busy.current && save.phase === 'idle') {
+    const matchesWrite = (save.phase === 'pending' || save.phase === 'acknowledged') && sameStored(value, save.value);
+    const replacedAfterConfirmation = save.phase === 'acknowledged' && !matchesWrite && sameStored(seed.value, save.value);
+    if (!dirty && !busy.current && (save.phase === 'idle' || replacedAfterConfirmation)) {
       setDraft(draftFrom(value));
       setSave({ phase: 'idle' });
       setChangedElsewhere(false);
     } else {
-      const matchesWrite = (save.phase === 'pending' || save.phase === 'saved') && sameStored(value, save.value);
-      setChangedElsewhere(!matchesWrite && (seed.value !== value || save.phase === 'saved' || changedElsewhere));
-      if (save.phase === 'saved') {
-        setSave({ phase: 'idle' });
+      setChangedElsewhere(!matchesWrite && (seed.value !== value || save.phase === 'acknowledged' || changedElsewhere));
+      if (save.phase === 'acknowledged') {
         setDirty(!matchesWrite);
+        if (matchesWrite && save.value === null) setDraft(EMPTY);
       }
     }
   }
@@ -87,16 +88,15 @@ function ProviderDefaults({ provider, value, catalog, catalogError, onRetryCatal
     setSave({ phase: 'pending', generation: submittedGeneration, value: submitted });
     void onSave(provider, submitted).then(result => {
       if (!result.ok) { setSave({ phase: 'failed', message: result.message }); return; }
-      const current = latestRead.current;
-      if (current.readRevision !== submittedRevision && !sameStored(current.value, submitted)) {
-        setSave({ phase: 'idle' });
-        setChangedElsewhere(true);
-        setDirty(true);
-      } else if (generation.current === submittedGeneration) {
-        if (clear) setDraft(EMPTY);
-        setDirty(false);
-        setChangedElsewhere(false);
-        setSave({ phase: 'saved', generation: submittedGeneration, value: submitted });
+      if (generation.current === submittedGeneration) {
+        const current = latestRead.current;
+        // A poll or the other provider's save can refresh the bag before this PUT finishes.
+        // Keep the submitted pair so a later matching read can confirm it.
+        const superseded = current.readRevision !== submittedRevision && !sameStored(current.value, submitted);
+        if (clear && !superseded) setDraft(EMPTY);
+        setDirty(superseded);
+        setChangedElsewhere(superseded);
+        setSave({ phase: 'acknowledged', generation: submittedGeneration, value: submitted });
       } else setSave({ phase: 'idle' });
     }).finally(() => { busy.current = false; });
   };
@@ -135,7 +135,7 @@ function ProviderDefaults({ provider, value, catalog, catalogError, onRetryCatal
           onClick={() => commit(true)}>Clear defaults</Button>
       </div>
       {save.phase === 'failed' && <p role="alert" className={styles.error}>{save.message} Your draft is retained. Save or clear defaults to try again.</p>}
-      <span role="status">{save.phase === 'pending' ? 'Saving defaults…' : save.phase === 'saved' ? 'Saved.' : dirty ? 'Your edit is not saved.' : ''}</span>
+      <span role="status">{save.phase === 'pending' ? 'Saving defaults…' : save.phase === 'acknowledged' && !changedElsewhere ? 'Saved.' : dirty ? 'Your edit is not saved.' : ''}</span>
       {save.phase === 'pending' && generation.current !== save.generation && <span role="status">Your new edit is not saved. Save it after this request finishes.</span>}
       {changedElsewhere && <span role="status">Changed elsewhere. Your draft is retained; review it before saving.</span>}
     </div>} />;
