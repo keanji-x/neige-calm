@@ -19,6 +19,18 @@ function bootedRegistry() {
 }
 
 describe('headless card filtering', () => {
+  it('keeps task workers headless while preserving ordinary terminal cards', () => {
+    const registry = bootedRegistry();
+    const worker = wire({ id: 'worker', kind: 'codex', payload: { harness_profile: 'task_worker' } });
+    expect(registry.resolve(worker)?.type).toBe('task-worker');
+    const { visible, unknown } = partitionTrackCards(registry, [worker,
+      wire({ id: 'terminal', kind: 'terminal' }),
+      wire({ id: 'codex', kind: 'codex', payload: {} }),
+    ]);
+    expect(visible.map(slot => slot.wire.id)).toEqual(['terminal', 'codex']);
+    expect(unknown).toEqual([]);
+  });
+
   it('[INV-CARD-226] binds originalIndex before filtering, so surviving cards still address the wire array', () => {
     const cards = [
       wire({ id: 'planner-1', kind: 'codex', payload: { planner_harness: true } }),

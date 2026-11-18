@@ -39,7 +39,7 @@ macro_rules! ws_card_runtime_select {
             "                  ",
             last_turn_completed_ms_subquery!(),
             " AS last_turn_completed_ms,\n",
-            "                  c.id AS card_id\n",
+            "                  c.id AS card_id, json_extract(c.payload, '$.harness_profile') AS card_harness_profile\n",
             $tail
         )
     };
@@ -139,7 +139,20 @@ pub(crate) fn card_runtime_from_ws_join_row(row: &SqliteRow) -> Result<WorkerSes
     // `try_get`, not `get`-with-default: a SELECT that forgot the column
     // must fail here, not project "no completed turn" for every card.
     let last_turn_completed_ms: Option<i64> = row.try_get("last_turn_completed_ms")?;
-    card_runtime_from_session(&ws, card_id, last_turn_completed_ms)
+    let mut runtime = card_runtime_from_session(&ws, card_id, last_turn_completed_ms)?;
+    let profile: Option<String> = row.try_get("card_harness_profile")?;
+    if profile.as_deref() == Some("task_worker") {
+        if ws.contract != WorkerContract::Executor
+            || ws.terminal_run_id.is_some()
+            || ws.provider == WorkerProviderKind::Terminal
+        {
+            return Err(WorkerSessionProjectionRepoError::Message {
+                message: "invalid task worker session identity".into(),
+            });
+        }
+        runtime.kind = WorkerSessionKind::ManagedWorker;
+    }
+    Ok(runtime)
 }
 
 fn runtime_kind_from_session_identity(
@@ -156,6 +169,11 @@ fn runtime_kind_from_session_identity(
             Ok(WorkerSessionKind::SharedPlanner)
         }
         (WorkerProviderKind::Claude, WorkerContract::Executor) => Ok(WorkerSessionKind::ClaudeCard),
+        (provider, WorkerContract::Executor)
+            if provider.protocol() == Some(calm_types::runtime::AgentProtocol::Acp) =>
+        {
+            Ok(WorkerSessionKind::ManagedWorker)
+        }
         _ => Err(WorkerSessionProjectionRepoError::Message {
             message: format!(
                 "unmappable session identity (provider={provider:?}, contract={contract:?})"

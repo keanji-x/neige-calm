@@ -352,7 +352,7 @@ pub trait RepoRead: Send + Sync + 'static {
     /// Page only the rows a transcript can render (`item/started`, `item/completed`, `turn/completed`). The filter is in the
     /// SQL on purpose: `limit` must be a budget of *renderable* rows, or stored plan rows eat the page and a short page
     /// reads as "no more rows". Do not widen this query back to unfiltered.
-    async fn harness_item_list_transcript_by_card(
+    async fn transcript_renderable_items_by_card(
         &self,
         card_id: &str,
         after_id: i64,

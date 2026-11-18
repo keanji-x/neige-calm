@@ -177,6 +177,9 @@ fn target_failure(error: anyhow::Error) -> RpcError {
     }
     let mut rpc = failure(&error);
     if let Some(refused) = error.downcast_ref::<InputRefused>() {
+        if refused.refusal == "headless_worker" {
+            rpc = RpcError::invalid_params(refused.to_string());
+        }
         let mut data = json!({"refusal":refused.refusal});
         if let Some(starting) = &refused.starting {
             data["waiting_for"] = json!(starting.waiting_for);

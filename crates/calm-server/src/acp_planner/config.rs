@@ -87,7 +87,7 @@ impl AcpAgentConfig {
     }
 
     /// The digest a bound conversation's native session is claimed under for `cwd`.
-    pub(super) fn native_session_digest(&self, cwd: &Path) -> Result<String> {
+    pub(crate) fn native_session_digest(&self, cwd: &Path) -> Result<String> {
         use sha2::Digest as _;
         // Exhaustive, so a new registration field has to be placed in or out of the key here.
         let Self {

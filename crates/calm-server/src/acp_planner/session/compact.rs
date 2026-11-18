@@ -239,6 +239,7 @@ impl AcpPlannerSession {
         ));
         let (cancel, cancelled) = watch::channel(CancelRequest::Running);
         shared.state.lock().expect("ACP state").active = Some(Active {
+            permission,
             execution_id: Some(execution_id.clone()),
             thread: thread.clone(),
             turn: turn.clone(),

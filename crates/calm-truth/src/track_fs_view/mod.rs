@@ -23,6 +23,7 @@ use utoipa::ToSchema;
 
 mod files;
 mod gate_logs;
+mod native_transcript;
 mod nodes;
 pub use nodes::TrackFsNodeKind;
 mod run_status;

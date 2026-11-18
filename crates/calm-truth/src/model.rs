@@ -175,7 +175,7 @@ pub struct CardPatch {
     pub kind: Option<String>,
     pub sort: Option<f64>,
     /// Replaces the stored payload. A payload carrying a server-owned key is refused with 400:
-    /// `terminal_signals`, `terminal_presentation`, `template_context`, `track_creation_context`, `bound_session_cwd`, `planner_provider`, `assistant_provider`, `side_source_card_id`, `assistant_opening_context`, `permission_mode`, `owner_created`, `settings_path`, `claude_session_id`. Every kernel-minted server-owned value the card already carries is kept.
+    /// `terminal_signals`, `terminal_presentation`, `template_context`, `track_creation_context`, `bound_session_cwd`, `planner_provider`, `assistant_provider`, `worker_provider`, `harness_profile`, `side_source_card_id`, `assistant_opening_context`, `permission_mode`, `owner_created`, `settings_path`, `claude_session_id`. Every kernel-minted server-owned value the card already carries is kept.
     #[schema(value_type = Option<Object>)]
     pub payload: Option<serde_json::Value>,
     /// Not patchable via API: surfaced only so a client sending it gets a clear
@@ -292,6 +292,7 @@ pub struct NewPlugin {
 #[sqlx(rename_all = "lowercase")]
 #[serde(rename_all = "lowercase")]
 pub enum TaskKind {
+    Agent,
     Codex,
     Claude,
     Terminal,
@@ -299,19 +300,25 @@ pub enum TaskKind {
 }
 
 impl TaskKind {
-    const CHECKOUT_WORKERS: [(Self, &'static str); 3] = [
+    const CHECKOUT_WORKERS: [(Self, &'static str); 5] = [
+        (Self::Agent, "agent-worker"),
+        (Self::Codex, "agent-worker"),
         (Self::Codex, "codex-worker"),
         (Self::Claude, "claude-worker"),
         (Self::Terminal, "terminal-worker"),
     ];
 
-    /// The operation whose preparation owns a task's checkout admission.
-    /// Compact and child-track lifecycle work do not acquire worker checkouts.
+    /// The current operation used for new checkout executions.
     pub fn worker_operation_kind(self) -> Option<&'static str> {
+        self.worker_operation_kinds().next()
+    }
+
+    /// Current and historical operations belonging to this declaration kind.
+    pub fn worker_operation_kinds(self) -> impl Iterator<Item = &'static str> {
         Self::CHECKOUT_WORKERS
-            .iter()
-            .find(|(kind, _)| *kind == self)
-            .map(|(_, operation)| *operation)
+            .into_iter()
+            .filter(move |(kind, _)| *kind == self)
+            .map(|(_, operation)| operation)
     }
 
     pub fn from_worker_operation_kind(operation: &str) -> Option<Self> {
@@ -384,6 +391,9 @@ pub struct Task {
     pub track_id: String,
     pub key: String,
     pub kind: TaskKind,
+    pub provider: Option<String>,
+    pub model: Option<String>,
+    pub reasoning_effort: Option<String>,
     /// Stored in `tasks.goal`; public surfaces call it `goal` for agent kinds and
     /// `command` for terminal.
     pub goal: String,
@@ -432,6 +442,7 @@ impl Task {
     /// #1830 S2 D5: [`calm_types::task_execution::runs_in_track_checkout`] on this row.
     pub fn runs_in_track_checkout(&self) -> bool {
         let kind = match self.kind {
+            TaskKind::Agent => "agent",
             TaskKind::Codex => "codex",
             TaskKind::Claude => "claude",
             TaskKind::Terminal => "terminal",

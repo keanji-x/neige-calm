@@ -142,7 +142,10 @@ function liveTaskSharedShape() {
 
 const agentTaskBlockPayloadSchema = z.strictObject({
   key: z.string(),
-  kind: z.enum(['codex', 'claude']),
+  kind: z.enum(['agent', 'codex', 'claude']),
+  provider: z.string().nullish(),
+  model: z.string().nullish(),
+  reasoning_effort: z.string().nullish(),
   goal: z.string(),
   /** The kernel owns contract registration; the reader preserves its declared name. */
   result_contract: z.string().optional(),
@@ -506,7 +509,7 @@ export function trackTaskVerdictsOperation(trackId: string): ApiOperation<TaskVe
 }
 
 /** The execution kinds a live task declaration can name; a verdict does not carry one. */
-export type TaskWorkerKind = 'codex' | 'claude' | 'terminal' | 'compact';
+export type TaskWorkerKind = 'agent' | 'codex' | 'claude' | 'terminal' | 'compact';
 
 /**
  * One row of the panel's task inventory. The declaration word, status and kind travel separately

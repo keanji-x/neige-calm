@@ -41,11 +41,18 @@ impl WorkerEntry {
 pub(crate) type MaintenanceExecutionCell =
     Arc<std::sync::RwLock<Option<crate::auth::LegacyPrivateExecution>>>;
 
+#[derive(Clone)]
+struct TaskWorkerControl {
+    cancel: tokio::sync::watch::Sender<bool>,
+    stopped: tokio::sync::watch::Sender<bool>,
+}
+
 struct RegistryInner {
     map: DashMap<String, WorkerEntry>,
     next_reservation: AtomicU64,
     live_replies: Arc<LiveReplies>,
     maintenance_execution: MaintenanceExecutionCell,
+    task_workers: DashMap<String, TaskWorkerControl>,
 }
 
 #[derive(Clone)]
@@ -67,6 +74,65 @@ impl WeakHarnessRegistry {
     }
 }
 
+impl HarnessRegistry {
+    pub(crate) fn has_task_worker(&self, worker: &str) -> bool {
+        self.0.task_workers.contains_key(worker)
+    }
+    pub(crate) fn install_task_worker(
+        &self,
+        worker: String,
+    ) -> crate::error::Result<tokio::sync::watch::Receiver<bool>> {
+        use dashmap::mapref::entry::Entry;
+        match self.0.task_workers.entry(worker) {
+            Entry::Occupied(_) => Err(crate::error::CalmError::Conflict(
+                "task worker already active".into(),
+            )),
+            Entry::Vacant(slot) => {
+                let (tx, rx) = tokio::sync::watch::channel(false);
+                slot.insert(TaskWorkerControl {
+                    cancel: tx,
+                    stopped: tokio::sync::watch::channel(false).0,
+                });
+                Ok(rx)
+            }
+        }
+    }
+    pub(crate) fn interrupt_task_worker(&self, worker: &str) {
+        if let Some(sender) = self.0.task_workers.get(worker) {
+            sender.cancel.send_replace(true);
+        }
+    }
+    pub(crate) async fn stop_task_worker(&self, worker: &str) -> crate::error::Result<()> {
+        let control = self
+            .0
+            .task_workers
+            .get(worker)
+            .map(|entry| entry.value().clone());
+        if let Some(control) = control {
+            let mut done = control.stopped.subscribe();
+            control.cancel.send_replace(true);
+            tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                while !*done.borrow_and_update() {
+                    done.changed().await.map_err(|_| {
+                        crate::error::CalmError::Conflict("task worker stop unconfirmed".into())
+                    })?;
+                }
+                Ok::<_, crate::error::CalmError>(())
+            })
+            .await
+            .map_err(|_| {
+                crate::error::CalmError::Conflict("task worker stop timed out".into())
+            })??;
+        }
+        Ok(())
+    }
+    pub(crate) fn remove_task_worker(&self, worker: &str) {
+        if let Some((_, control)) = self.0.task_workers.remove(worker) {
+            control.stopped.send_replace(true);
+        }
+    }
+}
+
 impl Default for HarnessRegistry {
     fn default() -> Self {
         Self(Arc::new(RegistryInner {
@@ -74,6 +140,7 @@ impl Default for HarnessRegistry {
             next_reservation: AtomicU64::new(0),
             live_replies: Arc::new(LiveReplies::new()),
             maintenance_execution: Default::default(),
+            task_workers: DashMap::new(),
         }))
     }
 }

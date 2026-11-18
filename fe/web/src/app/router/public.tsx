@@ -539,6 +539,7 @@ function useConversationPane(
     queue: { entries: store.pendingQueue, ready: store.runReady && store.runError === null,
       busy: store.queueWriteOut || attachments.busy, save: store.editQueuedEntry } });
   /* The one readiness every response action and the continue guidance share. */
+  const readOnly = rows.find(row => row.id === composerRowId)?.readOnly === true;
   const archived = rows.find(row => row.id === composerRowId)?.archivedAt != null;
   const readError = (store.historyError !== null || store.runError !== null) && (
               <ErrorBox
@@ -553,7 +554,7 @@ function useConversationPane(
                   if (store.runError !== null) store.retryRun();
                 }} />
             );
-  const canContinue = !archived && store.runReady && store.runError === null && store.historyReady && !store.sendBlocked && !store.working && !store.stopping;
+  const canContinue = !readOnly && !archived && store.runReady && store.runError === null && store.historyReady && !store.sendBlocked && !store.working && !store.stopping;
   /* A conversation's provider is fixed for its life; its model picker offers that provider's group alone. */
   const scopeProvider: AgentProvider = scope === null ? 'codex' : scope.provider;
   const go = useGo();
@@ -696,12 +697,12 @@ function useConversationPane(
     setPendingPresentation(previous => previous?.conversationId === existingId && previous.visible === visible
       ? previous : { conversationId: existingId, visible });
   }, [existingId]);
-  const pendingMessages = useMemo(() => <PendingQueue key={existingId}
+  const pendingMessages = useMemo(() => <PendingQueue readOnly={readOnly} key={existingId}
     entries={store.pendingQueue} pendingInputCount={unlistedPendingInputCount(store.pendingInputs,store.pendingQueue)} sending={store.pendingSends} overflow={store.pendingQueueOverflow} queueDisplayAccounting={store.queueDisplayAccounting}
     busy={!threadPresented || store.sending || store.queueWriteOut} onDelete={deleteQueuedEntry} onEdit={editQueuedEntry}
     canEdit={edit.canEditQueued} editingEntryId={edit.queued?.entry.entry_id ?? null}
     savedEntry={edit.savedQueuedEntry} onFocusComposer={refocusQueuedComposer} onPresenceChange={pendingPresenceChanged} onSteer={canSteer ? steerQueuedEntry : undefined} />,
-  [existingId, threadPresented, store.pendingQueue, store.pendingInputs, store.pendingSends, store.pendingQueueOverflow, store.queueDisplayAccounting, store.sending, store.queueWriteOut,
+  [readOnly, existingId, threadPresented, store.pendingQueue, store.pendingInputs, store.pendingSends, store.pendingQueueOverflow, store.queueDisplayAccounting, store.sending, store.queueWriteOut,
     deleteQueuedEntry, editQueuedEntry, edit.canEditQueued, edit.queued?.entry.entry_id, edit.savedQueuedEntry, refocusQueuedComposer, pendingPresenceChanged, canSteer, steerQueuedEntry]);
   const hasSideConversation = options?.onSide !== undefined;
   const composerView = useMemo(() => ({
@@ -744,7 +745,7 @@ function useConversationPane(
     planner: plannerSwitchBinding,
   }), [options?.inline, options?.showSideCommand, newConversation, composerView.manualCompactSupported, composerView.historyReady,
     composerView.compact, hasSideConversation, sideQuestion, sideSourceReady, onTerminal, compactComposer, plannerCommands, composerStop, plannerSwitchBinding]);
-  const composerNode = useMemo(() => existingId === null ? null : (
+  const composerNode = useMemo(() => existingId === null || readOnly ? null : (
             <ConversationComposer target={{ kind: 'card', id: existingId }} layout={compactComposer ? 'mobile' : 'standard'}
               /* Read at mount only, which is what makes it one-shot; the flag is dropped
                                when the drawer closes. */
@@ -811,7 +812,7 @@ function useConversationPane(
                 </HStack>
               )}
             />
-  ), [existingId, compactComposer, panePresented, composerFocusFor, composerFocusRequest, changeComposer, composerView,
+  ), [existingId, readOnly, compactComposer, panePresented, composerFocusFor, composerFocusRequest, changeComposer, composerView,
     paneCommands, composerStop, replacing, editingQueue, edit.queuedSaving, editingBar,
     sendText, composerAttachments, mentionTrigger, scopeProvider, plannerAsks, answerAsk,
     roleValue, roleDisabled, roleDisabledReason, roleChange]);
@@ -865,7 +866,7 @@ function useConversationPane(
                   ? current : { ...current, model, provider })}
                 isDisabled={creating || draft.submitted !== null || !supportsDraftModel || !managed.supportsAssistantProviders} />} />
           </>
-        ) : open === null ? undefined : archived ? (
+        ) : open === null ? undefined : readOnly ? readError : archived ? (
           <>{readError}<ArchivedConversationNotice key={open.id} conversation={open} onArchive={options?.onArchive} /></>
         ) : (
           <>
@@ -966,9 +967,10 @@ function useConversationPane(
             {!threadPresented && outgoingPreview !== undefined && <OutgoingMessage speaker={outgoingPreview.author} text={outgoingPreview.text} mobile={compactViewport} />}
             {!threadPresented && hasPendingMessages && pendingMessages}
             {threadPresented && (
-              <ChatThread hasPendingInputs={store.pendingInputs.length > 0} historyPrefetch={historyPrefetch} readingView={threadReadingView} key={open.id} pendingMessages={pendingMessages} activeInput={store.activeInput} keepInput={keepInput} retryInput={retryInput}
+              <ChatThread hasPendingInputs={store.pendingInputs.length > 0} historyPrefetch={historyPrefetch} readingView={threadReadingView} key={open.id} pendingMessages={pendingMessages} activeInput={store.activeInput} keepInput={readOnly ? undefined : keepInput} retryInput={readOnly ? undefined : retryInput}
                 hasPendingMessages={hasPendingMessages || (pendingPresentation?.conversationId === existingId && pendingPresentation.visible)}
                 conversation={open}
+                messageActions={readOnly ? 'copy-only' : 'all'}
                 imageFiles={imageFiles}
                 renderLink={chatLinks.renderLink}
                 currentResponseOutcome={store.currentOutcome} turns={openTurns} editing={edit.marked}
@@ -982,10 +984,10 @@ function useConversationPane(
                 statusUnconfirmed={threadStatusUnconfirmed}
                 statusLoading={store.runLoading}
                 copyText={edit.held === null ? writeClipboardText : undefined}
-                regenerateMessage={respondable
+                regenerateMessage={!readOnly && respondable
                   ? regenerateMessage
                   : undefined}
-                editMessage={respondable && store.historyReplacementSupported && store.pendingQueue.length === 0 && store.pendingQueueOverflow === 0 && store.pendingInputs.length === 0
+                editMessage={!readOnly && respondable && store.historyReplacementSupported && store.pendingQueue.length === 0 && store.pendingQueueOverflow === 0 && store.pendingInputs.length === 0
                   && composerEmpty && !attachments.busy ? editMessage : undefined}
                 canContinue={canContinue}
                 stalledReason={store.blockedReason}
@@ -1037,7 +1039,7 @@ function useConversationPane(
   });
 
   return {
-    dock: compactComposer ? <ConversationDock target={dockRowId === null ? { kind: 'scope', id: sourceScopeId } : { kind: 'card', id: dockRowId }}
+    dock: compactComposer && !readOnly ? <ConversationDock target={dockRowId === null ? { kind: 'scope', id: sourceScopeId } : { kind: 'card', id: dockRowId }}
       commands={dockRowId === null ? conversationCommands({ compactViewport: true }) : paneCommands}
       onChange={setDockText} onSend={sendFromDock} onBeginInput={openDockHistory}
       disabled={archived || options?.reportComposer?.ready === false || (dockRowId !== null && (store.sendBlocked || !store.historyReady || edit.held !== null))} /> : undefined,
@@ -1283,7 +1285,7 @@ function TrackRouteBody({
         notice: notices.get(slot.card.id) ?? null,
       }));
   }, [cardRegistry, cards, track, notices]);
-  const openableCards = useMemo(() => new Set(gridItems.map((item) => item.card.id)), [gridItems]);
+  const openableCards = useMemo(() => new Set([...gridItems.map((item) => item.card.id), ...rows.filter(row => row.readOnly === true).map(row => row.id)]), [gridItems, rows]);
   const existingCardIds = useMemo(() => new Set(cards.map(card => card.id)), [cards]);
   const defaultTerminalIds = useMemo(() => workbenchTerminalCardIds({ cards: panelCards, existingCardIds, tasks,
     activity: track, openableCards }), [panelCards, existingCardIds, tasks, track, openableCards]);
@@ -1361,17 +1363,26 @@ function TrackRouteBody({
   const resolvePreview = useReportPreviewResolver(transport, track.id, reportBlocks, unauthorized);
   const previewViewports = useReportPreviewViewports(track.id);
   /* The cards this route can open, asked of the registry through the list the board
-   * draws. A worker card whose kind no entry claims is `unknown` and its `?card=`
+   * draws. A card whose kind no entry claims is `unknown` and its `?card=`
    * is bounced; its task keeps its `workerCardId` regardless, because the TASKS
    * row looks its activity verdict up by that id. */
-  const knownCard = requestedCardId !== null
+  const workerConversation = rows.find(row => row.id === requestedCardId && row.readOnly === true);
+  const admittedWorkerRoute = useRef<string | null>(null);
+  useEffect(() => {
+    if (workerConversation === undefined) { admittedWorkerRoute.current = null; return; }
+    if (admittedWorkerRoute.current === workerConversation.id) return;
+    admittedWorkerRoute.current = workerConversation.id;
+    chat.openConversation(workerConversation);
+    goSameTrack(track.id, { card: undefined }, { replace: true });
+  }, [workerConversation, chat, goSameTrack, track.id]);
+  const knownCard = workerConversation === undefined && requestedCardId !== null
     && gridItems.some((item) => item.card.id === requestedCardId);
   useEffect(() => {
-    if (requestedCardId === null || knownCard) return;
+    if (requestedCardId === null || knownCard || workerConversation !== undefined) return;
     // Bouncing an unopenable `?card=` must drop only that parameter: the panel,
     // return surface and block anchor describe where the reader is.
     goSameTrack(track.id, { card: undefined }, { replace: true });
-  }, [goSameTrack, knownCard, requestedCardId, track.id]);
+  }, [goSameTrack, knownCard, requestedCardId, track.id, workerConversation]);
   // A card URL is an open intent, including on reload while secondary reads are pending.
   // Admit it once per desktop visit; ordinary rerenders must not reopen a hidden view.
   const admittedTerminalRoute = useRef<string | null>(null);

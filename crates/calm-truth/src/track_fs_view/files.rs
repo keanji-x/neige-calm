@@ -69,12 +69,25 @@ impl TrackFsView<'_> {
                     .as_ref()
                     .map(|runtime| runtime.updated_at_ms)
                     .unwrap_or(card.updated_at);
+                let conversation_updated_at = if self.uses_native_transcript(&card).await? {
+                    self.repo
+                        .transcript_renderable_items_by_card(card.id.as_str(), 0, 1, true)
+                        .await
+                        .map_err(|error| {
+                            TrackFsError::Internal(format!("native transcript metadata: {error}"))
+                        })?
+                        .last()
+                        .map(|row| row.created_at_ms)
+                        .unwrap_or(card.updated_at)
+                } else {
+                    hook_events_updated_at
+                };
                 Ok(vec![
                     entry_file(".meta.json", None, Some(card.updated_at)),
                     entry_file(".payload.json", None, Some(card.updated_at)),
                     entry_file("runtime.json", None, Some(runtime_updated_at)),
                     entry_file("events.json", None, Some(hook_events_updated_at)),
-                    entry_file("conversation.md", None, Some(hook_events_updated_at)),
+                    entry_file("conversation.md", None, Some(conversation_updated_at)),
                 ])
             }
             _ => Err(path_not_available(&path)),
@@ -120,6 +133,11 @@ impl TrackFsView<'_> {
                         content_json(&hook_events_json(&hook_events))
                     }
                     CardLeaf::Conversation => {
+                        if self.uses_native_transcript(&card).await? {
+                            return Ok(content_markdown(
+                                native_transcript::conversation(self.repo, &card.id).await?,
+                            ));
+                        }
                         // Prefer the captured worker-flow transcript when populated, else the hook
                         // projection. Page through ALL rows: the db layer clamps `limit` to 500.
                         let rows = worker_flow_rows_all(self.repo, card.id.as_str()).await?;

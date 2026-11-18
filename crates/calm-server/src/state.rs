@@ -455,6 +455,7 @@ struct OperationAdapterInputs {
     claude_planner: Arc<ClaudePlannerHost>,
     acp_planner: Arc<AcpPlannerHost>,
     gate_run_wait: GateRunWait,
+    worker_liveness: crate::scheduler::WorkerLiveness,
 }
 
 fn terminal_hook_settings(codex: &CodexClient) -> crate::terminal_hooks::TerminalHookSettings {
@@ -529,6 +530,28 @@ fn build_operation_adapters(
         input.card_role_cache.clone(),
         input.track_area_cache.clone(),
     ));
+    let agent_worker_adapter: Arc<dyn ProviderAdapter> = Arc::new(
+        crate::operation::agent_worker_adapter::AgentWorkerAdapter::new(
+            input.repo.clone(),
+            PlannerWiring {
+                claude: input.claude_planner.clone(),
+                acp: input.acp_planner.clone(),
+                plugin: input.plugin.clone(),
+            },
+            child_selection.clone(),
+            input.codex_backends.clone(),
+            input.harness.clone(),
+            input.card_role_cache.clone(),
+            input.track_area_cache.clone(),
+            input
+                .mcp_server
+                .as_ref()
+                .map(|m| m.shim_config.socket_path.clone()),
+            input.workspace_root.clone(),
+            input.gate_run_wait,
+        )
+        .with_liveness(input.worker_liveness),
+    );
     let codex_worker_adapter: Arc<dyn ProviderAdapter> = Arc::new(
         CodexWorkerAdapter::new(
             input.route_repo.clone(),
@@ -635,6 +658,7 @@ fn build_operation_adapters(
             terminal_worker_adapter,
             codex_adapter,
             codex_worker_adapter,
+            agent_worker_adapter,
             claude_adapter,
             claude_worker_adapter,
             claude_restart_adapter,
@@ -1077,6 +1101,7 @@ impl AppState {
             claude_planner: claude_planner.clone(),
             acp_planner: acp_planner.clone(),
             gate_run_wait: GateRunWait::DEFAULT,
+            worker_liveness: crate::scheduler::WorkerLiveness::DEFAULT,
         });
         let completion = OperationCompletionBus::new();
         let operation_runtime = Arc::new(OperationRuntime::new_unchecked(
@@ -1313,6 +1338,7 @@ impl AppState {
             claude_planner: self.route.claude_planner.clone(),
             acp_planner: self.route.acp_planner.clone(),
             gate_run_wait: GateRunWait::DEFAULT,
+            worker_liveness: crate::scheduler::WorkerLiveness::DEFAULT,
         });
         let completion = OperationCompletionBus::new();
         let runtime = Arc::new(OperationRuntime::new_unchecked(
@@ -1714,6 +1740,7 @@ impl AppState {
             claude_planner: claude_planner.clone(),
             acp_planner: acp_planner.clone(),
             gate_run_wait: GateRunWait::for_idle(cfg.worker_liveness().idle),
+            worker_liveness: cfg.worker_liveness(),
         });
         let completion = OperationCompletionBus::new();
         let operation_runtime = Arc::new(

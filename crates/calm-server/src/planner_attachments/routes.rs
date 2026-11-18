@@ -12,6 +12,7 @@ use calm_types::planner_attachment::{AttachmentId, UploadAttachmentResponse};
 
 use crate::actor::Actor;
 use crate::error::{CalmError, ErrorBody, Result};
+use crate::harness::profile::HarnessProfileExt;
 use crate::ids::CardId;
 use crate::model::Card;
 use crate::routes::planner_cards::card_runs_headless_harness;
@@ -107,6 +108,11 @@ pub(crate) async fn upload_planner_attachment(
     let binding =
         crate::harness::profile::checked_card_binding(s.repo.as_ref(), &context.card, context.role)
             .await?;
+    if !binding.profile.accepts_human_input() {
+        return Err(CalmError::Forbidden(
+            "TaskWorker accepts no human control".into(),
+        ));
+    }
     let root = super::image_input_root(
         &binding.provider,
         &context.track.workspace,

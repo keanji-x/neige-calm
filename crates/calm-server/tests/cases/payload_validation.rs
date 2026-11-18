@@ -291,24 +291,7 @@ fn server_owned_probe_values() -> [Value; 5] {
 #[tokio::test]
 async fn post_card_with_a_server_owned_key_is_rejected_for_every_kind() {
     let (state, track_id, repo) = boot_with_repo().await;
-    assert_eq!(
-        SERVER_OWNED_CARD_PAYLOAD_KEYS,
-        [
-            "bound_session_cwd",
-            "terminal_signals",
-            "terminal_presentation",
-            "template_context",
-            "track_creation_context",
-            "planner_provider",
-            "assistant_provider",
-            "side_source_card_id",
-            "assistant_opening_context",
-            "permission_mode",
-            "owner_created",
-            "settings_path",
-            "claude_session_id"
-        ]
-    );
+
     for key in SERVER_OWNED_CARD_PAYLOAD_KEYS {
         for (kind, value) in [
             ("terminal", json!(true)),

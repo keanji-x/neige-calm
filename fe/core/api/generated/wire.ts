@@ -1200,7 +1200,7 @@ export type VerifyTargetEvidence = { "kind": "refused", cwd: string, before: Sam
  */
 export type WorkerSessionId = string;
 
-export type WorkerSessionKind = "terminal" | "codex" | "claude" | "shared-spec" | "managed-assistant";
+export type WorkerSessionKind = "terminal" | "codex" | "claude" | "shared-spec" | "managed-assistant" | "managed-worker";
 
 export type WorkerSessionProjection = { id: string, card_id: string, kind: WorkerSessionKind, agent_provider: AgentProvider | null, status: WorkerSessionState, terminal_run_id: string | null, thread_id: string | null, session_id: string | null, active_turn_id: string | null, handle_state_json: unknown | null, created_at_ms: number, updated_at_ms: number, completed_at_ms: number | null, 
 /**

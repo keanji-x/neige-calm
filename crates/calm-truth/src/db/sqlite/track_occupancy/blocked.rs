@@ -16,9 +16,7 @@ pub async fn pending_checkout_blocker(
     if task.status != TaskStatus::Dispatched || !task.runs_in_track_checkout() {
         return Ok(None);
     }
-    let Some(kind) = task.kind.worker_operation_kind() else {
-        return Ok(None);
-    };
+    let kinds = serde_json::to_string(&task.kind.worker_operation_kinds().collect::<Vec<_>>())?;
     #[derive(sqlx::FromRow)]
     struct Facts {
         id: String,
@@ -29,11 +27,11 @@ pub async fn pending_checkout_blocker(
     }
     let row: Option<Facts> = sqlx::query_as(
         "SELECT id,payload_json,phase_detail_json,lease_owner,lease_until_ms \
-         FROM operations WHERE kind=?1 AND idempotency_key=?2 AND phase='pending' \
+         FROM operations WHERE kind IN (SELECT value FROM json_each(?1)) AND idempotency_key=?2 AND phase='pending' \
            AND tx_output_json IS NULL AND spawn_artifacts_json IS NULL \
            AND completed_at_ms IS NULL",
     )
-    .bind(kind)
+    .bind(kinds)
     .bind(&task.id)
     .fetch_optional(conn)
     .await?;

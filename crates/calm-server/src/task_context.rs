@@ -42,6 +42,9 @@ enum RefsMatch {
 
 pub use calm_types::task_recovery::TASK_ROOT_HASH_FIELDS as ROOT_HASH_TASK_FIELDS;
 pub const ROOT_HASH_EXCLUDED_TASK_FIELDS: &[&str] = &[
+    "provider",
+    "model",
+    "reasoning_effort",
     "key",
     "priority",
     "declared_by",
@@ -1532,7 +1535,7 @@ mod tests {
     }
 
     #[test]
-    fn projection_drift_fields_equal_hashed_stored_fields() {
+    fn projection_drift_fields_cover_hashed_storage_and_task_worker_selection() {
         let hashed: BTreeSet<_> = ROOT_HASH_TASK_FIELDS.iter().copied().collect();
         let drift: BTreeSet<_> = crate::db::sqlite::PROJECTION_DRIFT_TASK_FIELDS
             .iter()
@@ -1541,6 +1544,8 @@ mod tests {
         let expected = hashed
             .difference(&BTreeSet::from(["refs", "no_gate_reason"]))
             .copied()
+            // Selection is claim-frozen without reinterpreting released root hashes.
+            .chain(["provider", "model", "reasoning_effort"])
             .collect();
         assert_eq!(drift, expected);
     }

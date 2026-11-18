@@ -8,6 +8,10 @@ use provider::send_boundary::{PreSendGate, SendRefusal};
 use tokio::io::AsyncReadExt;
 
 pub(super) async fn fixture() -> (AcpPlannerSession, Arc<SqlxRepo>, String) {
+    fixture_for(false).await
+}
+
+async fn fixture_for(task_worker: bool) -> (AcpPlannerSession, Arc<SqlxRepo>, String) {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let area = repo
         .area_create(
@@ -39,10 +43,23 @@ pub(super) async fn fixture() -> (AcpPlannerSession, Arc<SqlxRepo>, String) {
         let mut tx = write_session.begin_immediate().await.unwrap();
         let card = card_create_with_id_tx(&mut tx, new_id(), NewCard {
             track_id: track.id.clone(), title: None, kind: "codex".into(), sort: None,
-            payload: json!({"schemaVersion":1,"planner_harness":true,"planner_provider":"opencode","permission_mode":"never"}),
-        }, CardRole::Planner, false, &crate::card_role_cache::CardRoleCache::new()).await.unwrap();
+            payload: if task_worker { json!({"schemaVersion":1,"harness_profile":"task_worker","worker_provider":"opencode"}) } else { json!({"schemaVersion":1,"planner_harness":true,"planner_provider":"opencode","permission_mode":"never"}) },
+        }, if task_worker { CardRole::Worker } else { CardRole::Planner }, false, &crate::card_role_cache::CardRoleCache::new()).await.unwrap();
         let worker = new_id();
         let thread = new_id();
+        if task_worker {
+            // Step 2 tests live admission against real persisted identities. The
+            // legacy runtime-creation adapter remains intentionally disabled until step 3.
+            sqlx::query(
+                "INSERT INTO worker_sessions
+                 (id,track_id,provider,mode,contract,state,thread_id,card_id,created_at_ms,updated_at_ms)
+                 VALUES (?1,?2,'opencode','resumable','executor','idle',?3,?4,?5,?5)"
+            )
+                .bind(&worker).bind(track.id.as_str()).bind(&thread).bind(card.id.as_str())
+                .bind(crate::model::now_ms()).execute(&mut **tx).await.unwrap();
+            sqlx::query("UPDATE cards SET session_id=?1 WHERE id=?2")
+                .bind(&worker).bind(card.id.as_str()).execute(&mut **tx).await.unwrap();
+        } else {
         session_start_runtime_tx(
             &mut tx,
             WorkerSessionInit {
@@ -62,6 +79,7 @@ pub(super) async fn fixture() -> (AcpPlannerSession, Arc<SqlxRepo>, String) {
         )
         .await
         .unwrap();
+        }
         tx.commit().await.unwrap();
         let host = Arc::new(AcpPlannerHost::unconfigured_scratch().unwrap());
         let session = AcpPlannerSession::open(SessionParams {
@@ -158,4 +176,77 @@ async fn final_live_fence(parked: bool) {
             "{method} wrote bytes"
         );
     }
+}
+
+#[tokio::test]
+async fn task_worker_acp_full_admission() {
+    let (session, _repo, thread) = fixture_for(true).await;
+    let row = session
+        .shared
+        .current_owner(&thread, Some(PlannerPermissionMode::Full))
+        .await
+        .unwrap();
+    assert_eq!(row.contract, WorkerContract::Executor);
+}
+
+#[tokio::test]
+async fn task_worker_acp_rejects_non_full_admission() {
+    let (session, _repo, thread) = fixture_for(true).await;
+    for permission in [
+        None,
+        Some(PlannerPermissionMode::Never),
+        Some(PlannerPermissionMode::Ask),
+    ] {
+        let error = session
+            .shared
+            .current_owner(&thread, permission)
+            .await
+            .expect_err("non Full must refuse");
+        assert!(matches!(CalmError::from(error), CalmError::Conflict(_)));
+    }
+}
+
+#[tokio::test]
+async fn task_worker_acp_cancel_uses_exact_admitted_turn_permission() {
+    let (session, repo, thread) = fixture_for(true).await;
+    let worker = session.shared.params.worker_session_id.clone();
+    repo.db()
+        .writer()
+        .with_writer(|writer| {
+            Box::pin(async move {
+                let mut tx = writer.begin_immediate().await.unwrap();
+                sqlx::query("UPDATE worker_sessions SET agent_session_id='native' WHERE id=?1")
+                    .bind(worker)
+                    .execute(&mut **tx)
+                    .await
+                    .unwrap();
+                tx.commit().await.unwrap();
+            })
+        })
+        .await
+        .unwrap();
+    let (cancel, _receiver) = watch::channel(CancelRequest::Running);
+    session.shared.state.lock().unwrap().active = Some(Active {
+        permission: PlannerPermissionMode::Full,
+        thread: thread.clone(),
+        turn: "turn".into(),
+        cancel,
+        approvals: std::sync::Weak::new(),
+        native_session_id: "native".into(),
+        execution_id: None,
+    });
+    session
+        .shared
+        .admission(&thread, None, Some("native"), Some("turn"))
+        .check_local()
+        .await
+        .unwrap();
+    assert!(
+        session
+            .shared
+            .admission(&thread, None, Some("native"), Some("other-turn"))
+            .check_local()
+            .await
+            .is_err()
+    );
 }

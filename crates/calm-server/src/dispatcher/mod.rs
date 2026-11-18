@@ -341,6 +341,24 @@ fn dispatcher_operation_runtime(
         ),
         codex: shared_codex_appserver.clone(),
     };
+    let agent_worker_adapter = Arc::new(
+        crate::operation::agent_worker_adapter::AgentWorkerAdapter::new(
+            repo.clone(),
+            crate::harness::wiring::PlannerWiring {
+                claude: claude_planner.clone(),
+                acp: child_selection.acp.clone(),
+                plugin: plugin.clone(),
+            },
+            child_selection.clone(),
+            crate::agent_backend_pool::codex::CodexBackends::single(shared_codex_appserver.clone()),
+            harness.clone(),
+            write.role_cache().clone(),
+            write.area_cache().clone(),
+            mcp_socket_path.clone(),
+            workspace_root.clone(),
+            crate::operation::task_gate_run::GateRunWait::DEFAULT,
+        ),
+    );
     let planner_harness_start_adapter = Arc::new(PlannerHarnessStartAdapter::new(
         repo.clone(),
         crate::agent_backend_pool::codex::CodexBackends::single(shared_codex_appserver.clone()),
@@ -402,6 +420,7 @@ fn dispatcher_operation_runtime(
             terminal_worker_adapter,
             codex_adapter,
             codex_worker_adapter,
+            agent_worker_adapter,
             claude_adapter,
             claude_worker_adapter,
             claude_restart_adapter,

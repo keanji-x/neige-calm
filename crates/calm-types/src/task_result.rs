@@ -71,7 +71,7 @@ pub(crate) fn validate_task_result_contract(map: &Map<String, Value>, errors: &m
     }
     if !matches!(
         map.get("kind").and_then(Value::as_str),
-        Some("codex" | "claude")
+        Some("agent" | "codex" | "claude")
     ) {
         errors.push(
             "result_contract: requires kind \"codex\" or \"claude\"; only a worker reports a \

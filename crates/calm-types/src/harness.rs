@@ -29,6 +29,7 @@ pub enum HarnessProfile {
     Planner,
     PlainChat,
     Assistant,
+    TaskWorker,
 }
 
 /// Provider-native input vocabulary; both spellings occur in persisted rows.

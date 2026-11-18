@@ -189,7 +189,9 @@ async fn exercise_viewer_report(expected: crate::model::TaskStatus, restart: Opt
         .await
         .unwrap(),
     );
-    let (kind, payload) = crate::scheduler::build_worker_payload(&task).unwrap();
+    let (_, payload) = crate::scheduler::build_worker_payload(&task).unwrap();
+    // This suite directly exercises the retained legacy PTY adapter.
+    let kind = "codex-worker";
     let key = OperationKey {
         operation_key: new_id(),
         idempotency_key: Some(task.id.clone()),

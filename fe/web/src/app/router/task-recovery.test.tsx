@@ -1,3 +1,4 @@
+import { historicalConversationPage, historicalConversationRun } from './conversation-read-data.ts';
 import { prepareReportDocument } from '../../features/report/document/preparation.ts';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { RouterProvider, createMemoryHistory } from '@tanstack/react-router';
@@ -18,7 +19,7 @@ import { withReadReceipts } from '../providers/read-receipts-fixture.tsx';
 
 afterEach(cleanup);
 
-function setup(mode: 'awaiting' | 'dispatched' | 'event-advance' | 'dependency' | 'withdrawn' | 'contract-blocked' | 'capacity' | 'empty') {
+function setup(mode: 'awaiting' | 'dispatched' | 'event-advance' | 'dependency' | 'withdrawn' | 'contract-blocked' | 'capacity' | 'empty', workerProfile?: 'task_worker' | 'managed-worker') {
   const requests: ApiRequest[] = [];
   const taskKey = mode === 'dependency' ? 'c' : 'b';
   const blocker = mode === 'dependency' ? 'Blocked by b (failed). Declare a new task in place of b before c can continue.'
@@ -49,7 +50,8 @@ function setup(mode: 'awaiting' | 'dispatched' | 'event-advance' | 'dependency' 
   if (mode === 'dependency') card.payload.blocks.push({ id: 'b-dependency', rev: 1, kind: 'task', payload: {
     key: 'b', kind: 'codex', declared_by: 'user', ready: true, goal: 'Prepare the input for c.', depends_on: [],
   } });
-  const worker = { ...card, id: 'old-worker', kind: 'codex', title: 'Previous worker', deletable: true, payload: {} };
+  const worker = { ...card, id: 'old-worker', kind: 'codex', title: 'Previous worker', deletable: true, payload: workerProfile === 'task_worker' ? { harness_profile: 'task_worker', worker_provider: 'opencode' } : {},
+    ...(workerProfile === 'managed-worker' ? { runtime: { kind: 'managed-worker', provider: 'opencode', worker_session_id: 'runtime-worker', status: 'running', updated_at_ms: 1 } } : {}) };
   const ok = (body: unknown): ApiTransportResponse => ({ status: 200, statusText: 'OK', body });
   const transport: ApiTransportPort = { send(request) {
     return Promise.resolve().then(() => {
@@ -70,6 +72,17 @@ function setup(mode: 'awaiting' | 'dispatched' | 'event-advance' | 'dependency' 
     if (request.path.endsWith('/attempts')) return ok({ key: taskKey, current,
       attempts: mode === 'empty' ? [current] : current === old ? [old] : [old, current],
     });
+    if (request.path.startsWith('/api/cards/old-worker/harness/items?')) return ok(historicalConversationPage('old-worker', [{
+      id: 1, worker_session_id: 'runtime-worker', card_id: 'old-worker', track_id: 'w1', thread_id: 'thread',
+      turn_id: 'turn', turn_error_text: null, item_uuid: null, item_type: 'agentMessage', method: 'item/completed',
+      params: JSON.stringify({ item: { type: 'agentMessage', text: 'Worker inspection evidence' } }), created_at_ms: 1,
+    }], null));
+    if (request.path.startsWith('/api/cards/old-worker/planner/run?')) return ok({ ...historicalConversationRun({
+      card_id: 'old-worker', worker_session_id: 'runtime-worker', phase: 'turn_running', model: null,
+      reasoning_effort: null, permission_mode: null, blocked_reason: null, manual_compact_supported: true,
+      recovery: null, compact_outcome: null, context_usage_invalidated: false, running_turn: null,
+    }, 'running', true), input_contract: 'canonical' });
+    if (request.path.startsWith('/api/cards/old-worker/harness/live?')) return ok({ contract: 'conversation_v1', turn: { thread_id: 'thread', turn_id: 'live-turn', items: [{ item_id: 'live-item', text: 'Live worker evidence' }] } });
     if (request.path === '/api/settings') return ok({});
     return ok([]);
     });
@@ -226,4 +239,20 @@ it('groups a failed history read with its recovery action', () => {
   render(<TaskRecoveryDetails view={undefined} current={undefined} loading={false}
     loadError="History is unavailable." onRefresh={vi.fn()} openWorker={undefined} openableWorkerIds={new Set()} />);
   expect(screen.getByRole('alert').contains(screen.getByRole('button', { name: 'Refresh execution history' }))).toBe(true);
+});
+
+it.each(['task_worker', 'managed-worker'] as const)('opens %s execution in the read-only structured conversation', async workerProfile => {
+  const fixture = setup('event-advance', workerProfile);
+  await userEvent.click(await screen.findByRole('button', { name: 'Progress' }));
+  await userEvent.click(await screen.findByTitle('Open the worker card for b'));
+  await screen.findByText('Worker inspection evidence');
+  await screen.findByText('Live worker evidence');
+  await waitFor(() => expect(fixture.requests.some(request => request.path.includes('/old-worker/harness/live'))).toBe(true));
+  expect(fixture.requests.some(request => request.path.includes('/old-worker/harness/items?') && request.path.includes('contract=conversation_v1'))).toBe(true);
+  expect(document.querySelector('[data-nc-composer]')).toBeNull();
+  expect(document.querySelector('[data-nc-chat-dock]')).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Regenerate response' })).toBeNull();
+  await userEvent.keyboard('{Escape}');
+  expect(fixture.requests.filter(request => request.method !== 'GET')).toEqual([]);
+  expect(fixture.requests.some(request => /terminal|websocket/i.test(request.path))).toBe(false);
 });

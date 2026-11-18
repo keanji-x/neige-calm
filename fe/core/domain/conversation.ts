@@ -34,6 +34,8 @@ export type ConversationState =
 
 export type Conversation = Readonly<{
   id: string;
+  /** Worker transcripts admit reading and copying only. */
+  readOnly?: boolean;
   trackId: string;
   /** Assistant archive metadata; other conversation kinds have no archive lifecycle. */
   archivedAt?: number | null;

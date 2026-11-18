@@ -273,6 +273,7 @@ async fn acp_compaction_owner_failed_join_is_retired_without_turn_event() {
     );
     let (cancel, _) = watch::channel(CancelRequest::Running);
     session.shared.state.lock().unwrap().active = Some(Active {
+        permission: PlannerPermissionMode::Never,
         thread,
         turn: turn.clone(),
         cancel,
@@ -319,6 +320,7 @@ async fn acp_compaction_owner_failed_join_is_retired_without_turn_event() {
     let successor = workspace_runtime::execution::ExecutionId::fresh().unwrap();
     let (cancel, _) = watch::channel(CancelRequest::Running);
     session.shared.state.lock().unwrap().active = Some(Active {
+        permission: PlannerPermissionMode::Never,
         thread: target.thread_id.clone(),
         turn: turn.clone(),
         cancel,
@@ -364,6 +366,7 @@ async fn acp_compaction_owner_absence_allows_restart_but_active_successor_refuse
     let successor = workspace_runtime::execution::ExecutionId::fresh().unwrap();
     let (cancel, _) = watch::channel(CancelRequest::Running);
     session.shared.state.lock().unwrap().active = Some(Active {
+        permission: PlannerPermissionMode::Never,
         thread,
         turn: turn.clone(),
         cancel,

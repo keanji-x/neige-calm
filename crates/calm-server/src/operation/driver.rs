@@ -587,6 +587,14 @@ impl OperationRuntime {
 
     /// Stop only the supplied session and its exact terminal; leave session lifecycle to
     /// the caller's fenced transaction. Never resolve the card's current runtime here.
+    pub(crate) async fn reconcile_sessions(&self) -> Result<()> {
+        let _drive = self.lock_for_track_delete().await;
+        for adapter in self.kinds.values() {
+            adapter.reconcile_sessions(&self.spawn_ctx).await?;
+        }
+        Ok(())
+    }
+
     pub(crate) async fn stop_timeout_worker_session(
         &self,
         runtime: Option<&crate::session_projection_repo::WorkerSessionProjection>,

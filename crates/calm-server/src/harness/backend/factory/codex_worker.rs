@@ -97,6 +97,8 @@ async fn idle_candidate_thread(
     let latest: Option<(String, Option<String>, Option<String>)> = sqlx::query_as(
         "SELECT id, thread_id, last_thread_status FROM worker_sessions \
          WHERE card_id = ?1 AND provider = 'codex' \
+           AND NOT EXISTS(SELECT 1 FROM cards c WHERE c.id=worker_sessions.card_id \
+             AND json_extract(c.payload,'$.harness_profile')='task_worker') \
          ORDER BY created_at_ms DESC, id DESC LIMIT 1",
     )
     .bind(card_id)
@@ -122,7 +124,7 @@ impl PlannerFactory<'_> {
     ) -> Option<TurnEnd> {
         match task.kind {
             TaskKind::Codex => idle.observe(pool, task, card_id).await,
-            TaskKind::Claude | TaskKind::Terminal | TaskKind::Compact => None,
+            TaskKind::Agent | TaskKind::Claude | TaskKind::Terminal | TaskKind::Compact => None,
         }
     }
 }

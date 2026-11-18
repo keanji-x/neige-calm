@@ -1,3 +1,5 @@
+#[path = "agent_worker_migration.rs"]
+mod agent_worker_migration;
 #[path = "ask_delivery_migration.rs"]
 mod ask_delivery_migration;
 #[path = "bounded_track_tree_sql.rs"]

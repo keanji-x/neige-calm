@@ -10,9 +10,11 @@
 use provider::control::*;
 mod control;
 mod managed;
+pub(crate) mod worker_turn;
 pub(super) use managed::IssueTurnHandle;
 pub(crate) mod factory;
 mod start;
+use crate::harness::profile::HarnessProfileExt;
 use crate::planner_permission_mode::PlannerPermissionMode;
 use control::{compact_delivery, steer_delivery};
 use provider::InputItem;
@@ -211,6 +213,9 @@ impl PlannerBackend {
     pub(crate) fn manual_compact_supported(
         binding: &crate::harness::profile::PlannerBinding,
     ) -> bool {
+        if !binding.profile.accepts_human_input() {
+            return false;
+        }
         match binding.provider.protocol() {
             calm_types::runtime::AgentProtocol::Acp => {
                 factory::PlannerFactory::canonical_inputs(binding)

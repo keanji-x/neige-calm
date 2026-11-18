@@ -359,7 +359,7 @@ fn session_kind_for(profile: HarnessProfile) -> WorkerSessionKind {
 fn startable_provider(profile: HarnessProfile, card: &Card) -> Result<AgentProvider> {
     let role = match profile {
         HarnessProfile::Planner => CardRole::Planner,
-        HarnessProfile::PlainChat => CardRole::Worker,
+        HarnessProfile::PlainChat | HarnessProfile::TaskWorker => CardRole::Worker,
         HarnessProfile::Assistant => CardRole::Assistant,
     };
     crate::harness::profile::PlannerBinding::from_card(card, role)
@@ -396,7 +396,7 @@ fn starting_runtime_init(
             snapshot,
             now_ms,
         ),
-        HarnessProfile::PlainChat => WorkerSessionInit {
+        HarnessProfile::PlainChat | HarnessProfile::TaskWorker => WorkerSessionInit {
             id,
             card_id,
             kind: session_kind_for(profile),
@@ -421,7 +421,7 @@ fn minted_card_shape(profile: HarnessProfile) -> Result<(CardRole, &'static str)
             Ok((CardRole::Worker, crate::harness::profile::PLAIN_CHAT_MARKER))
         }
         HarnessProfile::Assistant => Ok((CardRole::Assistant, ASSISTANT_HARNESS_PROFILE_MARKER)),
-        HarnessProfile::Planner => Err(CalmError::BadRequest(
+        HarnessProfile::Planner | HarnessProfile::TaskWorker => Err(CalmError::BadRequest(
             "the planner profile does not mint its own card".into(),
         )),
     }
@@ -596,6 +596,11 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
         }
         let decoded = super::assistant_start_wire::StartInput::decode(input)?;
         let payload = decoded.payload;
+        if payload.profile == HarnessProfile::TaskWorker {
+            return Err(CalmError::Conflict(
+                "task worker harness is not wired yet".into(),
+            ));
+        }
         self.admit_historical(payload.planner_card_id.as_str())
             .await?;
         let track = self
@@ -624,7 +629,7 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
             // `Planner` never mints here (it would hand a caller the track's lifecycle authority). The assistant branch recomputes the deterministic card id
             // from `(track_id, idempotency_key)` and refuses any id it did not derive, so it needs no track-shape allowlist.
             match payload.profile {
-                HarnessProfile::Planner => {
+                HarnessProfile::Planner | HarnessProfile::TaskWorker => {
                     return Err(CalmError::BadRequest(format!(
                         "card {} can only be minted by this operation under the plain-chat or assistant profile",
                         payload.planner_card_id
@@ -716,6 +721,11 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
         })
         .await?;
         let expected_role = match payload.profile {
+            HarnessProfile::TaskWorker => {
+                return Err(CalmError::Conflict(
+                    "task worker harness is not wired yet".into(),
+                ));
+            }
             HarnessProfile::Planner => CardRole::Planner,
             HarnessProfile::PlainChat
                 if crate::plain_chat::card_is_plain_chat(
@@ -752,7 +762,7 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
         if self.card_role_cache.get(&card.id) != Some(expected_role) {
             let message = match payload.profile {
                 HarnessProfile::Planner => format!("card {} is not a planner card", card.id),
-                HarnessProfile::PlainChat => {
+                HarnessProfile::PlainChat | HarnessProfile::TaskWorker => {
                     format!("card {} is not marked for plain chat", card.id)
                 }
                 HarnessProfile::Assistant => {
@@ -1238,7 +1248,7 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
         // Not a security boundary: production reads this role nowhere (the tool surface is resolved per MCP request from the card's persisted `role` column).
         let card_role = match profile {
             HarnessProfile::Planner => CardRole::Planner,
-            HarnessProfile::PlainChat => CardRole::Worker,
+            HarnessProfile::PlainChat | HarnessProfile::TaskWorker => CardRole::Worker,
             HarnessProfile::Assistant => CardRole::Assistant,
         };
         let card_id = output.output_string("card_id", "planner harness")?;

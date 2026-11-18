@@ -27,7 +27,7 @@ pub(super) async fn admit_worker_report_tx(
     };
     let scheduled_keys: Vec<String> = sqlx::query_scalar(
         "SELECT idempotency_key FROM operations WHERE target_type = 'card' \
-         AND target_id = ?1 AND kind IN ('codex-worker', 'claude-worker', 'terminal-worker') \
+         AND target_id = ?1 AND kind IN ('agent-worker', 'codex-worker', 'claude-worker', 'terminal-worker') \
          AND json_extract(payload_json, '$.actor.kind') = 'KernelDispatcher' \
          AND idempotency_key IS NOT NULL \
          UNION SELECT id FROM tasks WHERE worker_card_id = ?1",

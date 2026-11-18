@@ -23,6 +23,9 @@ use crate::model::now_ms;
 /// (resolved through the frozen context) and `no_gate_reason` are excluded.
 pub const PROJECTION_DRIFT_TASK_FIELDS: &[&str] = &[
     "kind",
+    "provider",
+    "model",
+    "reasoning_effort",
     "goal",
     "command",
     "context",
@@ -38,9 +41,29 @@ fn declaration_field_changed(
     declaration: &TaskDeclaration,
     expected_context: &str,
 ) -> Result<bool> {
-    let (_, _, kind, goal, context, acceptance, cwd, depends, _, gate, _, _, _) = row;
+    let (
+        _,
+        _,
+        kind,
+        goal,
+        context,
+        acceptance,
+        cwd,
+        depends,
+        _,
+        gate,
+        _,
+        _,
+        _,
+        provider,
+        model,
+        reasoning_effort,
+    ) = row;
     Ok(match field {
         "kind" => kind != &declaration.kind,
+        "provider" => provider != &declaration.provider,
+        "model" => model != &declaration.model,
+        "reasoning_effort" => reasoning_effort != &declaration.reasoning_effort,
         // Both public instruction spellings lower into the frozen `tasks.goal` column.
         "goal" | "command" => goal != &declaration.goal,
         "context" => !context_eq(context, expected_context),
@@ -77,6 +100,9 @@ type FrozenDeclarationRow = (
     String,
     i64,
     i64,
+    Option<String>,
+    Option<String>,
+    Option<String>,
 );
 
 /// Which declaration edge was withdrawn. `Ready` outranks `ReleasedByUser`,
@@ -798,7 +824,7 @@ async fn track_projection_state(
                    (SELECT json_group_array(json_array(
                         t.status,t.key,t.kind,t.goal,t.context_json,
                         t.acceptance_criteria,t.cwd,t.depends_on_json,t.priority,
-                        t.gate_json,t.declared_by,t.decl_ready,t.decl_released_by_user))
+                        t.gate_json,t.declared_by,t.decl_ready,t.decl_released_by_user,t.provider,t.model,t.reasoning_effort))
                       FROM current_tasks t
                      WHERE t.track_id = w.id AND t.status != 'pending') AS frozen_json,
                    (SELECT json_group_array(json_object(
@@ -1213,6 +1239,7 @@ async fn evaluate_schedulability_with_tree_term_after_snapshot(
             _declared_by,
             decl_ready,
             decl_released_by_user,
+            ..,
         )) = frozen_by_key.get(&declaration.key)
         else {
             continue;
@@ -1694,10 +1721,10 @@ async fn project_tasks_from_verdicts_tx(
                    id,track_id,key,kind,goal,context_json,acceptance_criteria,cwd,
                    depends_on_json,priority,gate_json,status,declared_by,spawn,
                    decl_ready,decl_released_by_user,created_at_ms,updated_at_ms,access,head,base,
-                   start,result_contract,child_track_json
+                   start,result_contract,child_track_json,provider,model,reasoning_effort
                ) VALUES(
                    ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,'pending',?12,?13,
-                   ?14,?15,?16,?16,?17,?18,?19,?20,?21,?22
+                   ?14,?15,?16,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25
                )
                ON CONFLICT(id) DO UPDATE SET
                    kind=excluded.kind,
@@ -1716,6 +1743,7 @@ async fn project_tasks_from_verdicts_tx(
                    start=excluded.start,
                    result_contract=excluded.result_contract,
                    child_track_json=excluded.child_track_json,
+                   provider=excluded.provider,model=excluded.model,reasoning_effort=excluded.reasoning_effort,
                    decl_ready=excluded.decl_ready,
                    decl_released_by_user=excluded.decl_released_by_user,
                    updated_at_ms=excluded.updated_at_ms
@@ -1736,6 +1764,9 @@ async fn project_tasks_from_verdicts_tx(
                      OR tasks.base IS NOT excluded.base
                      OR tasks.start IS NOT excluded.start
                      OR tasks.result_contract IS NOT excluded.result_contract
+                     OR tasks.provider IS NOT excluded.provider
+                     OR tasks.model IS NOT excluded.model
+                     OR tasks.reasoning_effort IS NOT excluded.reasoning_effort
                      OR tasks.child_track_json IS NOT excluded.child_track_json
                      OR tasks.decl_ready IS NOT excluded.decl_ready
                      OR tasks.decl_released_by_user IS NOT excluded.decl_released_by_user
@@ -1769,6 +1800,9 @@ async fn project_tasks_from_verdicts_tx(
                 .map(serde_json::to_string)
                 .transpose()?,
         )
+        .bind(&declaration.provider)
+        .bind(&declaration.model)
+        .bind(&declaration.reasoning_effort)
         .execute(&mut **tx)
         .await?;
         if result.rows_affected() != 0 {
@@ -1829,7 +1863,7 @@ mod tests {
         )
     }
 
-    async fn setup() -> (super::super::SqlxRepo, String) {
+    pub(super) async fn setup() -> (super::super::SqlxRepo, String) {
         let repo = super::super::SqlxRepo::open("sqlite::memory:")
             .await
             .unwrap();
@@ -2933,3 +2967,6 @@ mod tests {
         assert_eq!(withdrawal_rationales_for([y, x]).await, expected);
     }
 }
+
+#[cfg(test)]
+mod task_worker_selection_tests;

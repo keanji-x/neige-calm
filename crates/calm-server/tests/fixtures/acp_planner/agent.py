@@ -620,6 +620,16 @@ for line in sys.stdin:
             finish(request, 'successor reply')
         elif scenario in ['shared-unknown', 'shared-close-error']:
             result(request, {'unexpected': True})
+        elif scenario == 'worker-held':
+            update({'sessionUpdate': 'agent_message_chunk', 'content': {'type': 'text', 'text': 'streamed'}})
+            shared_pending[current] = request
+            import threading
+            def release_worker(saved=request, session=current):
+                while not (root / 'release-worker').exists():
+                    time.sleep(0.01)
+                if shared_pending.pop(session, None) is not None:
+                    result(saved, {'stopReason': 'end_turn'})
+            threading.Thread(target=release_worker, daemon=True).start()
         elif scenario == 'shared-hold':
             shared_pending[current] = request
         elif scenario == 'resident-drain-sibling':

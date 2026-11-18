@@ -61,6 +61,7 @@ export function useConversationStore(
   const serverRows = routeIntent.rows;
   const rememberOn = routeIntent.rememberOn;
   const ownedCardIds = routeIntent.ownedCardIds;
+  const readOnly = serverRows.find(row => row.id === cardId)?.readOnly === true;
   const sourceCardId = serverRows.find((row) => row.id === cardId)?.sourceCardId;
   /* Held across renders: the live replies read and re-read this query by its key, and number its reads. */
   const transcriptReads = useTranscriptReads(registry.nextRead);
@@ -234,9 +235,9 @@ export function useConversationStore(
     : phase === 'issuing_interrupt' ? { kind: 'stopping' }
     : stop.feedback?.kind === 'requesting' && !working ? null : stop.feedback;
   const facts = useMemo<ConversationFacts | null>(() => trackId === undefined || provider === undefined ? null : {
-    sourceCardId, cardId, trackId, trackTitle, provider, cardTitle: cardTitle ?? null, kind: scopeKind,
+    readOnly, sourceCardId, cardId, trackId, trackTitle, provider, cardTitle: cardTitle ?? null, kind: scopeKind,
     state: scopeState, working, stalled:stalled || executionHeld, fallbackUpdatedAt: scopeUpdatedAt ?? 0,
-  }, [sourceCardId, cardId, cardTitle, provider, scopeKind, scopeState, scopeUpdatedAt, trackId, trackTitle, working, stalled,executionHeld]);
+  }, [readOnly, sourceCardId, cardId, cardTitle, provider, scopeKind, scopeState, scopeUpdatedAt, trackId, trackTitle, working, stalled,executionHeld]);
   /** What the reader is looking at: every turn, echoes included. */
   const conversation = useMemo(
     () => facts === null ? null : describeConversation(facts, turns), [facts, turns],

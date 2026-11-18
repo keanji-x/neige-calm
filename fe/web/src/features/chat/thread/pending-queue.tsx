@@ -12,6 +12,7 @@ import { CollapsePresence } from '../../../ui/motion/collapse.tsx';
 import styles from './pending-queue.module.css';
 
 export type PendingQueueProps = Readonly<{
+  readOnly?: boolean;
   entries: readonly PendingQueueEntry[];
   /** Canonical Human and System references, including bodies outside the loaded history page. */
   pendingInputCount: number;
@@ -75,7 +76,7 @@ function noticeStatus(outcome: PlannerQueueWriteOutcome): 'warning' | 'info' | '
 }
 
 
-export function PendingQueue({ entries, pendingInputCount, queueDisplayAccounting, sending = NO_SENDS, overflow, busy, onDelete, onEdit, canEdit, editingEntryId, savedEntry, onFocusComposer, onPresenceChange, onSteer }: PendingQueueProps) {
+export function PendingQueue({ readOnly = false, entries, pendingInputCount, queueDisplayAccounting, sending = NO_SENDS, overflow, busy, onDelete, onEdit, canEdit, editingEntryId, savedEntry, onFocusComposer, onPresenceChange, onSteer }: PendingQueueProps) {
   const mobile = useCompactViewport();
   const [refusal, setRefusal] = useState<Refusal | null>(null);
   const [writing, setWriting] = useState(false);
@@ -154,14 +155,14 @@ export function PendingQueue({ entries, pendingInputCount, queueDisplayAccountin
                   <div className={styles.line}>
                     <div data-nc-pending-entry-text=""><OutgoingMessage speaker="unknown" text={current.text} mobile={mobile} edited={isEditing} /></div>
                     <div className={styles.actions}>
-                      <MessageActions label="Queued message actions" actions={[
+                      {!readOnly && <MessageActions label="Queued message actions" actions={[
                         { id: 'edit', kind: 'edit', label: 'Edit queued message', tooltip: 'Edit this message in the composer.', disabled: blocked || !canEdit || !alive,
                           run: () => { onEdit(current); } },
                         { id: 'undo', kind: 'undo', label: 'Delete this message', tooltip: 'Remove this queued message.', disabled: blocked || isEditing,
                           run: () => { void run(current, () => onDelete(current)); } },
                         ...(onSteer === undefined ? [] : [{ id: 'steer', kind: 'return' as const, label: 'Say it now', tooltip: 'Send to the current response.', disabled: blocked || isEditing,
                           run: () => { void run(current, () => onSteer(current)); } }]),
-                      ]} />
+                      ]} />}
                     </div>
                   </div>
                   {failed !== null && <QueueWriteNotice outcome={failed} />}

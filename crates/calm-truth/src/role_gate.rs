@@ -165,10 +165,13 @@ pub fn enforce_role(
         return Err(RoleViolation::SessionActorUnresolved { session: s.clone() });
     }
 
-    // This synthetic actor is used only after managed-session resolution. It cannot
-    // acquire worker or Planner authority by changing a card's persisted role.
+    // Managed-session resolution proves the Assistant or TaskWorker contract first.
+    // The ordinary role/scope rules below keep Worker authority on its own card.
     if let ActorId::AiManagedCard(card) = actor
-        && cache.get(card) != Some(CardRole::Assistant)
+        && !matches!(
+            cache.get(card),
+            Some(CardRole::Assistant | CardRole::Worker)
+        )
     {
         return Err(RoleViolation::UnknownCard { card: card.clone() });
     }

@@ -14,6 +14,7 @@ pub use settlement::TerminalOutcome;
 mod repo_sqlite;
 pub(crate) mod workspace_lease;
 
+pub(crate) mod agent_worker_adapter;
 pub(crate) mod assistant_start_wire;
 pub mod card_create_adapter;
 pub mod child_track_adapter;
@@ -92,8 +93,9 @@ const OPERATION_LEASE_MS: TimestampMs = 60_000;
 
 /// Authoritative registry of operation adapters whose payload is bound to a
 /// task row and must therefore enforce the stale-context admission fence.
-pub const TASK_BOUND_ADAPTER_KINDS: [&str; 6] = [
+pub const TASK_BOUND_ADAPTER_KINDS: [&str; 7] = [
     "codex-worker",
+    "agent-worker",
     "claude-worker",
     "terminal-worker",
     "task-verify",
@@ -1033,6 +1035,12 @@ pub trait ProviderAdapter: Send + Sync {
                 reason: "parked process dead with no recorded outcome".into(),
             }
         })
+    }
+
+    /// Reconcile adapter-owned sessions left after their creation operation settled.
+    /// The runtime holds its drive fence; the adapter proves native stop before releasing ownership.
+    async fn reconcile_sessions(&self, _ctx: &SpawnCtx) -> Result<()> {
+        Ok(())
     }
 
     async fn plan_compensation(

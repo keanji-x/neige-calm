@@ -159,6 +159,7 @@ pub(super) async fn send(
     crate::test_seams::pause_point("carrier-quiescence-acp-issuance", &params.worker_session_id)
         .await;
     shared.state.lock().expect("ACP state").active = Some(Active {
+        permission,
         thread: thread.into(),
         turn: turn.clone(),
         cancel,

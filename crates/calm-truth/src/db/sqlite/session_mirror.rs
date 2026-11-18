@@ -63,7 +63,9 @@ fn runtime_init_session_identity(
 ) -> WorkerSessionProjectionResult<(WorkerProviderKind, SessionMode, WorkerContract)> {
     if !matches!(
         init.kind,
-        WorkerSessionKind::SharedPlanner | WorkerSessionKind::ManagedAssistant
+        WorkerSessionKind::SharedPlanner
+            | WorkerSessionKind::ManagedAssistant
+            | WorkerSessionKind::ManagedWorker
     ) {
         return Ok(derive_session_identity(&init.kind));
     }
@@ -82,7 +84,9 @@ fn runtime_init_session_identity(
                 init.id
             ))
         })?;
-    let contract = if init.kind == WorkerSessionKind::ManagedAssistant {
+    let contract = if init.kind == WorkerSessionKind::ManagedWorker {
+        WorkerContract::Executor
+    } else if init.kind == WorkerSessionKind::ManagedAssistant {
         WorkerContract::Assistant
     } else {
         WorkerContract::Planner

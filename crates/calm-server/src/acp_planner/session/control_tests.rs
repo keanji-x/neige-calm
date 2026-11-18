@@ -54,6 +54,7 @@ async fn acp_identical_local_turns_keep_two_owner_cancellation_separate() {
     let (a_cancel, a_seen) = watch::channel(CancelRequest::Running);
     let (b_cancel, b_seen) = watch::channel(CancelRequest::Running);
     a.shared.state.lock().unwrap().active = Some(Active {
+        permission: PlannerPermissionMode::Never,
         thread: "a".into(),
         turn: "same-local-turn".into(),
         cancel: a_cancel,
@@ -62,6 +63,7 @@ async fn acp_identical_local_turns_keep_two_owner_cancellation_separate() {
         execution_id: Some(workspace_runtime::execution::ExecutionId::fresh().unwrap()),
     });
     b.shared.state.lock().unwrap().active = Some(Active {
+        permission: PlannerPermissionMode::Never,
         thread: "b".into(),
         turn: "same-local-turn".into(),
         cancel: b_cancel,

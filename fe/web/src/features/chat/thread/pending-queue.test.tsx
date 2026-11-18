@@ -302,3 +302,9 @@ it('compares the actual saved departing revision with declared carrier versions'
     queueDisplayAccounting={{ displayed: [{ id: saved.entry_id, rev: saved.rev }], suppressed: [] }} />);
   expect(screen.queryByText(saved.text)).toBeNull();
 });
+
+it('keeps queued worker input readable without human mutation controls', () => {
+  renderQueue({ readOnly: true });
+  expect(screen.getByText('look at the report')).toBeTruthy();
+  expect(screen.queryByRole('button')).toBeNull();
+});

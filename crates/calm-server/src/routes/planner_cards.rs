@@ -7,6 +7,7 @@ use crate::actor::Actor;
 use crate::db::RouteRepo;
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::extract::{Json, Path};
+use crate::harness::profile::HarnessProfileExt;
 use crate::harness::token_usage::{PlannerContextUsage, planner_context_usage};
 use crate::harness::{HarnessPhaseTag, QueueEntry, RunningTurn};
 use crate::ids::CardId;
@@ -34,6 +35,26 @@ use utoipa::ToSchema;
 /// Whether the persisted card shape is allowed to use the headless harness routes. Unknown/malformed profile values fail closed.
 pub(crate) fn card_runs_headless_harness(card: &Card, role: CardRole) -> bool {
     crate::harness::profile::PlannerBinding::from_card(card, role).is_some()
+}
+
+pub(crate) async fn human_harness_binding(
+    repo: &dyn RouteRepo,
+    card: &Card,
+    role: CardRole,
+) -> Result<Option<crate::harness::profile::PlannerBinding>> {
+    let Some(binding) = crate::harness::profile::PlannerBinding::from_card(card, role)
+        .filter(|binding| binding.profile.accepts_human_input())
+    else {
+        return Ok(None);
+    };
+    let card_id = card.id.to_string();
+    crate::db::write_in_tx_typed(repo, move |tx| {
+        Box::pin(async move {
+            crate::harness::profile::require_human_harness_card_tx(tx, &card_id).await
+        })
+    })
+    .await?;
+    Ok(Some(binding))
 }
 
 async fn card_daemon<'a>(
@@ -377,7 +398,10 @@ pub(crate) async fn interrupt_planner_card(
         .write
         .verify_role(&card.id)
         .ok_or_else(|| CalmError::NotFound(format!("card {id}")))?;
-    if !card_runs_headless_harness(&card, role) {
+    if human_harness_binding(s.repo.as_ref(), &card, role)
+        .await?
+        .is_none()
+    {
         return Err(CalmError::Forbidden(format!(
             "card {id} is not a planner codex card",
         )));
@@ -516,7 +540,7 @@ pub(super) async fn historical_planner_run(
         &binding.provider,
         &card.track_id,
         &s.workspace_root,
-        source,
+        source.filter(|_| binding.profile.accepts_human_input()),
     )
     .await?;
     let mut dormant = GetPlannerRunResponse {
@@ -538,6 +562,25 @@ pub(super) async fn historical_planner_run(
         manual_compact_supported,
         running_turn: None,
     };
+    if binding.profile == HarnessProfile::TaskWorker {
+        if let Some(runtime) = s.repo.session_projection_projectable_for_card(&id).await? {
+            dormant.worker_session_id = Some(runtime.id);
+            if let Some(snapshot) = runtime
+                .handle_state_json
+                .and_then(crate::harness::HarnessSnapshot::parse_known)
+            {
+                dormant.phase = Some(snapshot.phase);
+                if snapshot.phase == HarnessPhaseTag::TurnRunning {
+                    dormant.running_turn =
+                        snapshot.last_turn_id.map(|turn_id| PlannerRunningTurn {
+                            turn_id,
+                            elapsed_ms: 0,
+                        });
+                }
+            }
+        }
+        return Ok(Json(dormant));
+    }
     let Some(runtime) = s
         .repo
         .session_projection_active_for_card(&card.id.to_string())
@@ -704,8 +747,9 @@ async fn harness_card_to_start(s: &RouteState, id: &str) -> Result<(Card, Harnes
         .write
         .verify_role(&card.id)
         .ok_or_else(|| CalmError::NotFound(format!("card {id}")))?;
-    let binding = crate::harness::profile::PlannerBinding::from_card(&card, role)
-        .ok_or_else(|| CalmError::Forbidden(format!("card {id} is not a planner codex card")))?;
+    let binding = human_harness_binding(s.repo.as_ref(), &card, role)
+        .await?
+        .ok_or_else(|| CalmError::Forbidden(format!("card {id} accepts no human control")))?;
     Ok((card, binding.profile))
 }
 

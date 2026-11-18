@@ -18,7 +18,7 @@ impl Shared {
             .ok_or_else(|| refused("ACP owner is missing"))?;
         if !matches!(
             row.contract,
-            WorkerContract::Planner | WorkerContract::Assistant
+            WorkerContract::Planner | WorkerContract::Assistant | WorkerContract::Executor
         ) {
             return Err(refused("ACP owner identity changed"));
         }
@@ -37,6 +37,11 @@ impl Shared {
         {
             return Err(refused("ACP live owner identity changed"));
         }
+        if binding.profile == crate::harness::profile::HarnessProfile::TaskWorker
+            && permission != Some(PlannerPermissionMode::Full)
+        {
+            return Err(refused("TaskWorker requires Full permission"));
+        }
         Ok(row)
     }
 
@@ -47,6 +52,20 @@ impl Shared {
         native: Option<&'a str>,
         turn: Option<&'a str>,
     ) -> NativePromptAdmission<'a> {
+        // Native cancellation carries no new prompt policy. Recover the permission of
+        // this exact admitted turn, which the local gate below rechecks before writing.
+        let permission = permission.or_else(|| {
+            let state = self.state.lock().expect("ACP state");
+            state
+                .active
+                .as_ref()
+                .filter(|active| {
+                    active.thread == thread
+                        && turn == Some(active.turn.as_str())
+                        && native == Some(active.native_session_id.as_str())
+                })
+                .map(|active| active.permission)
+        });
         NativePromptAdmission::new(
             move || {
                 let state = self.state.lock().expect("ACP state");

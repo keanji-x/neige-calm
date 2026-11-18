@@ -50,7 +50,7 @@ fn declarations() -> Vec<(String, Value, bool)> {
     ];
     for contract in RESULT_CONTRACTS {
         let name = json!(contract.name);
-        for kind in ["codex", "claude"] {
+        for kind in ["agent", "codex"] {
             let declared = with(agent(kind), "result_contract", name.clone());
             cases.extend([
                 (format!("{kind} {}", contract.name), declared.clone(), true),
@@ -169,4 +169,55 @@ fn child_track_config_published_schema_matches_validation() {
             "validator: {task}"
         );
     }
+}
+
+#[test]
+fn agent_worker_selection_published_schema_matches_validator() {
+    let table = kinds_table();
+    let schema = task_schema(&table);
+    let check = |payload: Value, allowed: bool| {
+        assert_eq!(
+            accepts(schema, &payload, schema),
+            allowed,
+            "schema: {payload}"
+        );
+        assert_eq!(
+            validate_payload("task", &payload).is_ok(),
+            allowed,
+            "validator: {payload}"
+        );
+    };
+    for kind in ["agent", "codex"] {
+        let task = agent(kind);
+        check(task.clone(), true);
+        for provider in [
+            "codex",
+            "antigravity",
+            "opencode",
+            "grok",
+            "claude",
+            "unknown",
+        ] {
+            check(
+                with(task.clone(), "provider", json!(provider)),
+                provider == "codex"
+                    || (kind == "agent" && matches!(provider, "antigravity" | "opencode" | "grok")),
+            );
+        }
+        for field in ["model", "reasoning_effort"] {
+            check(with(task.clone(), field, json!("selection")), true);
+            for value in [json!(""), json!(" "), json!(false), Value::Null] {
+                check(with(task.clone(), field, value), false);
+            }
+        }
+        check(
+            with(
+                with(task.clone(), "model", json!("selected")),
+                "spawn",
+                json!(TASK_CHILD_TRACK_ROUTE),
+            ),
+            false,
+        );
+    }
+    check(agent("claude"), true);
 }

@@ -13,9 +13,17 @@ pub(crate) trait HarnessProfileExt: Sized {
     fn from_shape(kind: &str, role: CardRole, payload: &Value) -> Option<Self>;
     fn session_kind(self) -> crate::session_projection_repo::WorkerSessionKind;
     fn mcp_role(self) -> Option<CardRole>;
+    fn accepts_human_input(self) -> bool;
 }
 
 impl HarnessProfileExt for HarnessProfile {
+    fn accepts_human_input(self) -> bool {
+        match self {
+            Self::Planner | Self::Assistant | Self::PlainChat => true,
+            Self::TaskWorker => false,
+        }
+    }
+
     fn from_shape(kind: &str, role: CardRole, payload: &Value) -> Option<Self> {
         calm_truth::planner_binding::profile_from_shape(kind, role, payload)
     }
@@ -26,6 +34,7 @@ impl HarnessProfileExt for HarnessProfile {
             Self::Planner => WorkerSessionKind::SharedPlanner,
             Self::Assistant => WorkerSessionKind::ManagedAssistant,
             Self::PlainChat => WorkerSessionKind::CodexCard,
+            Self::TaskWorker => WorkerSessionKind::ManagedWorker,
         }
     }
 
@@ -34,9 +43,37 @@ impl HarnessProfileExt for HarnessProfile {
         match self {
             Self::Planner => Some(CardRole::Planner),
             Self::Assistant => Some(CardRole::Assistant),
-            Self::PlainChat => None,
+            Self::PlainChat | Self::TaskWorker => None,
         }
     }
+}
+
+pub(crate) async fn require_human_harness_card_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    card_id: &str,
+) -> crate::error::Result<()> {
+    let shape = crate::db::sqlite::card_execution_shape_tx(tx, card_id).await?;
+    let profile =
+        calm_truth::planner_binding::profile_from_shape(&shape.kind, shape.role, &shape.payload);
+    let task_bound = crate::db::sqlite::card_has_task_binding_tx(tx, card_id).await?;
+    let managed = crate::db::sqlite::session_projection_projectable_for_card_tx(tx, card_id)
+        .await?
+        .is_some_and(|session| {
+            session.kind == crate::session_projection_repo::WorkerSessionKind::ManagedWorker
+        });
+    if shape
+        .payload
+        .get(calm_truth::validation::WORKER_PROVIDER_PAYLOAD_KEY)
+        .is_some()
+        || task_bound
+        || managed
+        || !profile.is_some_and(HarnessProfileExt::accepts_human_input)
+    {
+        return Err(crate::error::CalmError::Forbidden(
+            "TaskWorker accepts no human input".into(),
+        ));
+    }
+    Ok(())
 }
 
 /// Server admission wraps the Truth decoder; backend capability remains server-owned.
@@ -259,6 +296,25 @@ mod tests {
             payload[PLANNER_PROVIDER_PAYLOAD_KEY] = provider;
         }
         card("codex", payload)
+    }
+
+    #[test]
+    fn task_worker_card_uses_shared_model_selection_reader() {
+        let card = card(
+            "codex",
+            json!({"harness_profile":"task_worker","worker_provider":"opencode","model":"worker-model","reasoning_effort":"high"}),
+        );
+        let binding = PlannerBinding::from_card(&card, CardRole::Worker).unwrap();
+        assert_eq!(binding.profile, HarnessProfile::TaskWorker);
+        assert_eq!(binding.provider, AgentProvider::OpenCode);
+        let selection =
+            crate::planner_model::CardModelSelection::from_payload(&card.payload).unwrap();
+        assert_eq!(selection.model.as_deref(), Some("worker-model"));
+        assert_eq!(selection.reasoning_effort.as_deref(), Some("high"));
+        assert_eq!(
+            binding.profile.session_kind(),
+            crate::session_projection_repo::WorkerSessionKind::ManagedWorker
+        );
     }
 
     #[test]

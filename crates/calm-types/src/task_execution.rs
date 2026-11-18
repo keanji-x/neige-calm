@@ -11,7 +11,7 @@ pub use pending::{PendingBlocker, PendingBlockerClass, PendingRetryOwner};
 /// task that is not on the child-track route. Such tasks share the checkout, so a task that changes
 /// it runs alone.
 pub fn runs_in_track_checkout(kind: &str, spawn: &str) -> bool {
-    matches!(kind, "codex" | "claude" | "terminal")
+    matches!(kind, "agent" | "codex" | "claude" | "terminal")
         && spawn != crate::task_recovery::TASK_CHILD_TRACK_ROUTE
 }
 
@@ -67,7 +67,7 @@ pub(crate) fn validate_task_access(map: &Map<String, Value>, errors: &mut Vec<St
         Some(Ok(TaskAccess::ReadOnly)) => {
             if !matches!(
                 map.get("kind").and_then(Value::as_str),
-                Some("codex" | "claude")
+                Some("agent" | "codex" | "claude")
             ) {
                 errors.push(
                     "access: \"read_only\" requires kind \"codex\" or \"claude\"; a terminal task \
@@ -150,7 +150,7 @@ pub(crate) fn validate_task_start(map: &Map<String, Value>, errors: &mut Vec<Str
         Some(Ok(TaskStart::Upstream)) => {
             if !matches!(
                 map.get("kind").and_then(Value::as_str),
-                Some("codex" | "claude")
+                Some("agent" | "codex" | "claude")
             ) {
                 errors.push(
                     "start: \"upstream\" requires kind \"codex\" or \"claude\"; a terminal task \
