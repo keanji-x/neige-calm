@@ -97,7 +97,6 @@ pub(crate) enum OwnedProcessObservation {
     Unknown,
 }
 
-#[cfg(any(not(target_os = "macos"), test))]
 impl OwnedProcessObservation {
     pub(crate) fn proven_gone(self) -> bool {
         matches!(self, Self::Mismatch | Self::Absent)
