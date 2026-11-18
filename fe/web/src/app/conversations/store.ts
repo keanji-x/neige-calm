@@ -378,6 +378,7 @@ export function useConversationStore(
     send: outbox.send,
     attachmentsSupported: (run.data?.attachments_supported ?? false) && (scopeKind !== 'track-assistant' || (!capabilities.isError
       && capabilities.data?.find(answer => answer.availability.provider === provider)?.capabilities.images === true)),
+    attachmentsUnavailableReason: run.data?.attachments_unavailable?.error,
     historyReplacementSupported,
     manualCompactSupported: run.data?.manual_compact_supported === true,
     contextUsage: run.data?.context_usage_invalidated === true ? null : run.data?.token_usage ?? null,

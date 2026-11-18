@@ -1,6 +1,7 @@
 use crate::error::Error;
 use crate::git::*;
 use crate::teardown::remove_workspace_worktree;
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -85,35 +86,26 @@ fn init_git_repo(path: &Path) {
     run_git(path, ["config", "user.name", "Lease Test"]);
     // The installed probes must run even when the developer config redirects hooks.
     let hooks = path.join(".git/hooks");
-    run_git(path, ["config", "core.hooksPath", hooks.to_str().unwrap()]);
+    run_git(
+        path,
+        [
+            "config".as_ref(),
+            "core.hooksPath".as_ref(),
+            hooks.as_os_str(),
+        ],
+    );
     std::fs::write(path.join("README.md"), "initial\n").unwrap();
     run_git(path, ["add", "README.md"]);
     run_git(path, ["commit", "-m", "initial"]);
 }
 
-fn run_git<const N: usize>(repo: &Path, args: [&str; N]) {
-    let output = Command::new("git")
-        .args(args)
-        .current_dir(repo)
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "git {:?} failed in {}\nstdout:\n{}\nstderr:\n{}",
-        args,
-        repo.display(),
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-}
-
 fn git_stdout<const N: usize>(repo: &Path, args: [&str; N]) -> String {
-    String::from_utf8_lossy(&git_stdout_bytes(repo, args)).to_string()
+    String::from_utf8_lossy(&run_git(repo, args)).into_owned()
 }
 
-fn git_stdout_bytes<const N: usize>(repo: &Path, args: [&str; N]) -> Vec<u8> {
+fn run_git<const N: usize>(repo: &Path, args: [impl AsRef<OsStr> + std::fmt::Debug; N]) -> Vec<u8> {
     let output = Command::new("git")
-        .args(args)
+        .args(&args)
         .current_dir(repo)
         .output()
         .unwrap();

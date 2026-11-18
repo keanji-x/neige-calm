@@ -17709,6 +17709,10 @@
             "type": "boolean",
             "description": "Whether this credential, backend and workspace support image input.\nGuest credentials accept text only. Upload and send enforce the same source\nrestriction; attached workspaces never accept uploaded images."
           },
+          "attachments_unavailable": {
+            "$ref": "#/components/schemas/ErrorBody",
+            "description": "When image input is unavailable, the admission code and message to show before upload."
+          },
           "blocked_reason": {
             "type": [
               "string",
@@ -19621,6 +19625,10 @@
               "attachments_supported": {
                 "type": "boolean",
                 "description": "Whether this credential, backend and workspace support image input.\nGuest credentials accept text only. Upload and send enforce the same source\nrestriction; attached workspaces never accept uploaded images."
+              },
+              "attachments_unavailable": {
+                "$ref": "#/components/schemas/ErrorBody",
+                "description": "When image input is unavailable, the admission code and message to show before upload."
               },
               "blocked_reason": {
                 "type": [

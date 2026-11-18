@@ -8,7 +8,7 @@ import { render } from '@testing-library/react';
 import type { AgentProvider } from '../../../../core/api/generated/wire.ts';
 import type { ApiRequest, ApiTransportPort } from '../../../../core/api/types.ts';
 import type { ManagedProviderAvailability } from '../../../../core/domain/agent-providers.ts';
-import { trackConversationCardId, type Conversation } from '../../../../core/domain/conversation.ts';
+import { trackConversationCardId, type Conversation, type PlannerRun } from '../../../../core/domain/conversation.ts';
 import { createUnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import { createAppRouter, APP_BASEPATH } from './public.tsx';
 import { bootTestCardRuntime } from './test-card-runtime.ts';
@@ -28,12 +28,13 @@ export function renderAssistantProviderFixture(options: {
   webCompatVersion?: number;
   catalogUnavailable?: boolean;
   runAttachmentsSupported?: boolean;
+  runAttachmentsUnavailable?: PlannerRun['attachments_unavailable'];
 }) {
   const requests: ApiRequest[] = [];
   let attempts = 0;
   let restarted = false;
   let selectedModel: string | null = null;
-  const track = { workspace: { isolation: 'none' as const, kind: 'attached' as const, path: '/tmp', frozen_at: null }, id: 'provider-track', area_id: 'area', title: 'Provider discussion', sort: 1,
+  const track = { workspace: { isolation: 'none' as const, kind: 'managed' as const, path: '/tmp', frozen_at: null }, id: 'provider-track', area_id: 'area', title: 'Provider discussion', sort: 1,
     cwd: '/tmp', pinned_at: null, closed_at: null, created_at: 1, updated_at: 2 };
   const rows: Conversation[] = options.existingProvider === undefined ? [] : [{
     id: 'dormant', trackId: track.id, title: 'Saved Assistant', kind: 'track-assistant',
@@ -93,7 +94,8 @@ export function renderAssistantProviderFixture(options: {
     const cardId = request.path.split('/')[3];
     if (request.path.includes('/planner/run?contract=conversation_v1')) body = historicalConversationRun({ card_id: cardId, worker_session_id: restarted ? 'replacement' : null,
       phase: 'idle', model: selectedModel, reasoning_effort: null, permission_mode: null, blocked_reason: null,
-      attachments_supported: options.runAttachmentsSupported ?? false, manual_compact_supported: false, recovery: null, compact_outcome: null,
+      attachments_supported: options.runAttachmentsSupported ?? false, attachments_unavailable: options.runAttachmentsUnavailable,
+      manual_compact_supported: false, recovery: null, compact_outcome: null,
       context_usage_invalidated: false, running_turn: null }, 'idle', options.answers.find(answer => answer.availability.provider === rows.find(row => row.id === cardId)?.provider)?.capabilities.history_replacement === true);
     if (request.path.endsWith('/planner/model')) {
       const input = request.body as { model: string | null; reasoning_effort: string | null };

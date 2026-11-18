@@ -18,21 +18,23 @@ pub(crate) fn require_secure_workspace() -> Result<()> {
     #[cfg(target_os = "linux")]
     {
         use nix::fcntl::{OFlag, OpenHow, openat2};
-        use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
-        let root = std::fs::File::open("/").map_err(|_| unavailable())?;
-        let fd = openat2(
-            root.as_raw_fd(),
-            ".",
+        use std::os::fd::{FromRawFd, OwnedFd};
+        // RESOLVE_BENEATH rejects an absolute path before directory permissions matter.
+        let probe = openat2(
+            nix::libc::AT_FDCWD,
+            "/",
             OpenHow::new()
                 .flags(OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_CLOEXEC)
                 .resolve(super::workspace_resolve_flags(
                     super::WorkspaceSymlinks::Refused,
                 )),
         )
-        .map_err(|_| unavailable())?;
-        // SAFETY: openat2 returned a fresh fd with a single owning conversion.
-        drop(unsafe { OwnedFd::from_raw_fd(fd) });
-        Ok(())
+        // SAFETY: close the fresh descriptor even if the kernel unexpectedly allowed the open.
+        .map(|fd| unsafe { OwnedFd::from_raw_fd(fd) });
+        match probe {
+            Err(nix::errno::Errno::EXDEV) => Ok(()),
+            _ => Err(unavailable()),
+        }
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {

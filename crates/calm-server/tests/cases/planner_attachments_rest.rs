@@ -462,11 +462,41 @@ async fn the_per_card_budget_refuses_rather_than_reclaiming() {
 }
 
 #[tokio::test]
+async fn managed_run_declares_the_host_capability_before_upload() {
+    let b = boot().await;
+    let card = b.planner_card.id.to_string();
+    let (status, run) = crate::support::planner_queue_fixture::get(
+        b.app.clone(),
+        format!("/api/cards/{card}/planner/run?contract=conversation_v1"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{run}");
+    let (status, body) = upload(&b.app, &card, Some("user"), "image/png", png(b"x")).await;
+    if status == StatusCode::CREATED {
+        assert_eq!(run["attachments_supported"], true);
+        assert!(run.get("attachments_unavailable").is_none());
+    } else {
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(body["code"], "secure_workspace_unavailable");
+        assert_eq!(run["attachments_supported"], false);
+        assert_eq!(run["attachments_unavailable"], body);
+    }
+}
+
+#[tokio::test]
 async fn an_attached_workspace_is_refused_and_nothing_is_created() {
     let b = boot_with_kind(TrackWorkspaceKind::Attached).await;
     let card = b.planner_card.id.to_string();
     let (status, body) = upload(&b.app, &card, Some("user"), "image/png", png(b"x")).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    let (status, run) = crate::support::planner_queue_fixture::get(
+        b.app.clone(),
+        format!("/api/cards/{card}/planner/run"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{run}");
+    assert_eq!(run["attachments_supported"], false);
+    assert_eq!(run["attachments_unavailable"], body);
     assert!(
         body["error"]
             .as_str()

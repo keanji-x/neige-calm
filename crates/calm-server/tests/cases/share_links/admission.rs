@@ -351,6 +351,7 @@ async fn guest_image_declaration_and_upload_match_text_only_send() {
                     run["attachments_supported"] == false,
                 ));
                 assert_eq!(run["manual_compact_supported"], false, "{run}");
+                assert_eq!(run["attachments_unavailable"]["code"], "forbidden", "{run}");
             }
         }
         let upload = fx

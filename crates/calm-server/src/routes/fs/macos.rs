@@ -47,9 +47,9 @@ fn require_supported_kernel() -> Result<()> {
     Ok(())
 }
 
-fn constrained_open(root: &File, relative: &Path, flags: OFlag) -> std::io::Result<File> {
+fn constrained_open(root: Option<&File>, relative: &Path, flags: OFlag) -> std::io::Result<File> {
     let fd = openat(
-        Some(root.as_raw_fd()),
+        root.map(AsRawFd::as_raw_fd),
         relative,
         flags
             | OFlag::O_RDONLY
@@ -72,7 +72,7 @@ fn constrained_open(root: &File, relative: &Path, flags: OFlag) -> std::io::Resu
     Ok(unsafe { File::from_raw_fd(fd) })
 }
 
-fn require_enforced_beneath(root: &File) -> Result<()> {
+fn require_enforced_beneath(root: Option<&File>) -> Result<()> {
     // An absolute path must be rejected, even if it names the root directory.
     // Probe no contents and close any unexpected successful fd. This detects
     // ignored flags; it is not a proof of concurrent pathname resolution.
@@ -84,8 +84,8 @@ fn require_enforced_beneath(root: &File) -> Result<()> {
 
 pub(super) fn require_capability() -> Result<()> {
     require_supported_kernel()?;
-    let root = File::open("/").map_err(|_| unavailable())?;
-    require_enforced_beneath(&root)
+    // The absolute-path probe needs no workspace or read access to the host root.
+    require_enforced_beneath(None)
 }
 
 fn open_root(workspace_root: &Path) -> Result<File> {
@@ -109,7 +109,7 @@ fn open_root(workspace_root: &Path) -> Result<File> {
     })?;
     // SAFETY: open returned a fresh fd with a single owning conversion.
     let root = unsafe { File::from_raw_fd(fd) };
-    require_enforced_beneath(&root)?;
+    require_enforced_beneath(Some(&root))?;
     Ok(root)
 }
 
@@ -125,8 +125,8 @@ pub(super) async fn open_directory_from_fd(root: OwnedFd, relative_path: &str) -
     tokio::task::spawn_blocking(move || {
         require_supported_kernel()?;
         let root = File::from(root);
-        require_enforced_beneath(&root)?;
-        constrained_open(&root, &relative, OFlag::O_DIRECTORY)
+        require_enforced_beneath(Some(&root))?;
+        constrained_open(Some(&root), &relative, OFlag::O_DIRECTORY)
             .map(OwnedFd::from)
             .map_err(|error| map_open_error(&relative, error))
     })
@@ -140,7 +140,7 @@ pub(super) async fn open(workspace_root: &Path, relative_path: &str) -> Result<O
     tokio::task::spawn_blocking(move || {
         let root = open_root(&workspace_root)?;
         let requested = workspace_root.join(&relative);
-        let file = constrained_open(&root, &relative, OFlag::empty())
+        let file = constrained_open(Some(&root), &relative, OFlag::empty())
             .map_err(|error| map_open_error(&requested, error))?;
         let metadata = file
             .metadata()
@@ -209,11 +209,11 @@ mod tests {
 
     #[test]
     fn kernel_enforces_beneath_even_for_absolute_root() {
-        require_supported_kernel().unwrap();
-        let root = File::open("/").unwrap();
-        require_enforced_beneath(&root).unwrap();
+        require_capability().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let root = File::open(dir.path()).unwrap();
         assert_eq!(
-            constrained_open(&root, Path::new("/"), OFlag::O_DIRECTORY)
+            constrained_open(Some(&root), Path::new("/"), OFlag::O_DIRECTORY)
                 .unwrap_err()
                 .raw_os_error(),
             Some(ENOTCAPABLE)

@@ -96,6 +96,9 @@ Managed workspace and provider eligibility remain independent requirements;
 attached workspaces still refuse attachments. The runtime capability probe does
 not require the lazy managed workspace to exist. Unsupported kernels refuse
 before attachment I/O with the same stable, path-free upgrade guidance.
+When image input is unavailable, historical and canonical run responses include
+`attachments_unavailable` with the admission error code and message. The composer
+shows that message on the disabled image button before a file is selected.
 
 Production-router regressions cover upload/readback, private permissions,
 ancestor and leaf links, replacement during streaming, interrupted uploads,

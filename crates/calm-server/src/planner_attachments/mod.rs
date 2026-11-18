@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use calm_types::planner_attachment::{AttachmentFormat, AttachmentId};
 
-use crate::error::{CalmError, Result};
+use crate::error::{CalmError, ErrorBody, Result};
 use crate::ids::CardId;
 use crate::model::{TrackWorkspace, TrackWorkspaceKind};
 
@@ -95,25 +95,39 @@ pub(crate) fn image_input_root(
 /// Images require the same live Human source as their eventual message author.
 /// Guest delegation accepts text only; provider support alone is not a grant.
 pub(crate) fn require_image_input_source(source: &crate::auth::HumanInputSource) -> Result<()> {
-    source.current_human_principal().map(drop)
+    source
+        .current_human_principal()
+        .map(drop)
+        .map_err(|error| match error {
+            CalmError::Forbidden(_) => CalmError::Forbidden(
+                "Sign in with a workspace account to attach images. Shared links accept text only."
+                    .into(),
+            ),
+            other => other,
+        })
 }
 
 /// Project the same credential/provider/workspace admission used by uploads for either
 /// historical or canonical conversation reads. This is advisory, never a grant.
-pub(crate) async fn image_input_supported(
+pub(crate) async fn image_input_refusal(
     repo: &dyn crate::db::RepoRead,
     provider: &crate::session_projection_repo::AgentProvider,
     track_id: &crate::ids::TrackId,
     workspace_root: &Path,
     source: Option<&crate::auth::HumanInputSource>,
-) -> Result<bool> {
-    if !source.is_some_and(|source| require_image_input_source(source).is_ok()) {
-        return Ok(false);
+) -> Result<Option<ErrorBody>> {
+    if let Err(error) = source
+        .ok_or(CalmError::Unauthorized)
+        .and_then(require_image_input_source)
+    {
+        return Ok(Some(error.body()));
     }
-    Ok(match repo.track_get(track_id.as_str()).await? {
-        Some(track) => image_input_root(provider, &track.workspace, workspace_root).is_ok(),
-        None => false,
-    })
+    let Some(track) = repo.track_get(track_id.as_str()).await? else {
+        return Ok(Some(CalmError::NotFound("Track not found".into()).body()));
+    };
+    Ok(image_input_root(provider, &track.workspace, workspace_root)
+        .err()
+        .map(|error| error.body()))
 }
 
 const STAGING: &str = "staging";

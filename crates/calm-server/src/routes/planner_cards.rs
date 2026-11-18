@@ -202,6 +202,10 @@ pub struct GetPlannerRunResponse {
     /// Guest credentials accept text only. Upload and send enforce the same source
     /// restriction; attached workspaces never accept uploaded images.
     pub attachments_supported: bool,
+    /// When image input is unavailable, the admission code and message to show before upload.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = ErrorBody, required = false)]
+    pub attachments_unavailable: Option<ErrorBody>,
     /// Whether this credential and the bound backend support manual context compaction.
     /// Advisory for dormant conversations too; POST rechecks live authorization,
     /// busy state and history. Managed ACP has no implementation.
@@ -511,7 +515,7 @@ pub(super) async fn historical_planner_run(
         crate::planner_model::CardModelSelection::from_payload(&card.payload).unwrap_or_default();
     let permission_mode = crate::planner_permission_mode::card_has_permission_mode(&card, role)
         .then(|| crate::planner_permission_mode::shown_for_planner(&card));
-    let attachments_supported = crate::planner_attachments::image_input_supported(
+    let attachments_unavailable = crate::planner_attachments::image_input_refusal(
         s.repo.as_ref(),
         &binding.provider,
         &card.track_id,
@@ -523,8 +527,8 @@ pub(super) async fn historical_planner_run(
         card_id: card.id.clone(),
         worker_session_id: None,
         phase: None,
-        model: selection.model.clone(),
-        reasoning_effort: selection.reasoning_effort.clone(),
+        model: selection.model,
+        reasoning_effort: selection.reasoning_effort,
         permission_mode,
         // A dormant conversation has no harness to be blocked and nothing waiting.
         blocked_reason: None,
@@ -534,7 +538,8 @@ pub(super) async fn historical_planner_run(
         context_usage_invalidated: false,
         pending: Vec::new(),
         pending_overflow: 0,
-        attachments_supported,
+        attachments_supported: attachments_unavailable.is_none(),
+        attachments_unavailable,
         manual_compact_supported,
         running_turn: None,
     };
@@ -589,14 +594,8 @@ pub(super) async fn historical_planner_run(
     let (snapshot, running_turn) = harness.snapshot_with_running_turn().await?;
     let (pending, pending_overflow) = page_pending_entries(&card.id, &snapshot.pending_entries());
     Ok(Json(GetPlannerRunResponse {
-        attachments_supported,
-        manual_compact_supported,
-        card_id: card.id,
         worker_session_id: Some(runtime.id.clone()),
         phase: Some(snapshot.phase),
-        model: selection.model,
-        reasoning_effort: selection.reasoning_effort,
-        permission_mode,
         blocked_reason: harness.issuance_block().await,
         recovery: crate::harness::PlannerBackend::run_recovery(
             &binding.provider,
@@ -611,6 +610,7 @@ pub(super) async fn historical_planner_run(
         pending,
         pending_overflow,
         running_turn: running_turn.map(PlannerRunningTurn::from),
+        ..dormant
     }))
 }
 

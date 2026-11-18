@@ -47,7 +47,7 @@ import type { ApiTransportPort } from '../../../../core/api/types.ts';
 import type { AgentProvider, AskAnswer } from '../../../../core/api/generated/wire.ts';
 import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import {
-  ATTACHED_WORKSPACE_REASON, PlannerAttachButton, PlannerAttachmentDrawer,
+  PlannerAttachButton, PlannerAttachmentDrawer,
   type AttachmentStore, usePlannerAttachments,
 } from '../../features/planner/attachments.tsx';
 import {
@@ -708,7 +708,7 @@ function useConversationPane(
     compact: compact,
     compacting: store.compacting,
     manualCompactSupported: store.manualCompactSupported,
-    attachmentsSupported: store.attachmentsSupported,
+    attachmentSupport: { available: store.attachmentsSupported, reason: store.attachmentsUnavailableReason },
     contextUsage: store.contextUsage,
     historyReady: store.historyReady,
     interrupt: interrupt,
@@ -721,7 +721,7 @@ function useConversationPane(
     setPermissionMode: setPermissionMode,
     stopping: store.stopping,
     working: store.working
-  }), [compact, store.compacting, store.manualCompactSupported, store.attachmentsSupported, store.contextUsage, store.historyReady, interrupt, store.model, store.modelCatalog, store.permissionMode, store.sendBlocked, store.sending, setModel, setPermissionMode, store.stopping, store.working]);
+  }), [compact, store.compacting, store.manualCompactSupported, store.attachmentsSupported, store.attachmentsUnavailableReason, store.contextUsage, store.historyReady, interrupt, store.model, store.modelCatalog, store.permissionMode, store.sendBlocked, store.sending, setModel, setPermissionMode, store.stopping, store.working]);
   const { bar: editingBar } = edit;
   const replacing = edit.replacing || edit.queuedSaving;
   const editingQueue = edit.queued !== null;
@@ -757,7 +757,7 @@ function useConversationPane(
               commands={paneCommands}
               onSend={sendText}
               allowEmptyText={!editingQueue && composerAttachments.items.length > 0}
-              onFiles={editingQueue || !composerView.attachmentsSupported || composerAttachments.busy || composerAttachments.atCapacity ? undefined : (files) => {
+              onFiles={editingQueue || !composerView.attachmentSupport.available || composerAttachments.busy || composerAttachments.atCapacity ? undefined : (files) => {
                 for (const file of files) void composerAttachments.attach(file);
               }}
               /* Questions and attachments belong to the composer; waiting messages follow the running status. */
@@ -783,10 +783,7 @@ function useConversationPane(
                 <HStack gap={1} align="center" wrap="wrap" className={footerStyles.group}>
                   <PlannerAttachButton
                     attachments={composerAttachments}
-                    support={{
-                      available: composerView.attachmentsSupported,
-                      reason: ATTACHED_WORKSPACE_REASON,
-                    }}
+                    support={composerView.attachmentSupport}
                     disabled={editingQueue || composerView.sendBlocked || !composerView.historyReady || replacing}
                   />
                   <ModelPill

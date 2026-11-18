@@ -289,6 +289,14 @@ async fn acp_grok_compact_canonical_run_uses_bound_provider_capability() {
             run["attachments_supported"], images,
             "the prepared managed workspace projects the bound provider's image capability"
         );
+        if images {
+            assert!(run.get("attachments_unavailable").is_none(), "{run}");
+        } else {
+            assert_eq!(
+                run["attachments_unavailable"]["code"], "bad_request",
+                "{run}"
+            );
+        }
     }
     fixture.shutdown_process(&state).await;
 }

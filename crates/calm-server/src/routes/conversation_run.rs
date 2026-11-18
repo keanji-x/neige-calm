@@ -197,6 +197,14 @@ pub(super) async fn read(
             }.into()
                 })
             });
+        let attachments_unavailable = crate::planner_attachments::image_input_refusal(
+            s.repo.as_ref(),
+            &binding.provider,
+            &card.track_id,
+            &s.workspace_root,
+            source.as_ref(),
+        )
+        .await?;
         Json(PlannerRunReadResponse::Conversation(Box::new(
             ConversationRunResponse {
                 native_turn_id: (recovery.is_none()
@@ -238,14 +246,8 @@ pub(super) async fn read(
                     )
                     .0,
                     pending_overflow: 0,
-                    attachments_supported: crate::planner_attachments::image_input_supported(
-                        s.repo.as_ref(),
-                        &binding.provider,
-                        &card.track_id,
-                        &s.workspace_root,
-                        source.as_ref(),
-                    )
-                    .await?,
+                    attachments_supported: attachments_unavailable.is_none(),
+                    attachments_unavailable,
                     manual_compact_supported: source
                         .as_ref()
                         .is_some_and(|source| source.current_human_principal().is_ok())

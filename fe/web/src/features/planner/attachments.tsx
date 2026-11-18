@@ -27,11 +27,8 @@ import styles from './attachments.module.css';
 export type UploadAttachment = (readBytes: () => Promise<Uint8Array>, contentType: string)
 => Promise<() => UploadAttachmentResponse>;
 
-/** Why a track can have no attachment surface: attachments are written into `<workspace>/.neige/`, and a workspace the person already owns is one neige never writes into (the server answers 400). */
+/** The effective image capability and the server's admission message, when available. */
 export type AttachmentSupport = Readonly<{ available: boolean; reason?: string }>;
-
-export const ATTACHED_WORKSPACE_REASON =
-  'This track works in a folder you own, and neige never writes into one. Images can be attached on tracks with a managed workspace.';
 
 /** One card's uploads: how many are in flight, and the last refusal to show beside its strip. */
 export type UploadState = Readonly<{ inFlight: number; refusal: string | null }>;
@@ -156,7 +153,7 @@ export function PlannerAttachButton({ attachments, support, disabled = false }: 
   const unavailable = !support.available;
   const blocked = disabled || unavailable || attachments.busy || attachments.atCapacity;
   const tooltip = unavailable
-    ? (support.reason ?? ATTACHED_WORKSPACE_REASON)
+    ? (support.reason ?? 'Image attachments are unavailable in this conversation.')
     : attachments.atCapacity
       ? TOO_MANY_IMAGES
       : undefined;
