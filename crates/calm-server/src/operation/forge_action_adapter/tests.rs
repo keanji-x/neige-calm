@@ -1,5 +1,6 @@
 use super::sh_single_quote as shell_quote;
 use super::*;
+mod workspace_environment;
 use crate::event::EventBus;
 use crate::operation::OperationCompletionBus;
 pub(crate) mod executor;
@@ -605,16 +606,20 @@ async fn forge_action_idempotency_retry_with_different_argv_collapses_to_one_ope
     );
 }
 
-struct ForgeRuntimeFixture {
+pub(in crate::operation) struct ForgeRuntimeFixture {
     _execution: executor::Executor,
     repo: Arc<SqlxRepo>,
-    runtime: Arc<OperationRuntime>,
+    pub(in crate::operation) runtime: Arc<OperationRuntime>,
     track_id: String,
-    cwd: tempfile::TempDir,
+    pub(in crate::operation) cwd: tempfile::TempDir,
     results: tempfile::TempDir,
 }
 
-async fn forge_runtime_fixture() -> ForgeRuntimeFixture {
+pub(in crate::operation) async fn forge_runtime_fixture() -> ForgeRuntimeFixture {
+    forge_runtime_fixture_for_card("card-1").await
+}
+
+async fn forge_runtime_fixture_for_card(card_id: &str) -> ForgeRuntimeFixture {
     let cwd = tempfile::tempdir().expect("cwd tempdir");
     let results = tempfile::tempdir().expect("results tempdir");
     let sqlx_repo = Arc::new(
@@ -648,6 +653,36 @@ async fn forge_runtime_fixture() -> ForgeRuntimeFixture {
         })
         .await
         .expect("create track");
+    // Source selection uses the real owning card, as production admission does.
+    let owner_track = track.id.clone();
+    let owner_card = card_id.to_owned();
+    crate::db::write_in_tx_typed(sqlx_repo.as_ref(), move |tx| {
+        Box::pin(async move {
+            crate::db::sqlite::card_create_with_id_tx(
+                tx,
+                owner_card,
+                crate::model::NewCard {
+                    track_id: owner_track,
+                    kind: "terminal".into(),
+                    sort: None,
+                    title: None,
+                    payload: json!({
+                        (calm_types::card_presentation::TERMINAL_PRESENTATION_PAYLOAD_KEY):
+                            calm_types::card_presentation::TerminalPresentation::created(
+                                calm_types::card_presentation::CardCreationSource::Agent,
+                            ),
+                    }),
+                },
+                crate::model::CardRole::Worker,
+                true,
+                &crate::card_role_cache::CardRoleCache::new(),
+            )
+            .await?;
+            Ok(())
+        })
+    })
+    .await
+    .unwrap();
     let events = EventBus::new();
     let operation_repo = Arc::new(SqlxOperationRepo::new(sqlx_repo.db().clone()));
     let completion = OperationCompletionBus::new();
@@ -694,6 +729,41 @@ async fn forge_runtime_fixture() -> ForgeRuntimeFixture {
 }
 
 impl ForgeRuntimeFixture {
+    /// Commit the adapter's real preparation without admitting or releasing an execution.
+    pub(in crate::operation) async fn prepare_operation(
+        &self,
+        payload: &ForgeActionPayload,
+    ) -> Operation {
+        let ops = &self.runtime.repo;
+        let input = serde_json::to_value(payload).unwrap();
+        let id = ops
+            .insert_operation(
+                FORGE_ACTION_KIND,
+                OperationKey {
+                    operation_key: new_id(),
+                    idempotency_key: Some(payload.idem_key.clone()),
+                    payload_hash: crate::routes::idempotency_key::stable_payload_hash(&input)
+                        .unwrap(),
+                },
+                input,
+            )
+            .await
+            .unwrap();
+        let adapter = ForgeActionAdapter::new();
+        let op = ops.claim_drive_operation(&id).await.unwrap().unwrap();
+        let prepared = adapter
+            .prepare_external(&op.payload, &op, self.runtime.reclaim_context())
+            .await
+            .unwrap();
+        let (prepared, _) = ops
+            .prepare_tx_and_advance(&op, &adapter, prepared)
+            .await
+            .unwrap()
+            .committed()
+            .unwrap();
+        prepared
+    }
+
     fn result_path(&self, label: &str) -> PathBuf {
         self.results.path().join(format!("{label}.result"))
     }
@@ -733,11 +803,21 @@ fn merge_payload(
     }
 }
 
-fn no_event_payload(
+pub(in crate::operation) fn no_event_payload(
     fx: &ForgeRuntimeFixture,
     idem_key: &str,
     argv: Vec<String>,
     result_label: &str,
+) -> ForgeActionPayload {
+    action_payload(fx, idem_key, argv, result_label, None)
+}
+
+fn action_payload(
+    fx: &ForgeRuntimeFixture,
+    idem_key: &str,
+    argv: Vec<String>,
+    result_label: &str,
+    declaration: Option<ForgeEventSpec>,
 ) -> ForgeActionPayload {
     ForgeActionPayload {
         track_id: fx.track_id.clone(),
@@ -745,7 +825,7 @@ fn no_event_payload(
         subject: None,
         argv,
         idem_key: idem_key.into(),
-        event_spec: None,
+        event_spec: declaration,
         context: Map::new(),
         probe: None,
         cwd_lease: fx.cwd.path().to_path_buf(),

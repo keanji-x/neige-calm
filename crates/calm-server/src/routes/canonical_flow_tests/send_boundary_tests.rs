@@ -94,6 +94,14 @@ async fn revoked_activation(membership: bool) {
     let fresh_cookie = source_readmission_tests::login_again(&app).await;
     let replay = post(&app, &fresh_cookie, "/api/tracks", "first", create).await;
     assert_eq!(replay["id"], created["id"]);
+    let metadata = request(&mut peer).await;
+    assert_eq!(metadata["method"], "config/read");
+    assert_eq!(metadata["params"]["includeLayers"], false);
+    send(
+        &mut peer,
+        json!({"id":metadata["id"],"result":{"config":{}}}),
+    )
+    .await;
     let retry = request(&mut peer).await;
     assert_eq!(
         retry["method"], "thread/start",

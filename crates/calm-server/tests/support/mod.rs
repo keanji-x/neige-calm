@@ -6,6 +6,9 @@ pub mod authenticated_router;
 #[allow(dead_code)]
 pub mod child_track;
 #[allow(dead_code)]
+#[path = "../../src/test_support/claude_argv.rs"]
+pub mod claude_argv;
+#[allow(dead_code)]
 pub mod claude_hooks;
 #[cfg(feature = "codex-e2e")]
 #[allow(dead_code)]

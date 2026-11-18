@@ -1,5 +1,16 @@
 use super::*;
 
+fn resume_has_mcp(request: &Value) -> bool {
+    let token = request.pointer("/params/config/shell_environment_policy/set/NEIGE_MCP_TOKEN");
+    let socket = request.pointer("/params/config/shell_environment_policy/set/NEIGE_MCP_SOCKET");
+    let servers = request.pointer("/params/config/mcp_servers");
+    let tools = request.pointer("/params/config/mcp_servers/neige/tools");
+    assert_eq!(token.is_some(), socket.is_some());
+    assert_eq!(token.is_some(), servers.is_some());
+    assert_eq!(token.is_some(), tools.is_some());
+    token.is_some()
+}
+
 async fn assert_cold_profile(role: CardRole, marker: &str, expects_mcp: bool) {
     let _env = ENV_LOCK.lock().await;
     let capture = TempDir::new().unwrap();
@@ -67,7 +78,7 @@ async fn assert_cold_profile(role: CardRole, marker: &str, expects_mcp: bool) {
     assert_eq!(status, StatusCode::OK, "{body}");
     let requests = request_lines_containing(&path, "thread/resume", 1).await;
     assert_eq!(
-        requests[0]["params"].get("config").is_some(),
+        resume_has_mcp(&requests[0]),
         expects_mcp,
         "recovery must preserve {marker}'s capability policy"
     );
@@ -246,6 +257,7 @@ async fn cold_daemon_replay_keeps_active_plain_chat_without_mcp() {
         .unwrap();
     (boot.repo.db()).writer().execute(sqlx::query("UPDATE worker_sessions SET state='idle',contract='executor',thread_id=?2,handle_state_json=?3 WHERE id=?1")
         .bind(&runtime).bind(&thread).bind(idle_snapshot_value(&thread).to_string())).await.unwrap();
+    script_unloaded_thread(&boot, &thread);
     let replaced = boot
         .state
         .shared_codex_appserver
@@ -257,7 +269,7 @@ async fn cold_daemon_replay_keeps_active_plain_chat_without_mcp() {
     replaced.unwrap();
     let requests = request_lines_containing(&path, "thread/resume", 1).await;
     assert!(
-        requests[0]["params"].get("config").is_none(),
+        !resume_has_mcp(&requests[0]),
         "ordinary daemon replay must honor the same no-MCP profile"
     );
     let token: Option<String> =
@@ -317,6 +329,7 @@ async fn cold_daemon_replay_of_planner(payload: Value) -> (bool, bool) {
     .bind(idle_snapshot_value(&thread).to_string()))
     .await
     .unwrap();
+    script_unloaded_thread(&boot, &thread);
     let replaced = boot
         .state
         .shared_codex_appserver
@@ -333,10 +346,7 @@ async fn cold_daemon_replay_of_planner(payload: Value) -> (bool, bool) {
             .fetch_one(boot.repo.pool())
             .await
             .unwrap();
-    (
-        requests[0]["params"].get("config").is_some(),
-        token.is_some(),
-    )
+    (resume_has_mcp(&requests[0]), token.is_some())
 }
 
 #[tokio::test]

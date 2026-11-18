@@ -1,4 +1,5 @@
 //! Kernel workspace policy. Mechanisms live in the `workspace` package.
+pub(crate) mod environment;
 pub(crate) mod identity;
 pub(crate) mod isolation;
 pub(crate) mod ports;

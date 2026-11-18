@@ -6,8 +6,12 @@ use crate::{
     model::now_ms,
 };
 use calm_truth::db::sqlite::gate_execution as sql;
+use environment::WorkspaceEnvironment;
 use serde::{Deserialize, Serialize};
 use workspace_runtime::execution::*;
+mod environment;
+#[cfg(test)]
+mod protocol_tests;
 
 pub(crate) const KEY: &str = "forge_execution";
 pub(crate) const CONSUMER: &str = "forge";
@@ -37,14 +41,93 @@ fn required_probe<'de, D: serde::Deserializer<'de>>(
 ) -> std::result::Result<Option<Probe>, D::Error> {
     Option::deserialize(input)
 }
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Record {
-    version: u8,
+    protocol: Protocol,
     pub execution_id: ExecutionId,
     pub release: Release,
     pub decision: Decision,
     pub verdict: Verdict,
     pub probes: Probes,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Protocol {
+    Legacy,
+    Workspace(WorkspaceEnvironment),
+}
+impl Protocol {
+    fn version(&self) -> u8 {
+        match self {
+            Self::Legacy => 1,
+            Self::Workspace(_) => 2,
+        }
+    }
+    fn environment(&self) -> Option<&WorkspaceEnvironment> {
+        match self {
+            Self::Legacy => None,
+            Self::Workspace(environment) => Some(environment),
+        }
+    }
+}
+
+/// Only the released v1 wire shape may omit environment metadata. This DTO is
+/// decoded and validated before a domain Record can be constructed.
+#[derive(Serialize, Deserialize)]
+struct RecordWire {
+    version: u8,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_environment"
+    )]
+    environment: Option<WorkspaceEnvironment>,
+    execution_id: ExecutionId,
+    release: Release,
+    decision: Decision,
+    verdict: Verdict,
+    probes: Probes,
+}
+fn present_environment<'de, D: serde::Deserializer<'de>>(
+    input: D,
+) -> std::result::Result<Option<WorkspaceEnvironment>, D::Error> {
+    WorkspaceEnvironment::deserialize(input).map(Some)
+}
+impl Serialize for Record {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        RecordWire {
+            version: self.protocol.version(),
+            environment: self.protocol.environment().cloned(),
+            execution_id: self.execution_id.clone(),
+            release: self.release.clone(),
+            decision: self.decision.clone(),
+            verdict: self.verdict.clone(),
+            probes: self.probes.clone(),
+        }
+        .serialize(serializer)
+    }
+}
+impl<'de> Deserialize<'de> for Record {
+    fn deserialize<D: serde::Deserializer<'de>>(input: D) -> std::result::Result<Self, D::Error> {
+        let wire = RecordWire::deserialize(input)?;
+        let protocol = match (wire.version, wire.environment) {
+            (1, None) => Protocol::Legacy,
+            (2, Some(environment)) if environment.validate().is_ok() => {
+                Protocol::Workspace(environment)
+            }
+            _ => return Err(serde::de::Error::custom("invalid forge execution protocol")),
+        };
+        Ok(Self {
+            protocol,
+            execution_id: wire.execution_id,
+            release: wire.release,
+            decision: wire.decision,
+            verdict: wire.verdict,
+            probes: wire.probes,
+        })
+    }
 }
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum Kind {
@@ -108,11 +191,7 @@ pub(crate) fn record(op: &Operation) -> Result<Record> {
         .as_ref()
         .and_then(|o| o.data.get(KEY))
         .ok_or_else(|| conflict("forge execution record missing"))?;
-    let record: Record = serde_json::from_value(value.clone())?;
-    if record.version != 1 {
-        return Err(conflict("unsupported forge execution record"));
-    }
-    Ok(record)
+    Ok(serde_json::from_value(value.clone())?)
 }
 pub(crate) fn probe_path(frozen: &forge::FrozenForge, id: &ExecutionId) -> std::path::PathBuf {
     let mut path = frozen.result_path.as_os_str().to_os_string();
@@ -126,7 +205,8 @@ async fn intent(
     op: &Operation,
     frozen: &forge::FrozenForge,
     kind: Kind,
-) -> Result<ExecutionIntent> {
+    previous: Option<&Protocol>,
+) -> Result<(ExecutionIntent, Protocol)> {
     let id = ExecutionId::fresh()?;
     let (argv, path) = match kind {
         Kind::Action => (&frozen.argv, frozen.result_path.clone()),
@@ -147,9 +227,62 @@ async fn intent(
             probe_path(frozen, &id),
         ),
     };
+    // Preserve the execution owner's cwd error before project resolution can
+    // touch the same missing directory through its environment source.
+    let root = tokio::fs::canonicalize(&frozen.cwd_lease)
+        .await
+        .map_err(|error| {
+            conflict(format!(
+                "forge cwd_lease {}: {error}",
+                frozen.cwd_lease.display()
+            ))
+        })?;
     let mut environment = forge::forge_environment(ctx.repo.as_ref()).await?;
     environment.push(("NEIGE_FORGE_RESULT_PATH".into(), path.display().to_string()));
-    Ok(ExecutionIntent {
+    let (environment, wrapper, protocol) = match previous {
+        Some(Protocol::Legacy) => (
+            environment,
+            forge::render_forge_wrapper(argv)?,
+            Protocol::Legacy,
+        ),
+        _ => {
+            let (public, read_prefix, contract) =
+                if let Some(expected) = previous.and_then(Protocol::environment) {
+                    // Probes inherit the action's frozen names. Resolve only at
+                    // release, where a refusal has an admitted execution to stop.
+                    let release = crate::provider_execution::launch::Release::split(
+                        environment
+                            .into_iter()
+                            .map(|(key, value)| (key, value.into()))
+                            .collect(),
+                        None,
+                        "forge workspace",
+                    )?;
+                    (release.public, expected.read_prefix()?, expected.clone())
+                } else {
+                    let (contract, release) =
+                        WorkspaceEnvironment::prepare(ctx, frozen, &id, environment, None, || {
+                            require_action_admission(ctx, op)
+                        })
+                        .await??;
+                    (release.public, release.read_prefix, contract)
+                };
+            let environment = public
+                .into_iter()
+                .map(|(key, value)| {
+                    value.into_string().map(|value| (key, value)).map_err(|_| {
+                        CalmError::BadRequest("forge bootstrap environment requires UTF-8".into())
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?;
+            (
+                environment,
+                forge::render_forge_wrapper_with_release(argv, &read_prefix)?,
+                Protocol::Workspace(contract),
+            )
+        }
+    };
+    let intent = ExecutionIntent {
         metadata: ExecutionMetadata {
             consumer: CONSUMER.into(),
             id,
@@ -159,14 +292,7 @@ async fn intent(
                 frozen.track_id.clone(),
             )),
             source: PrivateSource {
-                root: tokio::fs::canonicalize(&frozen.cwd_lease)
-                    .await
-                    .map_err(|error| {
-                        conflict(format!(
-                            "forge cwd_lease {}: {error}",
-                            frozen.cwd_lease.display()
-                        ))
-                    })?,
+                root,
                 cwd: workspace::identity::WorkspaceCwd::root(),
                 registration: ObjectRegistrationId::fresh()?,
                 nonce: TransferNonce::fresh()?,
@@ -181,7 +307,7 @@ async fn intent(
             program: ExecutionSpecification {
                 ambient_environment: calm_session::control::execution::AmbientEnvironment::None,
                 program: "/bin/sh".into(),
-                args: vec!["-c".into(), forge::render_forge_wrapper(argv)?],
+                args: vec!["-c".into(), wrapper],
                 environment,
                 io_mode: calm_session::control::IoMode::Pipe,
                 replay_bytes: 8192,
@@ -193,7 +319,8 @@ async fn intent(
             ticket: CapabilityToken::fresh()?,
             tokens: ExecutionControlTokens::fresh()?,
         },
-    })
+    };
+    Ok((intent, protocol))
 }
 pub(crate) async fn admit_action(
     ctx: &SpawnCtx,
@@ -201,9 +328,9 @@ pub(crate) async fn admit_action(
     frozen: &forge::FrozenForge,
 ) -> Result<()> {
     let engine = engine(ctx)?;
-    let intent = intent(ctx, op, frozen, Kind::Action).await?;
+    let (intent, protocol) = intent(ctx, op, frozen, Kind::Action, None).await?;
     let record = Record {
-        version: 1,
+        protocol,
         execution_id: intent.metadata.id.clone(),
         release: Release::Held,
         decision: Decision::Observing,
@@ -228,6 +355,21 @@ pub(crate) async fn admit_action(
                 let ticket = engine.admit(&mut tx, intent).await.map_err(conflict)?;
                 tx.commit().await?;
                 engine.drive(ticket.committed());
+                Ok(())
+            })
+        })
+        .await
+        .map_err(calm_truth::TruthError::from)?
+}
+
+async fn require_action_admission(ctx: &SpawnCtx, op: &Operation) -> Result<()> {
+    let db = ctx.operation_repo.sqlite_db().clone();
+    db.writer()
+        .with_writer(|session| {
+            Box::pin(async move {
+                let mut tx = session.begin_immediate().await?;
+                super::repo_sqlite::require_live_claim_tx(&mut tx, op).await?;
+                tx.rollback().await?;
                 Ok(())
             })
         })
@@ -286,7 +428,7 @@ pub(crate) async fn admit_probe(
     };
     // Collect environment/cwd I/O outside the writer, but defer its error until
     // the live-claim transaction has distinguished a deleted track.
-    let intent = intent(ctx, op, frozen, kind).await;
+    let intent = intent(ctx, op, frozen, kind, Some(&old.protocol)).await;
     let write_db = (pool).clone();
     write_db
         .writer()
@@ -303,7 +445,7 @@ pub(crate) async fn admit_probe(
                 // A deleted track also wins over path errors such as a now-dangling cwd alias.
                 let (root, location) = location?;
                 let engine = engine(ctx)?;
-                let intent = intent?;
+                let (intent, _) = intent?;
                 // A cwd alias may have been repointed during intent construction. Never
                 // admit a root different from the one whose owners we fenced.
                 if intent.metadata.source.root != root {
@@ -349,22 +491,7 @@ async fn transition(
         .with_writer(|write_session| {
             Box::pin(async move {
                 let mut tx = write_session.begin_immediate().await?;
-                super::repo_sqlite::require_live_claim_tx(&mut tx, op).await?;
-                if old.release == Release::Held && matches!(new.release, Release::Releasing { .. })
-                {
-                    let frozen = forge::FrozenForge::from_output(
-                        op.tx_output
-                            .as_ref()
-                            .ok_or_else(|| conflict("forge output missing"))?,
-                    )?;
-                    forge::require_provision_target_active_tx(
-                        &mut tx,
-                        &frozen.cwd_lease,
-                        frozen.event_spec.as_ref(),
-                        &frozen.context,
-                    )
-                    .await?;
-                }
+                require_transition_owner_tx(&mut tx, op, old, new).await?;
                 sql::compare_exchange(&mut tx, &op.id, KEY, &encoded(old)?, &encoded(new)?).await?;
                 if let Some(id) = stop {
                     calm_truth::db::sqlite::workspace_execution::request(
@@ -376,6 +503,57 @@ async fn transition(
                 }
                 tx.commit().await?;
                 ctx.execution.drive(new.ids());
+                Ok(())
+            })
+        })
+        .await
+        .map_err(calm_truth::TruthError::from)?
+}
+
+async fn require_transition_owner_tx(
+    tx: &mut super::Tx<'_>,
+    op: &Operation,
+    old: &Record,
+    new: &Record,
+) -> Result<()> {
+    super::repo_sqlite::require_live_claim_tx(tx, op).await?;
+    // This provision fence belongs only to the action's Held -> Releasing edge.
+    if old.release == Release::Held && matches!(new.release, Release::Releasing { .. }) {
+        let frozen = forge::FrozenForge::from_output(super::required_output(op)?)?;
+        forge::require_provision_target_active_tx(
+            tx,
+            &frozen.cwd_lease,
+            frozen.event_spec.as_ref(),
+            &frozen.context,
+        )
+        .await?;
+    }
+    sql::require_record(tx, &op.id, KEY, &encoded(old)?).await?;
+    Ok(())
+}
+
+async fn require_environment_release(
+    ctx: &SpawnCtx,
+    op: &Operation,
+    old: &Record,
+    kind: Kind,
+) -> Result<()> {
+    let mut probe = old.execution(kind);
+    if probe.release != Release::Held || probe.decision != Decision::Observing {
+        return Err(conflict("forge execution is no longer held for release"));
+    }
+    probe.release = Release::Releasing {
+        authorized_at_ms: now_ms(),
+    };
+    let mut releasing = old.clone();
+    releasing.set(kind, probe);
+    let db = ctx.operation_repo.sqlite_db().clone();
+    db.writer()
+        .with_writer(|session| {
+            Box::pin(async move {
+                let mut tx = session.begin_immediate().await?;
+                require_transition_owner_tx(&mut tx, op, old, &releasing).await?;
+                tx.rollback().await?;
                 Ok(())
             })
         })
@@ -473,19 +651,17 @@ pub(crate) async fn release(ctx: &SpawnCtx, op: &Operation, kind: Kind) -> Resul
         return Ok(());
     }
     engine(ctx)?;
-    let payload = match forge::credentials::render_payload(|key| std::env::var_os(key)) {
-        Ok(payload) => payload,
-        Err(_) => return stop(ctx, op, kind, StopReason::ReleaseRefused).await,
+    let payload = match release_payload(ctx, op, &old, kind, &probe.execution_id).await {
+        Ok(Ok(payload)) => payload,
+        Ok(Err(_)) => return stop(ctx, op, kind, StopReason::ReleaseRefused).await,
+        Err(error) => return release_owner_error(ctx, op, kind, error).await,
     };
     let authorized_at_ms = now_ms();
     probe.release = Release::Releasing { authorized_at_ms };
     let mut releasing = old.clone();
     releasing.set(kind, probe.clone());
-    match transition(ctx, op, &old, &releasing, None).await {
-        Err(CalmError::BadRequest(_)) => {
-            return stop(ctx, op, kind, StopReason::ReleaseRefused).await;
-        }
-        result => result?,
+    if let Err(error) = transition(ctx, op, &old, &releasing, None).await {
+        return release_owner_error(ctx, op, kind, error).await;
     }
     match tokio::time::timeout(
         RELEASE_TIMEOUT,
@@ -506,6 +682,59 @@ pub(crate) async fn release(ctx: &SpawnCtx, op: &Operation, kind: Kind) -> Resul
             stop(ctx, &latest, kind, StopReason::ReleaseRefused).await
         }
     }
+}
+
+async fn release_owner_error(
+    ctx: &SpawnCtx,
+    op: &Operation,
+    kind: Kind,
+    error: CalmError,
+) -> Result<()> {
+    match error {
+        CalmError::BadRequest(_) => stop(ctx, op, kind, StopReason::ReleaseRefused).await,
+        error => Err(error),
+    }
+}
+
+async fn release_payload(
+    ctx: &SpawnCtx,
+    op: &Operation,
+    record: &Record,
+    kind: Kind,
+    execution: &ExecutionId,
+) -> Result<Result<Vec<u8>>> {
+    let Some(expected) = record.protocol.environment() else {
+        // A v1 Held wrapper still expects exactly its released six-key payload.
+        return Ok(forge::credentials::render_payload(|key| {
+            std::env::var_os(key)
+        }));
+    };
+    let (frozen, admitted) = match async {
+        let frozen = forge::FrozenForge::from_output(super::required_output(op)?)?;
+        let row = calm_truth::db::sqlite::workspace_execution::load(
+            ctx.operation_repo.sqlite_db().read_pool(),
+            execution.as_str(),
+        )
+        .await?
+        .ok_or_else(|| conflict("forge execution missing"))?;
+        let admitted: ExecutionMetadata = serde_json::from_str(&row.intent_json)?;
+        Ok((frozen, admitted))
+    }
+    .await
+    {
+        Ok(prepared) => prepared,
+        Err(error) => return environment::payload_result(Err(error)),
+    };
+    let prepared = WorkspaceEnvironment::prepare(
+        ctx,
+        &frozen,
+        execution,
+        admitted.program.environment,
+        Some(expected),
+        || require_environment_release(ctx, op, record, kind),
+    )
+    .await?;
+    Ok(prepared.map(|(_, release)| release.payload))
 }
 
 pub(crate) fn eligible(probe: &Probe, settlement: &Settlement) -> bool {

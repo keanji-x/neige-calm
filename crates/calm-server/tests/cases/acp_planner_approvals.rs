@@ -169,17 +169,33 @@ async fn run_recovery_acp_ask_mode_holds_each_request_and_answers_the_chosen_opt
             .await;
     }
     assert!(rows(&stack, &track, "ask.withdrawn").await.is_empty());
-    assert_eq!(
-        launch_permissions(&root),
-        vec![json!({"permissions":[
-            {"action":"shell","resource":"*","effect":"ask"},
-            {"action":"edit","resource":"*","effect":"ask"},
-            {"action":"webfetch","resource":"*","effect":"ask"},
-            {"action":"external_directory","resource":"*","effect":"ask"},
-            {"action":"question","resource":"*","effect":"deny"}
-        ]})],
-        "all three Ask turns use the single resident launch"
+    let expected = json!([
+        {"action":"shell","resource":"*","effect":"ask"},
+        {"action":"edit","resource":"*","effect":"ask"},
+        {"action":"webfetch","resource":"*","effect":"ask"},
+        {"action":"external_directory","resource":"*","effect":"ask"},
+        {"action":"question","resource":"*","effect":"deny"}
+    ]);
+    let configurations = launch_permissions(&root);
+    assert!(!configurations.is_empty());
+    for configuration in configurations {
+        assert_eq!(configuration["permissions"], expected);
+    }
+    let prompts = requests(&root, "session/prompt");
+    assert_eq!(prompts.len(), 3);
+    assert!(
+        prompts
+            .iter()
+            .all(|prompt| prompt["_pid"] == prompts[0]["_pid"]),
+        "all three Ask turns use the same resident generation"
     );
+    let business_launches = std::fs::read_to_string(root.path().join("environment.jsonl"))
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).unwrap())
+        .filter(|launch| launch["_pid"] == prompts[0]["_pid"])
+        .count();
+    assert_eq!(business_launches, 1);
     stack.shutdown().await;
 }
 
@@ -337,7 +353,7 @@ async fn acp_full_mode_approves_the_agents_request_once() {
     );
     let prompts = requests(&root, "session/prompt");
     assert_eq!(prompts.len(), 2);
-    assert_eq!(prompts[0]["_pid"], prompts[1]["_pid"]);
+    assert_ne!(prompts[0]["_pid"], prompts[1]["_pid"]);
     assert_ne!(
         prompts[0]["params"]["sessionId"],
         prompts[1]["params"]["sessionId"]

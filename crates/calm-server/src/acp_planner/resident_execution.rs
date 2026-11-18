@@ -12,13 +12,56 @@ use crate::{
 use calm_truth::db::sqlite::acp_resident;
 use calm_truth::db::sqlite::workspace_execution as sql;
 use calm_types::runtime::AgentProvider;
-use std::path::Path;
+use std::{
+    future::Future,
+    path::{Path, PathBuf},
+};
 use workspace_runtime::execution::*;
 
 pub(crate) const CONSUMER: &str = "acp-resident";
+#[cfg(test)]
+mod tests;
 
 fn generation_alias(backend: &str, id: &ExecutionId) -> String {
     format!("{CONSUMER}:{backend}:{}", id.as_str())
+}
+
+/// The admitted workspace binding of one resident. Values contain no environment secrets.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct ResidentKey {
+    provider: &'static str,
+    track: String,
+    cwd: PathBuf,
+}
+impl ResidentKey {
+    pub(crate) fn resolve(provider: &AgentProvider, track: &str, cwd: &Path) -> Result<Self> {
+        Ok(Self {
+            provider: provider.wire_name(),
+            track: track.into(),
+            cwd: std::fs::canonicalize(cwd)?,
+        })
+    }
+
+    fn owner(&self) -> OperationRef {
+        let mut hash = blake3::Hasher::new();
+        for part in [
+            self.provider.as_bytes(),
+            self.track.as_bytes(),
+            self.cwd.as_os_str().as_encoded_bytes(),
+        ] {
+            hash.update(&(part.len() as u64).to_le_bytes());
+            hash.update(part);
+        }
+        OperationRef(format!(
+            "{CONSUMER}:{}:workspace:{}",
+            self.provider,
+            hash.finalize().to_hex()
+        ))
+    }
+
+    fn alias(&self, id: &ExecutionId) -> ProcessAlias {
+        ProcessAlias(format!("{}:{}", self.owner().0, id.as_str()))
+    }
 }
 
 pub(crate) struct ResidentExecution {
@@ -29,11 +72,20 @@ pub(crate) struct ResidentExecution {
 }
 
 impl ResidentExecution {
-    pub(crate) async fn start(
+    pub(crate) async fn start<F>(
         host: &AcpPlannerHost,
         registration: Registration<'_>,
+        track_id: &str,
         cwd: &Path,
-    ) -> Result<(Self, EngineStdio)> {
+        revalidate: impl FnOnce() -> F + Send,
+    ) -> Result<(
+        Self,
+        EngineStdio,
+        Option<super::environment::ShellEnvironment>,
+    )>
+    where
+        F: Future<Output = Result<()>> + Send,
+    {
         let engine = provider_execution::engine(host.execution.engine())?.clone();
         let pool = host
             .completion
@@ -41,25 +93,34 @@ impl ResidentExecution {
             .sqlite_db()
             .ok_or(CalmError::ExecutionUnavailable)?;
         let backend = registration.config.provider.wire_name();
-        // A cancelled initialize can leave a committed generation without an
-        // in-memory server. Settle that exact owner before starting another.
-        stop_previous(&pool, Some(&engine), Some(backend)).await?;
-        let id = ExecutionId::fresh()?;
-        let dir = stderr::create(&host.agent_logs, id.as_str())?;
+        let key = ResidentKey::resolve(&registration.config.provider, track_id, cwd)?;
+        let (environment, hook) = super::environment::track_values(
+            registration,
+            host.completion.repo()?.as_ref(),
+            track_id,
+            cwd,
+            &host.agent_logs,
+            revalidate,
+        )
+        .await?;
         let launch = registration
             .profile
             .resident
             .ok_or_else(|| conflict("ACP resident launch required"))?
             .launch;
-        let (args, payload) = super::execution::process_launch(registration, launch, [])?;
+        let (args, payload) =
+            super::execution::process_launch(registration, launch, [], environment, hook.as_ref())?;
+        // A cancelled initialize can leave a committed generation without an
+        // in-memory server. Settle that exact owner before starting another.
+        stop_inventory(&pool, Some(&engine), Some(backend), Some(&key.owner().0)).await?;
+        let id = ExecutionId::fresh()?;
+        let dir = stderr::create(&host.agent_logs, id.as_str())?;
         let intent = provider_execution::launch::wrapped_intent(
             LaunchOwner {
                 consumer: CONSUMER.into(),
-                owner: OperationRef(format!("{CONSUMER}:{backend}")),
-                alias: ProcessAlias(generation_alias(backend, &id)),
-                scope: ExecutionOwnership::Host {
-                    backend: backend.to_owned(),
-                },
+                owner: key.owner(),
+                alias: key.alias(&id),
+                scope: ExecutionOwnership::Track(TrackId(track_id.into())),
             },
             cwd,
             &id,
@@ -102,7 +163,7 @@ impl ResidentExecution {
         .await
         .map_err(conflict)??;
         let io = EngineStdio::new(engine, id);
-        Ok((owned, io))
+        Ok((owned, io, hook))
     }
 
     pub(crate) fn id(&self) -> &ExecutionId {
@@ -139,9 +200,19 @@ pub(crate) async fn stop_previous(
     engine: Option<&ExecutionEngine>,
     backend: Option<&str>,
 ) -> Result<()> {
+    stop_inventory(pool, engine, backend, None).await
+}
+
+async fn stop_inventory(
+    pool: &SqliteDb,
+    engine: Option<&ExecutionEngine>,
+    backend: Option<&str>,
+    owner: Option<&str>,
+) -> Result<()> {
     // Fence every previous generation in one writer transaction before boot
     // recovery may drive any committed Run intent.
     let backend = backend.map(str::to_owned);
+    let owner = owner.map(str::to_owned);
     let boot = backend.is_none();
     let ids = pool
         .writer()
@@ -149,8 +220,13 @@ pub(crate) async fn stop_previous(
             Box::pin(async move {
                 let mut tx = writer.begin_immediate().await?;
                 let mut ids = Vec::new();
-                for execution_id in
-                    sql::resident_inventory_tx(&mut tx, CONSUMER, backend.as_deref()).await?
+                for execution_id in sql::resident_inventory_tx(
+                    &mut tx,
+                    CONSUMER,
+                    backend.as_deref(),
+                    owner.as_deref(),
+                )
+                .await?
                 {
                     let id = ExecutionId::try_from(execution_id).map_err(conflict)?;
                     sql::request(&mut tx, id.as_str(), "stop").await?;
@@ -294,45 +370,88 @@ async fn interrupted_restart_allowed(pool: &SqliteDb, id: &ExecutionId) -> Resul
         return Ok(false);
     };
     let intent: ExecutionMetadata = serde_json::from_str(&row.intent_json)?;
-    let ExecutionOwnership::Host { backend } = &intent.scope else {
-        return Ok(false);
-    };
-    Ok(intent.id == *id
+    Ok(AgentProvider::ALL.iter().any(|provider| {
+        resident_owner_matches(&intent, provider, id) && accepts_interrupted_restart(provider)
+    }))
+}
+
+fn resident_owner_matches(
+    intent: &ExecutionMetadata,
+    provider: &AgentProvider,
+    id: &ExecutionId,
+) -> bool {
+    let backend = provider.wire_name();
+    intent.id == *id
         && intent.consumer.0 == CONSUMER
-        && intent.alias.0 == generation_alias(backend, id)
-        && AgentProvider::ALL.iter().any(|provider| {
-            provider.wire_name() == backend && accepts_interrupted_restart(provider)
-        }))
+        && match &intent.scope {
+            ExecutionOwnership::Host { backend: owner } => {
+                owner == backend && intent.alias.0 == generation_alias(backend, id)
+            }
+            ExecutionOwnership::Track(track) => {
+                let key = ResidentKey {
+                    provider: backend,
+                    track: track.0.clone(),
+                    cwd: intent.source.root.clone(),
+                };
+                intent.owner == key.owner() && intent.alias == key.alias(id)
+            }
+        }
 }
 
 async fn owner_settlement_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     provider: &AgentProvider,
+    worker: &str,
     execution_id: &ExecutionId,
 ) -> Result<Option<Settlement>> {
-    let settlement: Option<String> = sqlx::query_scalar(
-        "SELECT settlement_json FROM workspace_executions
-         WHERE execution_id=?1 AND alias=?2 AND json_extract(intent_json,'$.consumer')=?3
-           AND json_extract(intent_json,'$.track.backend')=?4 AND settlement_json IS NOT NULL",
+    let row: Option<(String, String, String)> = sqlx::query_as(
+        "SELECT alias,intent_json,settlement_json FROM workspace_executions
+         WHERE execution_id=?1 AND settlement_json IS NOT NULL",
     )
     .bind(execution_id.as_str())
-    .bind(generation_alias(provider.wire_name(), execution_id))
-    .bind(CONSUMER)
-    .bind(provider.wire_name())
     .fetch_optional(&mut **tx)
     .await?;
-    Ok(settlement
-        .as_deref()
-        .map(serde_json::from_str)
-        .transpose()?)
+    let Some((alias, intent, settlement)) = row else {
+        return Ok(None);
+    };
+    let intent: ExecutionMetadata = serde_json::from_str(&intent)?;
+    if intent.alias.0 != alias || !resident_owner_matches(&intent, provider, execution_id) {
+        return Ok(None);
+    }
+    if let ExecutionOwnership::Track(track) = &intent.scope {
+        let Some(session) = crate::db::sqlite::session_get_tx(
+            tx,
+            &calm_types::worker::WorkerSessionId::from(worker),
+        )
+        .await?
+        else {
+            return Ok(None);
+        };
+        if session.track_id.as_str() != track.0
+            || session.provider != calm_types::worker::WorkerProviderKind::from(provider)
+        {
+            return Ok(None);
+        }
+        let Some(card) = session.card_id.as_ref() else {
+            return Ok(None);
+        };
+        let track = crate::db::sqlite::track_get_tx(tx, &session.track_id).await?;
+        let cwd =
+            crate::harness::wiring::session_cwd_tx(tx, card.as_str(), &session, &track).await?;
+        if std::fs::canonicalize(cwd)? != intent.source.root {
+            return Ok(None);
+        }
+    }
+    Ok(Some(serde_json::from_str(&settlement)?))
 }
 
 pub(super) async fn has_drained_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     provider: &AgentProvider,
+    worker: &str,
     execution_id: &ExecutionId,
 ) -> Result<bool> {
-    Ok(owner_settlement_tx(tx, provider, execution_id)
+    Ok(owner_settlement_tx(tx, provider, worker, execution_id)
         .await?
         .is_some_and(|settlement| settlement.descendants_complete()))
 }
@@ -340,9 +459,10 @@ pub(super) async fn has_drained_tx(
 pub(super) async fn restart_owner_exited_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     provider: &AgentProvider,
+    worker: &str,
     execution_id: &ExecutionId,
 ) -> Result<bool> {
-    Ok(owner_settlement_tx(tx, provider, execution_id)
+    Ok(owner_settlement_tx(tx, provider, worker, execution_id)
         .await?
         .is_some_and(|settlement| {
             settlement.descendants_complete()

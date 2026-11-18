@@ -34,6 +34,8 @@ pub(super) const PROFILE: AcpAgentProfile = AcpAgentProfile {
         refusal: "Antigravity requires AGY 1.5.0 or later in the 1.x release line",
     }),
     owned_env: &[],
+    workspace_blocked_env: &[],
+    workspace_shell: None,
     never: NOTHING,
     ask: NOTHING,
     // The resident process serves different cards concurrently. Keep its policy asking, and

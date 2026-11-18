@@ -1,5 +1,7 @@
 use super::*;
 
+mod legacy_codex_compensation;
+
 struct LegacyCompensationHarness {
     repo: Arc<crate::db::sqlite::SqlxRepo>,
     route_repo: Arc<dyn crate::db::RouteRepo>,
@@ -7,7 +9,7 @@ struct LegacyCompensationHarness {
     output: TxOutput,
     op: Operation,
     card_id: String,
-    runtime_id: String,
+    worker_session_id: String,
     events: EventBus,
 }
 
@@ -60,7 +62,26 @@ async fn legacy_compensation_harness(
     )
     .await
     .unwrap();
-    let runtime_id = new_id();
+    let terminal_id = if card_kind == "codex" {
+        Some(
+            crate::db::RepoOutOfDomain::terminal_create(
+                repo.as_ref(),
+                crate::model::NewTerminal {
+                    card_id: card.id.clone(),
+                    program: "codex".into(),
+                    cwd: String::new(),
+                    env: json!({}),
+                    theme: crate::routes::theme::RequestTheme::default_dark(),
+                },
+            )
+            .await
+            .unwrap()
+            .id,
+        )
+    } else {
+        None
+    };
+    let worker_session_id = new_id();
     let write_db = (repo.db()).clone();
     write_db
         .writer()
@@ -70,12 +91,12 @@ async fn legacy_compensation_harness(
                 crate::db::sqlite::session_start_runtime_tx(
                     &mut tx,
                     crate::session_projection_repo::WorkerSessionInit {
-                        id: runtime_id.clone(),
+                        id: worker_session_id.clone(),
                         card_id: card.id.to_string(),
                         kind: session_kind,
                         agent_provider,
                         status: crate::session_projection_repo::WorkerSessionState::Running,
-                        terminal_run_id: None,
+                        terminal_run_id: terminal_id.clone(),
                         thread_id: None,
                         session_id: None,
                         active_turn_id: None,
@@ -101,12 +122,23 @@ async fn legacy_compensation_harness(
                     OperationCompletionBus::new(),
                 );
                 let card_id = card.id.to_string();
+                let mut output = TxOutput::new("card", Some(card_id.clone()), json!({}));
+                if let Some(terminal_id) = terminal_id {
+                    // Before runtime preallocation, the producer froze its card and terminal only.
+                    output.data = json!({
+                        "card_id": card_id,
+                        "terminal_id": terminal_id,
+                        "cwd": "",
+                        "env": {},
+                        "prompt": "legacy prompt",
+                    });
+                }
 
                 LegacyCompensationHarness {
                     repo,
                     route_repo,
                     spawn_ctx,
-                    output: TxOutput::new("card", Some(card_id.clone()), json!({})),
+                    output,
                     op: Operation {
                         id: new_id(),
                         operation_key: new_id(),
@@ -130,7 +162,7 @@ async fn legacy_compensation_harness(
                         parked_deadline_ms: None,
                     },
                     card_id,
-                    runtime_id,
+                    worker_session_id,
                     events,
                 }
             })
@@ -159,7 +191,7 @@ async fn assert_legacy_failed_status_compensation(
     let runtime =
         crate::session_projection_repo::WorkerSessionProjectionRepo::session_projection_by_id(
             harness.repo.as_ref(),
-            &harness.runtime_id,
+            &harness.worker_session_id,
         )
         .await
         .unwrap()
@@ -178,21 +210,7 @@ async fn prompted_adapters_accept_legacy_failed_status_compensation_op() {
         Some(crate::session_projection_repo::AgentProvider::Codex),
     )
     .await;
-    let repo: Arc<dyn crate::db::Repo> = harness.repo.clone();
-    let adapter = crate::operation::codex_adapter::CodexAdapter::new(
-        harness.route_repo.clone(),
-        Arc::new(crate::state::CodexClient::new_stub()),
-        crate::shared_codex_appserver::SharedCodexAppServer::new_stub(repo.clone()),
-        Arc::new(
-            crate::pending_codex_threads::PendingThreadStartRegistry::new(
-                repo,
-                harness.events.clone(),
-            ),
-        ),
-        Arc::new(Mutex::new(())),
-        crate::card_role_cache::CardRoleCache::new(),
-        crate::track_area_cache::TrackAreaCache::new(),
-    );
+    let adapter = legacy_codex_compensation::adapter(&harness);
     assert_legacy_failed_status_compensation(&adapter, harness).await;
 
     let harness = legacy_compensation_harness(

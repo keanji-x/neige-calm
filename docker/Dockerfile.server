@@ -11,6 +11,7 @@
 # namespace syscalls; the binary itself must exist in this image.
 # The release binaries are still bind-mounted by docker-compose (see the
 # `server` service volumes); this image only adds the missing runtime tools.
+# direnv evaluates authorized project environments for agents and task commands.
 #
 # apt honours the standard proxy env vars; they're declared as build args so
 # `docker compose build` can pass them through when the host needs a proxy to
@@ -20,5 +21,5 @@ ARG http_proxy=
 ARG https_proxy=
 ARG no_proxy=
 RUN apt-get update \
- && apt-get install -y --no-install-recommends fonts-dejavu-core fonts-noto-cjk git ca-certificates python3 bubblewrap \
+ && apt-get install -y --no-install-recommends fonts-dejavu-core fonts-noto-cjk git ca-certificates python3 bubblewrap direnv \
  && rm -rf /var/lib/apt/lists/*

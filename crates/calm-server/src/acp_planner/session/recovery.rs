@@ -280,7 +280,7 @@ async fn recover_shared_claim(
                         &receipt.client_id,
                     )
                     .await?;
-                    if !restart_owner_stopped(tx, &provider, legacy_swept, owner).await? {
+                    if !restart_owner_stopped(tx, &provider, &worker, legacy_swept, owner).await? {
                         return Ok(None);
                     }
                     // Stopping the resident proves there can be no later END, but
@@ -316,6 +316,7 @@ async fn recover_shared_claim(
 async fn restart_owner_stopped(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     provider: &AgentProvider,
+    worker: &str,
     legacy_swept: bool,
     owner: Option<crate::db::sqlite::AcpSharedRestartOwner>,
 ) -> Result<bool> {
@@ -326,8 +327,13 @@ async fn restart_owner_stopped(
                 .leader_exited(),
         ),
         Some(AcpSharedRestartOwner::Execution { execution_id }) => {
-            super::super::resident_execution::restart_owner_exited_tx(tx, provider, &execution_id)
-                .await
+            super::super::resident_execution::restart_owner_exited_tx(
+                tx,
+                provider,
+                worker,
+                &execution_id,
+            )
+            .await
         }
         _ => Ok(false),
     }
@@ -466,18 +472,30 @@ async fn legacy_process_receipt_requires_marker_sweep_and_matching_exit() {
     let mut tx = pool.begin().await.unwrap();
     let provider = AgentProvider::Antigravity;
     assert!(
-        !restart_owner_stopped(&mut tx, &provider, true, Some(owner.clone()))
-            .await
-            .unwrap()
+        !restart_owner_stopped(
+            &mut tx,
+            &provider,
+            "legacy-worker",
+            true,
+            Some(owner.clone())
+        )
+        .await
+        .unwrap()
     );
     child.kill().await.unwrap();
     assert!(
-        !restart_owner_stopped(&mut tx, &provider, false, Some(owner.clone()))
-            .await
-            .unwrap()
+        !restart_owner_stopped(
+            &mut tx,
+            &provider,
+            "legacy-worker",
+            false,
+            Some(owner.clone())
+        )
+        .await
+        .unwrap()
     );
     assert!(
-        restart_owner_stopped(&mut tx, &provider, true, Some(owner))
+        restart_owner_stopped(&mut tx, &provider, "legacy-worker", true, Some(owner))
             .await
             .unwrap()
     );

@@ -8,6 +8,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
+use crate::support::claude_argv::shell_argv;
 use axum::body::Body;
 use axum::http::{HeaderValue, Request, StatusCode};
 use calm_server::db::prelude::*;
@@ -64,6 +65,7 @@ struct Boot {
     state: AppState,
     repo: Arc<SqlxRepo>,
     track_id: String,
+    workspace: PathBuf,
     events: EventBus,
     spawn_count: Arc<AtomicUsize>,
     _tmp: TempDir,
@@ -102,6 +104,9 @@ where
     ) -> (Arc<AtomicUsize>, TestSpawnHook),
 {
     let tmp = TempDir::new().expect("tempdir");
+    let workspace = tmp.path().join("workspace");
+    std::fs::create_dir(&workspace).unwrap();
+    let workspace = std::fs::canonicalize(workspace).unwrap();
     let repo = Arc::new(
         SqlxRepo::open("sqlite::memory:")
             .await
@@ -124,7 +129,7 @@ where
             area_id: area.id,
             title: "claude-endpoint".into(),
             sort: None,
-            cwd: "/workspace".into(),
+            cwd: workspace.display().to_string(),
             template_id: None,
             plugin_scope: None,
             attach_folder: false,
@@ -246,6 +251,7 @@ where
             events.clone(),
             completion,
         )
+        .with_kernel_executable(env!("CARGO_BIN_EXE_calm-server").into())
         .with_location_admission(state.location_admission_for_test()),
     ));
     state = state.with_operation_runtime(runtime);
@@ -260,6 +266,7 @@ where
         state,
         repo,
         track_id: track.id.to_string(),
+        workspace,
         events,
         spawn_count,
         _tmp: tmp,
@@ -493,9 +500,9 @@ async fn response_json(resp: axum::response::Response) -> (StatusCode, Value) {
     (status, json)
 }
 
-fn body(prompt: Option<&str>) -> Value {
+fn body(boot: &Boot, prompt: Option<&str>) -> Value {
     let mut body = json!({
-        "cwd": "/workspace",
+        "cwd": boot.workspace,
         "theme": {"fg": [216,219,226], "bg": [15,20,24]},
     });
     if let Some(prompt) = prompt {
@@ -534,7 +541,14 @@ async fn post_claude_card_no_prompt_succeeds_through_saga() {
     let _guard = ENV_LOCK.lock().await;
     let boot = boot_success().await;
 
-    let (status, card) = post(boot.app.clone(), &boot.track_id, body(None), None, None).await;
+    let (status, card) = post(
+        boot.app.clone(),
+        &boot.track_id,
+        body(&boot, None),
+        None,
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::CREATED, "body={card:?}");
     assert_eq!(card["kind"], "claude");
     assert_eq!(boot.spawn_count.load(Ordering::SeqCst), 1);
@@ -562,7 +576,7 @@ async fn post_claude_card_no_prompt_succeeds_through_saga() {
     );
     let terminal_id = card["payload"]["terminal_id"].as_str().unwrap();
     let term = boot.repo.terminal_get(terminal_id).await.unwrap().unwrap();
-    assert_eq!(term.cwd, "/workspace");
+    assert_eq!(term.cwd, boot.workspace.to_str().unwrap());
     assert!(!term.program.contains(" -- '"));
     // #2521: the kernel names a mode for task workers only; an owner card keeps bypass selectable.
     assert!(
@@ -580,7 +594,7 @@ async fn post_claude_card_with_prompt_succeeds_through_saga() {
     let (status, card) = post(
         boot.app.clone(),
         &boot.track_id,
-        body(Some("--help")),
+        body(&boot, Some("--help")),
         None,
         None,
     )
@@ -621,7 +635,7 @@ async fn post_claude_restart_after_exit_reuses_terminal_and_resumes_session() {
     let (create_status, created) = post(
         boot.app.clone(),
         &boot.track_id,
-        body(Some("first prompt")),
+        body(&boot, Some("first prompt")),
         None,
         None,
     )
@@ -645,7 +659,7 @@ async fn post_claude_restart_after_exit_reuses_terminal_and_resumes_session() {
     let calls = calls.lock().await.clone();
     let restart_call = calls.last().expect("restart spawn call recorded");
     assert_eq!(restart_call.terminal_id, terminal_id);
-    assert_eq!(restart_call.cwd, "/workspace");
+    assert_eq!(restart_call.cwd, boot.workspace.to_str().unwrap());
     assert_eq!(
         restart_call.env["NEIGE_CARD_ID"],
         Value::String(card_id.to_string())
@@ -655,34 +669,31 @@ async fn post_claude_restart_after_exit_reuses_terminal_and_resumes_session() {
         "{}",
         restart_call.env
     );
-    assert!(
-        restart_call
-            .program
-            .contains(&format!("--resume='{}'", session_id)),
-        "restart program must resume existing session: {}",
-        restart_call.program
+    let argv = shell_argv(&restart_call.program);
+    assert!(argv.contains(&format!("--resume={session_id}")), "{argv:?}");
+    assert_eq!(
+        argv.windows(2)
+            .find(|pair| pair[0] == "--settings")
+            .map(|pair| pair[1].as_str()),
+        Some(created["payload"]["settings_path"].as_str().unwrap()),
     );
-    assert!(
-        restart_call.program.contains("--settings '"),
-        "restart program must include settings path: {}",
-        restart_call.program
-    );
-    assert!(!restart_call.program.contains("--session-id"));
-    assert!(!restart_call.program.contains("--fork-session"));
-    assert!(!restart_call.program.contains("first prompt"));
+    assert!(!argv.iter().any(|arg| arg.starts_with("--session-id")));
+    assert!(!argv.iter().any(|arg| arg.starts_with("--fork-session")));
+    assert!(!argv.iter().any(|arg| arg.contains("first prompt")));
     // #2470: only a task worker's card is restarted with the kernel MCP server alone.
     assert!(
-        !restart_call.program.contains("--strict-mcp-config")
-            && !restart_call.program.contains("--mcp-config"),
+        !argv
+            .iter()
+            .any(|arg| arg.starts_with("--strict-mcp-config"))
+            && !argv.iter().any(|arg| arg.starts_with("--mcp-config")),
         "an owner's Claude card keeps the owner's MCP servers: {}",
         restart_call.program
     );
     // #2521: and its own permission mode, with bypass selectable.
     assert!(
-        restart_call
-            .program
-            .contains(" --allow-dangerously-skip-permissions ")
-            && !restart_call.program.contains("--permission-mode"),
+        argv.iter()
+            .any(|arg| arg == "--allow-dangerously-skip-permissions")
+            && !argv.iter().any(|arg| arg.starts_with("--permission-mode")),
         "{}",
         restart_call.program
     );
@@ -718,8 +729,14 @@ async fn post_claude_restart_recreates_missing_terminal_row_and_resumes_session(
     let boot =
         boot_with_spawn_hook_factory(move |_, _| recording_spawn_hook(calls_for_factory)).await;
 
-    let (create_status, created) =
-        post(boot.app.clone(), &boot.track_id, body(None), None, None).await;
+    let (create_status, created) = post(
+        boot.app.clone(),
+        &boot.track_id,
+        body(&boot, None),
+        None,
+        None,
+    )
+    .await;
     assert_eq!(create_status, StatusCode::CREATED, "body={created:?}");
     let card_id = created["id"].as_str().unwrap();
     let old_terminal_id = created["payload"]["terminal_id"].as_str().unwrap();
@@ -753,19 +770,14 @@ async fn post_claude_restart_recreates_missing_terminal_row_and_resumes_session(
         .unwrap()
         .expect("restart must recreate missing terminal row");
     assert_eq!(recreated.id, new_terminal_id);
-    assert_eq!(recreated.cwd, "/workspace");
+    assert_eq!(recreated.cwd, boot.workspace.to_str().unwrap());
 
     let calls = calls.lock().await.clone();
     let restart_call = calls.last().expect("restart spawn call recorded");
     assert_eq!(restart_call.terminal_id, new_terminal_id);
-    assert_eq!(restart_call.cwd, "/workspace");
-    assert!(
-        restart_call
-            .program
-            .contains(&format!("--resume='{}'", session_id)),
-        "restart program must resume existing session: {}",
-        restart_call.program
-    );
+    assert_eq!(restart_call.cwd, boot.workspace.to_str().unwrap());
+    let argv = shell_argv(&restart_call.program);
+    assert!(argv.contains(&format!("--resume={session_id}")), "{argv:?}");
 
     let rows = sqlx::query(
         "SELECT state AS status, terminal_run_id, agent_session_id AS session_id FROM worker_sessions WHERE card_id = ?1 ORDER BY created_at_ms ASC, id ASC",
@@ -796,8 +808,14 @@ async fn post_claude_restart_does_not_deadlock_on_the_workspace_freeze() {
     })
     .await;
 
-    let (create_status, created) =
-        post(boot.app.clone(), &boot.track_id, body(None), None, None).await;
+    let (create_status, created) = post(
+        boot.app.clone(),
+        &boot.track_id,
+        body(&boot, None),
+        None,
+        None,
+    )
+    .await;
     assert_eq!(create_status, StatusCode::CREATED, "body={created:?}");
     let card_id = created["id"].as_str().unwrap().to_string();
     let old_terminal_id = created["payload"]["terminal_id"].as_str().unwrap();
@@ -831,8 +849,14 @@ async fn post_claude_restart_without_a_payload_cwd_falls_back_to_the_track_works
     })
     .await;
 
-    let (create_status, created) =
-        post(boot.app.clone(), &boot.track_id, body(None), None, None).await;
+    let (create_status, created) = post(
+        boot.app.clone(),
+        &boot.track_id,
+        body(&boot, None),
+        None,
+        None,
+    )
+    .await;
     assert_eq!(create_status, StatusCode::CREATED, "body={created:?}");
     let card_id = created["id"].as_str().unwrap().to_string();
     let old_terminal_id = created["payload"]["terminal_id"].as_str().unwrap();
@@ -898,8 +922,14 @@ async fn post_claude_restart_drops_stale_renderer_entry_before_respawn() {
     })
     .await;
 
-    let (create_status, created) =
-        post(boot.app.clone(), &boot.track_id, body(None), None, None).await;
+    let (create_status, created) = post(
+        boot.app.clone(),
+        &boot.track_id,
+        body(&boot, None),
+        None,
+        None,
+    )
+    .await;
     assert_eq!(create_status, StatusCode::CREATED, "body={created:?}");
     let card_id = created["id"].as_str().unwrap();
     let terminal_id = created["payload"]["terminal_id"].as_str().unwrap();
@@ -938,8 +968,14 @@ async fn post_claude_restart_spawn_failure_restores_terminal_exit_and_marks_runt
     let _guard = ENV_LOCK.lock().await;
     let boot = boot_with_spawn_hook_factory(|_, _| restart_failing_spawn_hook()).await;
 
-    let (create_status, created) =
-        post(boot.app.clone(), &boot.track_id, body(None), None, None).await;
+    let (create_status, created) = post(
+        boot.app.clone(),
+        &boot.track_id,
+        body(&boot, None),
+        None,
+        None,
+    )
+    .await;
     assert_eq!(create_status, StatusCode::CREATED, "body={created:?}");
     let card_id = created["id"].as_str().unwrap();
     let terminal_id = created["payload"]["terminal_id"].as_str().unwrap();
@@ -989,8 +1025,14 @@ async fn an_update_whose_child_exit_is_never_recorded_leaves_the_card_as_it_is()
     let _guard = ENV_LOCK.lock().await;
     let boot = boot_success().await;
 
-    let (create_status, created) =
-        post(boot.app.clone(), &boot.track_id, body(None), None, None).await;
+    let (create_status, created) = post(
+        boot.app.clone(),
+        &boot.track_id,
+        body(&boot, None),
+        None,
+        None,
+    )
+    .await;
     assert_eq!(create_status, StatusCode::CREATED, "body={created:?}");
     let card_id = created["id"].as_str().unwrap();
     assert_eq!(runtime_status(&boot.repo, card_id).await, "running");
@@ -1112,7 +1154,7 @@ async fn post_claude_restart_returns_404_for_unknown_card() {
 async fn post_claude_card_idempotency_same_key_same_normalized_payload_reuses_op() {
     let _guard = ENV_LOCK.lock().await;
     let boot = boot_success().await;
-    let mut first_body = body(None);
+    let mut first_body = body(&boot, None);
     first_body["cwd"] = json!("");
     let second_body = json!({
         "theme": {"fg": [216,219,226], "bg": [15,20,24]},
@@ -1151,7 +1193,7 @@ async fn post_claude_card_idempotency_ignores_the_kernel_generated_env() {
     let (first_status, first_card) = post(
         boot.app.clone(),
         &boot.track_id,
-        body(Some("hello")),
+        body(&boot, Some("hello")),
         Some(key),
         None,
     )
@@ -1165,7 +1207,7 @@ async fn post_claude_card_idempotency_ignores_the_kernel_generated_env() {
     let (replay_status, replayed) = post(
         boot.app.clone(),
         &boot.track_id,
-        body(Some("hello")),
+        body(&boot, Some("hello")),
         Some(key),
         None,
     )
@@ -1183,7 +1225,7 @@ async fn post_claude_card_idempotency_same_key_different_payload_returns_409() {
     let (first_status, first_card) = post(
         boot.app.clone(),
         &boot.track_id,
-        body(None),
+        body(&boot, None),
         Some("claude-different-payload"),
         None,
     )
@@ -1192,7 +1234,7 @@ async fn post_claude_card_idempotency_same_key_different_payload_returns_409() {
     let (second_status, second_body) = post(
         boot.app.clone(),
         &boot.track_id,
-        body(Some("now prompted")),
+        body(&boot, Some("now prompted")),
         Some("claude-different-payload"),
         None,
     )
@@ -1210,12 +1252,12 @@ async fn post_claude_card_idempotency_trims_cwd_and_prompt_for_hash_equivalence(
     let _guard = ENV_LOCK.lock().await;
     let boot = boot_success().await;
     let first_body = json!({
-        "cwd": "  /workspace  ",
+        "cwd": format!("  {}  ", boot.workspace.display()),
         "prompt": "  explain this  ",
         "theme": {"fg": [216,219,226], "bg": [15,20,24]},
     });
     let second_body = json!({
-        "cwd": "/workspace",
+        "cwd": boot.workspace,
         "prompt": "explain this",
         "theme": {"fg": [216,219,226], "bg": [15,20,24]},
     });
@@ -1239,7 +1281,10 @@ async fn post_claude_card_idempotency_trims_cwd_and_prompt_for_hash_equivalence(
     assert_eq!(first_status, StatusCode::CREATED, "body={first_card:?}");
     assert_eq!(second_status, StatusCode::CREATED, "body={second_card:?}");
     assert_eq!(first_card["id"], second_card["id"]);
-    assert_eq!(first_card["payload"]["cwd"], "/workspace");
+    assert_eq!(
+        first_card["payload"]["cwd"],
+        boot.workspace.to_str().unwrap()
+    );
     assert_eq!(first_card["payload"]["prompt"], "explain this");
     assert_eq!(boot.spawn_count.load(Ordering::SeqCst), 1);
 }
@@ -1251,7 +1296,14 @@ async fn post_claude_card_spawn_failure_reaps_pty_deletes_settings_dir_marks_run
     let boot = boot_with_spawn_hook_factory(failing_spawn_hook).await;
     let mut rx = boot.events.subscribe();
 
-    let (status, response) = post(boot.app.clone(), &boot.track_id, body(None), None, None).await;
+    let (status, response) = post(
+        boot.app.clone(),
+        &boot.track_id,
+        body(&boot, None),
+        None,
+        None,
+    )
+    .await;
     assert_eq!(
         status,
         StatusCode::INTERNAL_SERVER_ERROR,
@@ -1312,7 +1364,7 @@ async fn post_claude_card_validate_forbidden_returns_403_phase_failed() {
     let (status, response) = post(
         boot.app.clone(),
         &boot.track_id,
-        body(None),
+        body(&boot, None),
         None,
         Some("ai:codex"),
     )
@@ -1338,7 +1390,7 @@ async fn post_claude_card_invalid_idempotency_key_header_returns_400() {
         .method("POST")
         .uri(format!("/api/tracks/{}/claude-cards", boot.track_id))
         .header("content-type", "application/json")
-        .body(Body::from(body(None).to_string()))
+        .body(Body::from(body(&boot, None).to_string()))
         .unwrap();
     req.headers_mut().insert(
         "Idempotency-Key",
@@ -1386,7 +1438,7 @@ async fn post_claude_card_idempotency_key_reused_by_other_kind_uses_fresh_operat
     let (status, card) = post(
         boot.app.clone(),
         &boot.track_id,
-        body(None),
+        body(&boot, None),
         Some(key),
         None,
     )
@@ -1431,6 +1483,8 @@ mod resume;
 mod version;
 #[path = "claude_card_endpoint/workspace_cwd.rs"]
 mod workspace_cwd;
+#[path = "claude_card_endpoint/workspace_environment.rs"]
+mod workspace_environment;
 
 #[tokio::test]
 async fn c5_internal_claude_cwd_returns_bad_request_before_creation() {
@@ -1438,7 +1492,7 @@ async fn c5_internal_claude_cwd_returns_bad_request_before_creation() {
     let boot = boot_success().await;
     let internal = boot.state.workspace_root().join(".trash/retired");
     std::fs::create_dir_all(&internal).unwrap();
-    let mut request = body(None);
+    let mut request = body(&boot, None);
     request["cwd"] = json!(internal);
     let (status, response) = post(boot.app.clone(), &boot.track_id, request, None, None).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{response}");

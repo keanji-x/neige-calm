@@ -115,8 +115,8 @@ pub(crate) async fn wrapped_intent(
     })
 }
 
-/// One launch's environment split at the release boundary: the MCP token and every secret proxy
-/// value ride only in the Held stdin payload; everything else is public and durable.
+/// Public bootstrap inputs and an ephemeral Held release. Project environment
+/// values belong entirely in the payload, never the durable public environment.
 pub(crate) struct Release {
     pub public: Vec<(String, OsString)>,
     /// Names the payload's keys for the wrapper; carries no values.
@@ -124,6 +124,65 @@ pub(crate) struct Release {
     pub payload: Vec<u8>,
 }
 impl Release {
+    /// Install a complete private environment after the owner-supplied bootstrap.
+    pub(crate) fn with_private(
+        env: Vec<(String, OsString)>,
+        private: std::collections::BTreeMap<OsString, OsString>,
+        token: Option<String>,
+        what: &str,
+    ) -> Result<Self> {
+        Self::with_private_names(env, private, token, what).map(|(release, _)| release)
+    }
+
+    /// The variable-name contract may be persisted; its corresponding values may not.
+    pub(crate) fn with_private_names(
+        env: Vec<(String, OsString)>,
+        private: std::collections::BTreeMap<OsString, OsString>,
+        token: Option<String>,
+        what: &str,
+    ) -> Result<(Self, Vec<String>)> {
+        use crate::operation::stdin_payload::{KeySource, PayloadKeys};
+        use std::collections::{BTreeMap, BTreeSet};
+        let public = Self::split(env, None, what)?.public;
+        let mut private = private
+            .into_iter()
+            .map(|(key, value)| {
+                let key = key.into_string().map_err(|_| {
+                    CalmError::BadRequest(
+                        "private environment requires UTF-8 variable names".into(),
+                    )
+                })?;
+                Ok((key, value))
+            })
+            .collect::<Result<BTreeMap<_, _>>>()?;
+        if let Some(token) = token {
+            private.insert("NEIGE_MCP_TOKEN".into(), token.into());
+        }
+        // The private map is complete. Remove bootstrap values absent from it
+        // instead of silently restoring variables the project explicitly unset.
+        let present = private
+            .keys()
+            .map(String::as_str)
+            .chain(public.iter().map(|(key, _)| key.as_str()))
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        let keys = PayloadKeys::new(&present, KeySource::Kernel)?.with_multiline();
+        let payload = keys.render(|key| private.get(key).cloned()).map_err(|_| {
+            CalmError::BadRequest(format!("invalid {what} private environment payload"))
+        })?;
+        let names = present.iter().map(|key| (*key).to_owned()).collect();
+        let read_prefix = keys.read_prefix();
+        Ok((
+            Self {
+                public,
+                read_prefix,
+                payload,
+            },
+            names,
+        ))
+    }
+
     pub(crate) fn split(
         env: Vec<(String, OsString)>,
         token: Option<String>,
@@ -170,3 +229,6 @@ impl Release {
         })
     }
 }
+
+#[cfg(test)]
+mod tests;

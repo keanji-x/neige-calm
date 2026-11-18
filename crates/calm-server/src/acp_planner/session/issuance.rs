@@ -216,6 +216,10 @@ impl AcpPlannerSession {
             }
         };
         let turn = uuid::Uuid::new_v4().to_string();
+        let original_native = row.agent_session_id.clone();
+        let owner_admission =
+            shared.admission(thread, Some(permission), original_native.as_deref(), None);
+        let admission = input.admission(&owner_admission);
         if let Err(error) = guard
             .launch(
                 engine,
@@ -226,6 +230,7 @@ impl AcpPlannerSession {
                     turn_id: turn.clone(),
                 },
                 track_fence,
+                &admission,
             )
             .await
         {
@@ -264,10 +269,6 @@ impl AcpPlannerSession {
         )
         .await;
         let process = guard.process.as_mut().expect("spawned process");
-        let original_native = row.agent_session_id.clone();
-        let owner_admission =
-            shared.admission(thread, Some(permission), original_native.as_deref(), None);
-        let admission = input.admission(&owner_admission);
         let mut usage = provider::acp::usage::UsageTracker::new(registration.profile.usage);
         let prepared = async {
             let mcp = [params.mcp_server(server.clone(), &token)];

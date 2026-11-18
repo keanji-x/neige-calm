@@ -24,6 +24,8 @@ mod settlement;
 mod settlement_race;
 mod stop_deadline;
 mod transport;
+#[cfg(feature = "fixtures")]
+mod workspace_environment;
 use super::*;
 use crate::auth::{AuthConfig, AuthState, SessionAuthority, SessionIdentity};
 use crate::db::sqlite::conversation::*;

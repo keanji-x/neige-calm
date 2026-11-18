@@ -154,6 +154,13 @@ async fn gh_pr_checks_all_token_aliases_redacted_through_persistence_replay_wake
         .map(|(key, secret)| EnvGuard::set(key, secret))
         .collect();
     let cx = ChecksFixture::boot("token-aliases").await;
+    cx.fx._project_environment.declare_values(
+        cx.fx._tmp.path(),
+        &secrets
+            .iter()
+            .map(|(key, value)| (*key, value.as_str()))
+            .collect::<Vec<_>>(),
+    );
     seed_actions(&cx);
     let text = secrets
         .iter()

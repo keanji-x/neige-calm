@@ -73,6 +73,11 @@ pub(crate) struct AcpAgentProfile {
     pub(crate) versions: Option<AgentVersions>,
     /// Environment content owned by the profile, never overwritten in a registration.
     pub(crate) owned_env: &'static [&'static str],
+    /// Native authentication/configuration locators supplied only by the operator.
+    /// Unlike `owned_env`, these remain valid explicit registration additions.
+    pub(crate) workspace_blocked_env: &'static [&'static str],
+    /// Native owner prepares a shell-only environment bridge; provider launches use operator inputs.
+    pub(crate) workspace_shell: Option<super::environment::PrepareShell>,
     /// What a Planner turn adds under `never`.
     pub(crate) never: ModeLaunch,
     /// Supported native authentication methods. The first is the existing default; an empty

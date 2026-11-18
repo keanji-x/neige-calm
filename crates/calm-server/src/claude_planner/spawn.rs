@@ -207,6 +207,17 @@ pub(crate) struct EnvInputs<'a> {
     pub proxy: &'a [(String, String, String)],
 }
 
+/// Provider identity and kernel controls retain their existing launch owner.
+pub(crate) const WORKSPACE_KEEP_KEYS: &[&str] = &[
+    "HOME",
+    "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME",
+    "XDG_CACHE_HOME",
+    "XDG_STATE_HOME",
+    "DISABLE_AUTOUPDATER",
+];
+pub(crate) const WORKSPACE_KEEP_PREFIXES: &[&str] = &["NEIGE_", "CLAUDE_", "ANTHROPIC_"];
+
 /// The allowlisted environment of every spawn of one session (`base_env` of its own inputs).
 pub(crate) fn session_env(
     params: &super::session::ClaudePlannerSessionParams,

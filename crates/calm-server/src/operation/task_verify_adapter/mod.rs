@@ -536,7 +536,7 @@ mod tests {
                 cmd: "true".into(),
             },
         ];
-        let script = render_gate_wrapper(&steps);
+        let script = WrapperSteps::Logged(&steps).render();
         let first_action = script
             .lines()
             .find(|l| !l.starts_with('#') && !l.trim().is_empty())

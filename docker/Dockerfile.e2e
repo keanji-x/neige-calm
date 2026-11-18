@@ -7,6 +7,7 @@
 # only supplies the runtime tools the contained stack needs:
 #
 #   git          — fixture repos + worker agents shell out to git.
+#   direnv       — agents and tasks evaluate authorized project environments.
 #   ca-certificates — TLS verify for the codex API through the proxy chain
 #                  (SSL_CERT_FILE is in the #897 spawn-env allow-list).
 #   bubblewrap   — codex execs `bwrap` for every sandboxed local_shell call
@@ -46,5 +47,5 @@ ARG http_proxy=
 ARG https_proxy=
 ARG no_proxy=
 RUN apt-get update \
- && apt-get install -y --no-install-recommends fonts-dejavu-core fonts-noto-cjk git ca-certificates bubblewrap socat procps ripgrep zstd jq \
+ && apt-get install -y --no-install-recommends fonts-dejavu-core fonts-noto-cjk git ca-certificates bubblewrap socat procps ripgrep zstd jq direnv \
  && rm -rf /var/lib/apt/lists/*

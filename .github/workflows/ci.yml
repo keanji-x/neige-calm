@@ -185,7 +185,7 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y ripgrep libxkbcommon-dev libpixman-1-dev
+          sudo apt-get install -y direnv ripgrep libxkbcommon-dev libpixman-1-dev
 
       - name: runtimes ratchet selftest
         if: env.RUN_RUST_CHECKS == 'true'
@@ -572,7 +572,7 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y libxkbcommon-dev libpixman-1-dev
+          sudo apt-get install -y direnv libxkbcommon-dev libpixman-1-dev
 
       - name: prepare nextest tests
         run: |
@@ -618,7 +618,7 @@ jobs:
             set -e
             rustup toolchain install --no-self-update
             sudo apt-get update
-            sudo apt-get install -y bubblewrap python3 libxkbcommon-dev libpixman-1-dev
+            sudo apt-get install -y direnv bubblewrap python3 libxkbcommon-dev libpixman-1-dev
             test "$RUNNER_ENVIRONMENT" = github-hosted
             policy=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
             if [ -f "$policy" ]; then
@@ -714,7 +714,7 @@ jobs:
       - name: install compositor link libraries
         run: |
           sudo apt-get update
-          sudo apt-get install -y libxkbcommon-dev libpixman-1-dev
+          sudo apt-get install -y direnv libxkbcommon-dev libpixman-1-dev
 
       - name: build cross-package isolated provider fixture executables
         run: |

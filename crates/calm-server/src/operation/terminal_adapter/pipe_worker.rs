@@ -5,6 +5,7 @@ use owned::observation::{ExecutionWatch, execution_ready};
 use owned::{Decision, Release, StopReason, pipe};
 use std::path::PathBuf;
 use workspace_runtime::execution::*;
+mod environment;
 
 pub(crate) const KEY: &str = "terminal_worker_execution";
 pub(crate) const CONSUMER: &str = "terminal_worker";
@@ -33,6 +34,15 @@ struct Prepared {
     step_path: PathBuf,
 }
 impl Prepared {
+    fn new(directory: &std::path::Path, operation: &str) -> Self {
+        let prefix = directory.join(operation);
+        Self {
+            log_path: prefix.with_extension("log"),
+            script_path: prefix.with_extension("sh"),
+            exit_path: prefix.with_extension("exit"),
+            step_path: prefix.with_extension("step"),
+        }
+    }
     fn read(output: &TxOutput) -> Result<Self> {
         Ok(serde_json::from_value(
             output.data["terminal_worker_pipe"].clone(),
@@ -96,6 +106,19 @@ struct PreparedEnvironment {
     adapter: TerminalWorkerAdapter,
     claim: crate::operation::preparation_claim::PreparationClaim,
     env: Value,
+    selection: environment::Selection,
+    workspace: environment::Contract,
+}
+struct StaleEnvironment;
+#[async_trait]
+impl crate::operation::PreparedTx for StaleEnvironment {
+    async fn apply(
+        self: Box<Self>,
+        _tx: &mut Tx<'_>,
+        _op: &Operation,
+    ) -> Result<crate::operation::PreparedTxResult> {
+        Ok(crate::operation::PreparedTxResult::Stale)
+    }
 }
 #[async_trait]
 impl crate::operation::PreparedTx for PreparedEnvironment {
@@ -105,8 +128,11 @@ impl crate::operation::PreparedTx for PreparedEnvironment {
         op: &Operation,
     ) -> Result<crate::operation::PreparedTxResult> {
         self.claim.require_operation(op)?;
+        if environment::Selection::capture(tx, &op.payload).await? != self.selection {
+            return Ok(crate::operation::PreparedTxResult::Stale);
+        }
         self.adapter
-            .prepare_pipe_tx(tx, &op.payload, op, self.env)
+            .prepare_pipe_tx(tx, &op.payload, op, self.env, self.workspace)
             .await
             .map(crate::operation::PreparedTxResult::Ready)
     }
@@ -134,10 +160,60 @@ impl TerminalWorkerAdapter {
             .map_err(|e| {
                 CalmError::BadRequest(format!("terminal worker environment refused: {e:?}"))
             })?;
+        let operation = op.clone();
+        let selection = crate::db::write_in_tx_typed(self.repo.as_ref(), move |tx| {
+            Box::pin(async move {
+                crate::operation::repo_sqlite::require_live_claim_tx(tx, &operation).await?;
+                environment::Selection::capture(tx, &operation.payload).await
+            })
+        })
+        .await?;
+        let source = crate::workspace_service::environment::source_for_track(
+            self.repo.as_ref(),
+            &selection.track_id,
+            std::path::Path::new(&selection.cwd),
+        )
+        .await?;
+        let source = tokio::fs::canonicalize(source).await?;
+        let paths = Prepared::new(&self.log_directory, &op.id);
+        let mut stale = false;
+        let db = ctx.operation_repo.sqlite_db().clone();
+        let selection_for_check = selection.clone();
+        let checked = environment::resolve(&source, &env, &paths, || async {
+            let unchanged = db
+                .writer()
+                .with_writer(|session| {
+                    Box::pin(async move {
+                        let mut tx = session.begin_immediate().await?;
+                        crate::operation::repo_sqlite::require_live_claim_tx(&mut tx, op).await?;
+                        let current = environment::Selection::capture(&mut tx, &op.payload).await?;
+                        tx.rollback().await?;
+                        Ok::<_, CalmError>(current == selection_for_check)
+                    })
+                })
+                .await
+                .map_err(calm_truth::TruthError::from)??;
+            if !unchanged {
+                stale = true;
+                return Err(CalmError::Conflict(
+                    "terminal preparation changed before environment evaluation".into(),
+                ));
+            }
+            Ok(())
+        })
+        .await;
+        if stale {
+            // Changed preparation is retried by its owner, never failed as an invalid payload.
+            return Ok(Some(Box::new(StaleEnvironment)));
+        }
+        let (_, keys) = checked??;
+        let workspace = environment::Contract::new(selection.cwd.clone(), &source, keys)?;
         Ok(Some(Box::new(PreparedEnvironment {
             adapter: self.clone(),
             claim: crate::operation::preparation_claim::PreparationClaim::new(op)?,
             env,
+            selection,
+            workspace,
         })))
     }
 
@@ -152,12 +228,13 @@ impl TerminalWorkerAdapter {
         super::super::refuse_if_context_stale(tx, Some(&payload.idempotency_key)).await?;
         Ok(payload)
     }
-    pub(super) async fn prepare_pipe_tx(
+    async fn prepare_pipe_tx(
         &self,
         tx: &mut Tx<'_>,
         input: &Value,
         op: &Operation,
         env: Value,
+        workspace: environment::Contract,
     ) -> Result<TxOutput> {
         let payload = Self::admission_fences_tx(tx, input).await?;
         let cwd = terminal_cwd_or_track_workspace(
@@ -178,19 +255,13 @@ impl TerminalWorkerAdapter {
             crate::model::now_ms(),
         )
         .await?;
-        let prefix = self.log_directory.join(&op.id);
-        let paths = Prepared {
-            log_path: prefix.with_extension("log"),
-            script_path: prefix.with_extension("sh"),
-            exit_path: prefix.with_extension("exit"),
-            step_path: prefix.with_extension("step"),
-        };
+        let paths = Prepared::new(&self.log_directory, &op.id);
         let mut output = TxOutput::new(
             "card",
             Some(card.id.to_string()),
             serde_json::to_value(&card)?,
         );
-        output.data = json!({"card_id":card.id,"track_id":payload.track_id,"cmd":payload.cmd,"cwd":cwd,"env":env,"terminal_worker_pipe":paths});
+        output.data = json!({"card_id":card.id,"track_id":payload.track_id,"cmd":payload.cmd,"cwd":cwd,"env":env,"terminal_worker_pipe":paths,"workspace_environment":workspace});
         Ok(output)
     }
     pub(super) async fn spawn_pipe(
@@ -207,6 +278,7 @@ impl TerminalWorkerAdapter {
             let cmd = output.output_string("cmd", "terminal worker")?;
             let mut environment = environment(&output.data["env"])?;
             let paths = Prepared::read(output)?;
+            let workspace = environment::Contract::read(output)?;
             tokio::fs::create_dir_all(
                 paths
                     .log_path
@@ -218,11 +290,14 @@ impl TerminalWorkerAdapter {
                 name: "terminal-worker".into(),
                 cmd: format!("/bin/sh -c {}", crate::shell_command::sh_single_quote(&cmd)),
             }];
-            tokio::fs::write(
-                &paths.script_path,
-                super::super::gate_process::WrapperSteps::Logged(&steps).render(),
-            )
-            .await?;
+            let wrapper = super::super::gate_process::WrapperSteps::Logged(&steps);
+            let script = match &workspace {
+                Some(workspace) => {
+                    workspace.with_payload_keys(|keys| Ok(wrapper.render_with_release(&keys)))?
+                }
+                None => wrapper.render(),
+            };
+            tokio::fs::write(&paths.script_path, script).await?;
             tokio::fs::write(&paths.log_path, b"").await?;
             for (key, path) in [
                 ("NEIGE_GATE_LOG_PATH", &paths.log_path),
@@ -238,7 +313,11 @@ impl TerminalWorkerAdapter {
                 tokio::fs::canonicalize(cwd).await?,
                 &track,
                 ExecutionSpecification {
-                    ambient_environment: ambient(),
+                    ambient_environment: if workspace.is_some() {
+                        AmbientEnvironment::None
+                    } else {
+                        ambient()
+                    },
                     program: "/bin/sh".into(),
                     args: vec![paths.script_path.display().to_string()],
                     environment,
@@ -274,27 +353,60 @@ impl TerminalWorkerAdapter {
         }
         match record.release {
             Release::Held => {
+                let output = super::super::required_output(op)?;
+                let workspace = match environment::Contract::read(output) {
+                    Ok(workspace) => workspace,
+                    Err(_) => {
+                        pipe::stop(CONFIG, ctx, op, StopReason::ReleaseRefused).await?;
+                        return Ok(());
+                    }
+                };
+                let payload = match workspace {
+                    Some(workspace) => match Prepared::read(output) {
+                        Ok(paths) => {
+                            workspace
+                                .release(self.repo.as_ref(), output, &paths, || async {
+                                    pipe::require_release_owner(
+                                        CONFIG,
+                                        ctx,
+                                        op,
+                                        &record,
+                                        &Authority(task_id(op)?),
+                                    )
+                                    .await
+                                })
+                                .await
+                        }
+                        Err(error) => Ok(Err(error)),
+                    },
+                    None => Ok(Ok(b"go\n".to_vec())),
+                };
+                let payload = match payload {
+                    Ok(Ok(payload)) => payload,
+                    Ok(Err(_)) => {
+                        pipe::stop(CONFIG, ctx, op, StopReason::ReleaseRefused).await?;
+                        return Ok(());
+                    }
+                    // Environment preparation has sent nothing. Its database dependencies
+                    // can recover without discarding the original Held execution.
+                    Err(error @ CalmError::Db(_)) => return Err(error),
+                    Err(error) => return self.release_error(op, ctx, error).await,
+                };
                 let result = pipe::release(
                     CONFIG,
                     ctx,
                     op,
                     &Authority(task_id(op)?),
                     pipe::ReleaseRequest {
-                        token: b"go\n",
+                        token: &payload,
                         timeout: super::super::gate_lifecycle::RELEASE_TIMEOUT,
                     },
                     #[cfg(any(test, feature = "fixtures"))]
                     None,
                 )
                 .await;
-                if matches!(result, Err(CalmError::OperationBlocked(_))) {
-                    // Authorization refused before Held -> Releasing. Nothing
-                    // was sent; keep the same execution for the owner's retry.
-                    return Ok(());
-                }
-                if result.is_err() {
-                    let latest = owned::refresh_claim(ctx, op).await?;
-                    pipe::stop(CONFIG, ctx, &latest, StopReason::ReleaseRefused).await?;
+                if let Err(error) = result {
+                    return self.release_error(op, ctx, error).await;
                 }
             }
             Release::Releasing { .. } => {
@@ -303,6 +415,14 @@ impl TerminalWorkerAdapter {
             Release::Released { .. } => {}
         }
         Ok(())
+    }
+    async fn release_error(&self, op: &Operation, ctx: &SpawnCtx, error: CalmError) -> Result<()> {
+        if matches!(error, CalmError::OperationBlocked(_)) {
+            // The same Held execution remains retryable when another checkout owner finishes.
+            return Ok(());
+        }
+        let latest = owned::refresh_claim(ctx, op).await?;
+        pipe::stop(CONFIG, ctx, &latest, StopReason::ReleaseRefused).await
     }
     pub(super) async fn recover_pipe(
         &self,

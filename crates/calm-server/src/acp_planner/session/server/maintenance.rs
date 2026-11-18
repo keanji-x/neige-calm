@@ -21,9 +21,10 @@ pub(in crate::acp_planner::session) async fn compact(
             "Shared ACP does not support the maintenance extension",
         ));
     }
-    let params = &shared.params;
     let permission = PlannerPermissionMode::Never;
-    let crate::acp_session::attachment::Attached { mut owned, .. } = prepare::prepare(
+    let crate::acp_session::attachment::Attached {
+        mut owned, cleanup, ..
+    } = prepare::prepare(
         shared,
         registration,
         Some(native.to_owned()),
@@ -49,14 +50,6 @@ pub(in crate::acp_planner::session) async fn compact(
     if !server.process.commands.contains(native, "compact") {
         return Err(before("ACP did not declare the compact command"));
     }
-    let binding = server
-        .bindings
-        .get(&params.worker_session_id)
-        .ok_or_else(|| before("Shared ACP maintenance binding is missing"))?;
-    let cleanup = CleanupWitness {
-        generation: server.generation.clone(),
-        closed: binding.closed.clone(),
-    };
     let client = server.process.connection.client.clone();
     let capabilities = server.process.capabilities.clone();
     let commands = server.process.commands.clone();
@@ -97,7 +90,7 @@ pub(in crate::acp_planner::session) async fn compact(
             let _ = detach_worker_with_witness(
                 &task.params.host,
                 &task.params.worker_session_id,
-                task.params.provider.wire_name(),
+                cleanup.slot.clone(),
                 Some((&task_native, &cleanup)),
             )
             .await;

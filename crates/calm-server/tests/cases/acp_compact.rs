@@ -38,6 +38,26 @@ pub(super) async fn turn(stack: &Stack, card: &str, text: &str, n: usize) -> Val
     outcome
 }
 
+pub(super) async fn create_assistant(
+    stack: &Stack,
+    track: &str,
+    provider: &str,
+    text: &str,
+) -> String {
+    let (status, body) = stack
+        .send_with(
+            axum::http::Request::builder()
+                .method("POST")
+                .uri(format!("/api/tracks/{track}/conversations"))
+                .header("x-calm-actor", "user")
+                .header("idempotency-key", uuid::Uuid::new_v4().to_string()),
+            Some(json!({"provider":provider,"text":text})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    body["id"].as_str().unwrap().to_owned()
+}
+
 pub(super) async fn compact(stack: &Stack, card: &str) -> (StatusCode, Value) {
     stack
         .send(

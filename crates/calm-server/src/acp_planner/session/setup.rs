@@ -35,6 +35,10 @@ pub(super) async fn attach(
         admission.gate(),
     )
     .await?;
+    if let Some(hook) = &process.tool_environment {
+        hook.check_ready()
+            .map_err(|error| refused(&error.to_string()))?;
+    }
     usage.configure(&result);
     let configuration = provider::acp::configuration::Configuration::from_response(&result)
         .map_err(|error| StartFailure::Failed(wire_error(error)))?;

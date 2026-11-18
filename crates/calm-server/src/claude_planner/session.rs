@@ -534,6 +534,9 @@ fn sealed(thread: &str) -> CalmError {
 mod interrupt_tests;
 
 #[cfg(test)]
+mod workspace_proxy_tests;
+
+#[cfg(test)]
 impl ClaudePlannerSession {
     pub(crate) async fn handoff_for_test(&self) -> crate::provider_execution::TrackFenceHandoff {
         let track = self.track_for_test();

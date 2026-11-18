@@ -34,6 +34,9 @@ pub(super) const PROFILE: AcpAgentProfile = AcpAgentProfile {
     identity: AgentIdentity::MetaAgentVersion,
     versions: None,
     owned_env: &[],
+    // Public native configuration root; cached_token reads the sign-in stored here.
+    workspace_blocked_env: &["GROK_HOME"],
+    workspace_shell: None,
     never: NOTHING,
     authentication: &[
         AuthenticationMethod {

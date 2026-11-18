@@ -103,15 +103,26 @@ pub(crate) async fn check(
     let owner = &params.host.provider_execution;
     let id = ExecutionId::fresh()?;
     let dir = stderr::create(&params.host.instructions_dir, id.as_str())?;
-    let prepared = super::execution::intent(
-        params,
-        &id,
-        &dir,
-        &config.claude_binary,
-        spawn::truncation_check_argv(thread, cut),
-        env,
-        None,
-    )
+    // This control-only dry run keeps its operator environment. It sends no
+    // prompt and owns no source authority to evaluate project configuration.
+    let prepared = async {
+        let release = execution::launch::Release::split(env, None, "Planner")?;
+        execution::launch::intent(
+            owner.owner.as_ref(),
+            &params.worker_session_id,
+            &params.track_id,
+            &params.cwd,
+            &id,
+            &dir,
+            &config.claude_binary,
+            spawn::truncation_check_argv(thread, cut),
+            release.public,
+            &release.read_prefix,
+            release.payload,
+            calm_session::control::execution::AmbientEnvironment::None,
+        )
+        .await
+    }
     .await;
     let (intent, payload) = match prepared {
         Ok(prepared) => prepared,

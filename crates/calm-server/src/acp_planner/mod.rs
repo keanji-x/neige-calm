@@ -6,6 +6,7 @@ mod catalog;
 mod catalog_lifecycle_tests;
 pub mod config;
 mod context_snapshot;
+pub(crate) use crate::acp_session::environment;
 pub(crate) mod execution;
 pub(crate) mod lifecycle;
 pub(crate) use crate::acp_session::process;

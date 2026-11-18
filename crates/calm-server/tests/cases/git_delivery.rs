@@ -13,6 +13,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::mcp_track_report::{Boot, call_tool, planner_identity, worker_identity};
+use crate::support::forge_env::ProjectEnvironment;
 use crate::task_recovery::{current, declare};
 use calm_server::db::sqlite::{
     card_create_with_id_tx, session_set_handle_state_tx, session_start_runtime_tx,
@@ -157,6 +158,7 @@ pub(super) struct Fx {
     /// The track worktree on `neige/track-<id>` (#1830 S2): where every worker runs.
     pub(super) worktree: PathBuf,
     pub(super) workspace_root: PathBuf,
+    _project_environment: ProjectEnvironment,
     pub(super) _tmp: tempfile::TempDir,
 }
 
@@ -199,6 +201,7 @@ pub(super) struct FixtureWorkspace {
     tmp: tempfile::TempDir,
     track_root: PathBuf,
     workspace_root: PathBuf,
+    project_environment: ProjectEnvironment,
 }
 
 pub(super) async fn prepare_fixture(
@@ -222,6 +225,8 @@ pub(super) async fn prepare_fixture_with_plan(
         .prefix("neige-git-delivery-")
         .tempdir()
         .unwrap();
+    // Own the source declaration before the first worker, outside every Git checkout.
+    let project_environment = ProjectEnvironment::for_project(tmp.path(), "");
     let track_root = track_root(tmp.path());
     let workspace_root = tmp.path().join("workspaces");
     std::fs::create_dir_all(&workspace_root).unwrap();
@@ -238,6 +243,7 @@ pub(super) async fn prepare_fixture_with_plan(
             tmp,
             track_root,
             workspace_root,
+            project_environment,
         },
     )
 }
@@ -275,6 +281,7 @@ pub(super) async fn fixture_on_with_runtime(
         tmp,
         track_root,
         workspace_root,
+        project_environment,
     } = workspace;
     let pool = boot.repo.sqlite_db().unwrap();
     let track = boot
@@ -350,6 +357,7 @@ pub(super) async fn fixture_on_with_runtime(
         track_root,
         worktree,
         workspace_root,
+        _project_environment: project_environment,
         _tmp: tmp,
     }
 }

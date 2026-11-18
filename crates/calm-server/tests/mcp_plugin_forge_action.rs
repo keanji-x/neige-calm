@@ -28,6 +28,7 @@ use calm_truth::db::sqlite::{
     session_mcp_token_set_tx, session_projection_active_for_card_tx, session_start_runtime_tx,
 };
 use serde_json::{Value, json};
+use support::forge_env::ProjectEnvironment;
 use support::mcp::{
     connect, handshake, recv_frame, send_frame, tools_call_frame, tools_list_frame,
 };
@@ -59,6 +60,7 @@ struct Fixture {
     tool_call_marker: PathBuf,
     _runtime: Arc<OperationRuntime>,
     _lease_tmp: Option<TempDir>,
+    _project_environment: ProjectEnvironment,
     _tmp: TempDir,
 }
 
@@ -757,6 +759,8 @@ async fn boot_fixture(mode: StubMode) -> Fixture {
 
 async fn boot_fixture_with_role(mode: StubMode, role: CardRole) -> Fixture {
     let tmp = short_tempdir("mfa").expect("tempdir");
+    // CARGO_TARGET_DIR may be outside TMPDIR's own isolated project boundary.
+    let project_environment = ProjectEnvironment::for_project(tmp.path(), "");
     let socket_path = tmp.path().join("mcp").join("kernel.sock");
     let plugins_dir = tmp.path().join("plugins");
     let plugins_data_dir = tmp.path().join("plugins-data");
@@ -889,6 +893,7 @@ async fn boot_fixture_with_role(mode: StubMode, role: CardRole) -> Fixture {
         tool_call_marker,
         _runtime: runtime,
         _lease_tmp: caller._lease_tmp,
+        _project_environment: project_environment,
         _tmp: tmp,
     }
 }

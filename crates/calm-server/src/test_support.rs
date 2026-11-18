@@ -1,6 +1,8 @@
 #[cfg(test)]
 pub(crate) mod canonical_batch;
 
+pub(crate) mod claude_argv;
+
 #[cfg(test)]
 #[cfg(feature = "fixtures")]
 pub(crate) mod database_snapshot_tests;
@@ -9,6 +11,28 @@ pub(crate) mod database_snapshot_tests;
 pub(crate) mod proc;
 
 pub(crate) mod execution;
+
+/// Libtest selectors use this crate's module identifiers, without the crate prefix.
+pub(crate) fn exact_test_name(module: &str, function: &str) -> String {
+    let module = module
+        .strip_prefix(concat!(env!("CARGO_CRATE_NAME"), "::"))
+        .unwrap();
+    format!("{module}::{function}")
+}
+
+pub(crate) fn assert_isolated_test_passed(output: &std::process::Output) {
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success()
+            && stdout
+                .lines()
+                .any(|line| line.starts_with("test result: ok. 1 passed; 0 failed; 0 ignored;")),
+        "isolated regression must execute exactly one passing test\n{}\n{}",
+        stdout,
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 use calm_truth::error::Result;
 use calm_truth::model::Task;
 use sqlx::{Sqlite, Transaction};

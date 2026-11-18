@@ -368,19 +368,35 @@ async fn assert_card_session_mcp_hash_parity(repo: &SqlxRepo, card_id: &str, run
 }
 
 #[tokio::test]
-async fn post_codex_card_empty_prompt_succeeds_via_register_pending() {
+async fn post_codex_card_empty_prompt_binds_one_native_thread_before_viewer() {
     let _guard = ENV_LOCK.lock().await;
     let boot = boot_success().await;
 
     let (status, card) = post(boot.app.clone(), &boot.track_id, body(None), None, None).await;
     assert_eq!(status, StatusCode::CREATED, "body={card:?}");
-    assert_eq!(
-        card["payload"]["codex_thread_status"],
-        "pending_thread_start"
-    );
+    assert_eq!(card["payload"]["codex_thread_status"], "started");
     let (phase, _) = latest_codex_operation_phase(&boot.repo).await;
     assert_eq!(phase, "succeeded");
-    assert_eq!(boot.state.pending_codex_threads.pending_count().await, 1);
+    assert_eq!(boot.state.pending_codex_threads.pending_count().await, 0);
+    let minted = boot
+        .state
+        .shared_codex_appserver
+        .minted_thread_cwds_for_test();
+    assert_eq!(minted.len(), 1);
+    assert_eq!(card["payload"]["codex_thread_id"], minted[0].0);
+    let current = boot
+        .repo
+        .session_projection_active_for_card(&card["id"].as_str().unwrap().to_owned())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(current.thread_id.as_deref(), Some(minted[0].0.as_str()));
+    assert!(
+        boot.state
+            .shared_codex_appserver
+            .started_turns_for_test()
+            .is_empty()
+    );
     assert_eq!(boot.spawn_count.load(Ordering::SeqCst), 1);
 }
 

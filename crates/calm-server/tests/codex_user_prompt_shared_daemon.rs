@@ -235,19 +235,27 @@ async fn post(app: axum::Router, track_id: &str, body: Value) -> (StatusCode, Va
 }
 
 async fn wait_for_requests(path: &Path, min_count: usize) -> Vec<Value> {
+    wait_for_requests_where(path, |rows| rows.len() >= min_count).await
+}
+
+async fn wait_for_request_method(path: &Path, method: &str) -> Vec<Value> {
+    wait_for_requests_where(path, |rows| rows.iter().any(|row| row["method"] == method)).await
+}
+
+async fn wait_for_requests_where(path: &Path, ready: impl Fn(&[Value]) -> bool) -> Vec<Value> {
     for _ in 0..50 {
         if let Ok(raw) = std::fs::read_to_string(path) {
             let rows: Vec<Value> = raw
                 .lines()
                 .filter_map(|line| serde_json::from_str(line).ok())
                 .collect();
-            if rows.len() >= min_count {
+            if ready(&rows) {
                 return rows;
             }
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    panic!("timed out waiting for {min_count} captured fake app-server requests");
+    panic!("timed out waiting for the expected fake app-server requests");
 }
 
 fn request<'a>(rows: &'a [Value], method: &str) -> &'a Value {
@@ -406,9 +414,51 @@ async fn empty_path_errors_when_shared_daemon_not_running() {
 }
 
 #[tokio::test]
-async fn create_empty_card_with_empty_cards_flag_enabled_uses_shared_daemon_pending_register() {
+async fn workspace_environment_empty_card_mints_idle_thread_before_viewer() {
     let _guard = ENV_LOCK.lock().await;
+    let capture = TempDir::new().unwrap();
+    let capture_file = capture.path().join("requests.ndjson");
+    let home = capture.path().join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    struct Restore(Vec<(&'static str, Option<std::ffi::OsString>)>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            for (key, value) in self.0.drain(..) {
+                unsafe {
+                    match value {
+                        Some(value) => std::env::set_var(key, value),
+                        None => std::env::remove_var(key),
+                    }
+                }
+            }
+        }
+    }
+    let _environment = Restore(
+        ["HOME", "XDG_CONFIG_HOME", "FAKE_CODEX_CAPTURE_REQUESTS"]
+            .into_iter()
+            .map(|key| (key, std::env::var_os(key)))
+            .collect(),
+    );
+    unsafe {
+        std::env::set_var("HOME", &home);
+        std::env::set_var("XDG_CONFIG_HOME", home.join("config"));
+        std::env::set_var("FAKE_CODEX_CAPTURE_REQUESTS", &capture_file);
+    }
     let boot = boot().await;
+    std::fs::write(
+        boot.cwd.join(".envrc"),
+        "export GH_TOKEN=synthetic-idle-workspace-token\n",
+    )
+    .unwrap();
+    assert!(
+        std::process::Command::new("direnv")
+            .arg("allow")
+            .arg(&boot.cwd)
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
     let (status, card) = post(
         boot.app.clone(),
         &boot.track_id,
@@ -416,17 +466,32 @@ async fn create_empty_card_with_empty_cards_flag_enabled_uses_shared_daemon_pend
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "body={card:?}");
-    assert!(card["payload"].get("codex_thread_id").is_none());
+    assert_eq!(card["payload"]["codex_thread_id"], "fake-thread-0001");
+    let requests = wait_for_requests(&capture_file, 3).await;
     assert_eq!(
-        card["payload"]["codex_thread_status"],
-        "pending_thread_start"
+        requests
+            .iter()
+            .filter(|r| r["method"] == "thread/start")
+            .count(),
+        1
+    );
+    assert!(!requests.iter().any(|r| r["method"] == "turn/start"));
+    let started = request(&requests, "thread/start");
+    assert_eq!(started["params"]["cwd"], boot.cwd.to_str().unwrap());
+    assert_eq!(
+        started["params"]["config"]["shell_environment_policy"]["inherit"],
+        "none"
+    );
+    assert_eq!(
+        started["params"]["config"]["shell_environment_policy"]["set"]["GH_TOKEN"],
+        "synthetic-idle-workspace-token"
     );
     let card_id = card["id"].as_str().unwrap();
     assert!(
         !boot.sidecar_root.join(card_id).exists(),
         "shared empty-card path must not create a per-card CODEX_HOME"
     );
-    assert_eq!(boot.state.pending_codex_threads.pending_count().await, 1);
+    assert_eq!(boot.state.pending_codex_threads.pending_count().await, 0);
     let terminal_id = card["payload"]["terminal_id"].as_str().unwrap();
     let entry = boot
         .state
@@ -435,12 +500,8 @@ async fn create_empty_card_with_empty_cards_flag_enabled_uses_shared_daemon_pend
         .expect("renderer entry");
     let shell_line = &entry.config().args[1];
     assert!(
-        shell_line.contains("codex --remote 'unix://"),
+        shell_line.contains("codex resume 'fake-thread-0001' --remote 'unix://"),
         "unexpected command line: {shell_line}"
-    );
-    assert!(
-        !shell_line.contains("resume"),
-        "empty shared TUI must fresh-start, not resume: {shell_line}"
     );
 }
 
@@ -485,7 +546,7 @@ async fn empty_user_card_respawns_daemon_when_proxy_changed() {
             .shared_codex_appserver
             .needs_respawn_on_next_thread_start_for_test()
     );
-    assert_eq!(boot.state.pending_codex_threads.pending_count().await, 1);
+    assert_eq!(boot.state.pending_codex_threads.pending_count().await, 0);
 }
 
 #[tokio::test]
@@ -677,7 +738,7 @@ async fn prompt_card_lifecycle_wait_failure_interrupts_and_rolls_back() {
         .await
     });
 
-    let rows = wait_for_requests(&capture_file, 3).await;
+    let rows = wait_for_request_method(&capture_file, "turn/start").await;
     assert!(
         rows.iter()
             .any(|row| row.get("method").and_then(Value::as_str) == Some("turn/start")),
@@ -689,7 +750,7 @@ async fn prompt_card_lifecycle_wait_failure_interrupts_and_rolls_back() {
     tokio::time::resume();
 
     let (status, body) = post_task.await.unwrap();
-    let rows = wait_for_requests(&capture_file, 4).await;
+    let rows = wait_for_request_method(&capture_file, "turn/interrupt").await;
     unsafe {
         std::env::remove_var("FAKE_CODEX_CAPTURE_REQUESTS");
         std::env::remove_var("FAKE_CODEX_SKIP_TURN_STARTED");

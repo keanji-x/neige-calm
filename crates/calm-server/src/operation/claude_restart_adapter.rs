@@ -14,7 +14,7 @@ use crate::mcp_server::McpServer;
 use crate::model::new_id;
 use crate::operation::claude_adapter::{
     CLAUDE_CARD_PERMISSION_FLAGS, CLAUDE_PHASES, CLAUDE_WORKER_PERMISSION_FLAGS, build_claude_env,
-    worker_mcp,
+    worker_mcp, workspace_command,
 };
 use crate::operation::workspace_lease::worker::{
     record_declared_head, verify_declared_head, verify_recorded_head,
@@ -498,6 +498,7 @@ impl ProviderAdapter for ClaudeRestartAdapter {
         )
         .await;
 
+        let command_line = workspace_command(ctx, &card_id, &cwd, &command_line, &env).await?;
         #[cfg(feature = "fixtures")]
         let handle = if let Some(hook) = &self.spawn_hook {
             hook(terminal_id.clone(), command_line, cwd, env).await

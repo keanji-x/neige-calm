@@ -38,6 +38,7 @@ pub(crate) mod track_close;
 #[cfg(test)]
 pub(crate) mod test_support;
 pub mod worker_flow;
+pub mod workspace_exec;
 use crate::session_projection_repo::WorkerSessionState;
 pub use reaper::reaper_on_boot;
 use serde::Deserialize;

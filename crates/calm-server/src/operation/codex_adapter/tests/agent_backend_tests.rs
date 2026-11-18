@@ -5,11 +5,26 @@ use crate::operation::launch_cleanup_test_support::{
     FIXTURE_CONTROL_VERSION, read_legacy_v2_request,
 };
 use crate::shared_codex_appserver::native_owner_tests::{
-    assert_no_request, connect_with_reader, request, send,
+    Peer, assert_no_request, connect_with_reader, request, send,
 };
 use crate::worker_model_defaults::tests::Warnings;
 use calm_session::control::{ControlMsg, ControlReply};
 use calm_types::worker_model::WorkerModelProvider;
+
+async fn thread_start_request(peer: &mut Peer) -> Value {
+    loop {
+        let next = request(peer).await;
+        if next["method"] != "config/read" {
+            assert_eq!(next["method"], "thread/start");
+            return next;
+        }
+        send(
+            peer,
+            json!({"id":next["id"],"result":{"config":{},"origins":{}}}),
+        )
+        .await;
+    }
+}
 
 #[tokio::test]
 async fn agent_backend_publish_worker_binds_before_thread_start() {
@@ -153,8 +168,7 @@ async fn publish_worker(with_defaults: bool, legacy: bool) {
     let warnings = Warnings::default();
     let spawn = warnings.run(harness.adapter.spawn_side_effect(output, &op, &ctx));
     let serve = async {
-        let start = request(&mut peer).await;
-        assert_eq!(start["method"], "thread/start");
+        let start = thread_start_request(&mut peer).await;
         if with_defaults {
             assert_eq!(start["params"]["config"]["model"], "private-a");
             assert_eq!(start["params"]["config"]["model_reasoning_effort"], "high");
@@ -495,8 +509,7 @@ async fn rejects_snapshot_without_token_rotation(snapshot: Value, replay: bool) 
             .adapter
             .spawn_side_effect(op.tx_output.as_ref().unwrap(), &op, &ctx);
         let serve = async {
-            let start = request(&mut peer).await;
-            assert_eq!(start["method"], "thread/start");
+            let start = thread_start_request(&mut peer).await;
             send(
                 &mut peer,
                 json!({"id":start["id"],"result":{"thread":{"id":"retained-thread"}}}),

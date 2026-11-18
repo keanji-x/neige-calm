@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+# Workspace restart bounded wire-contract exception: runtime_id/crates 1132 -> 1133.
+# The concurrent-restart test reads the released $.data.runtime_id field to check
+# which terminal belongs to the final operation. No domain identifier, exclusion
+# or test roster is added. Later wire references edit their owner and this existing
+# baseline; CI retains one normal scan and one selftest invocation.
 # #3633 scoped creation bounded contract exception: runtime_id/crates 1125 -> 1132.
 # All seven occurrences in 0219_share_creation_receipts.sql preserve the frozen
 # origin_runtime_id column and initialRuntimeId receipt key while replacing the

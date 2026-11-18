@@ -71,6 +71,7 @@ impl AcpPlannerHost {
                     &provider::send_boundary::PreSendGate::new(|| Box::pin(async { Ok(()) })),
                 )
                 .await?;
+                process.check_tool_environment()?;
                 let native: protocol::NewSessionResponse = protocol::decode(result.clone())
                     .map_err(|error| CalmError::Conflict(error.to_string()))?;
                 if native.session_id.is_empty() {

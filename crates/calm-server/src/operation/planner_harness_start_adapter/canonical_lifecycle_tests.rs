@@ -15,6 +15,8 @@ use calm_truth::db::RepoRead;
 use calm_types::conversation::HumanPayload;
 use calm_types::organization::LEGACY_OWNER_USER_ID;
 
+mod workspace_environment;
+
 struct Fixture {
     repo: Arc<SqlxRepo>,
     state: AppState,
@@ -563,6 +565,14 @@ async fn retained_revocation_case(point: Option<&str>) {
     let (_new_auth, _new_token, new_source) = source().await;
     let retry = wake(&fx, new_source.clone());
     let native = async {
+        let metadata = request(&mut peer).await;
+        assert_eq!(metadata["method"], "config/read");
+        assert_eq!(metadata["params"]["includeLayers"], false);
+        send(
+            &mut peer,
+            json!({"id":metadata["id"],"result":{"config":{}}}),
+        )
+        .await;
         let call = request(&mut peer).await;
         assert_eq!(call["method"], "thread/start");
         send(&mut peer, json!({"id":call["id"],"error":{"code":-32000,"message":"fixture leaves native outcome unknown"}})).await;
@@ -620,6 +630,14 @@ async fn retained_native_refusal_preserves_original_unknown_without_private_erro
         let (_client, mut peer) = connect(&daemon).await;
         let owning = wake(&fx, source.clone());
         let native = async {
+            let metadata = request(&mut peer).await;
+            assert_eq!(metadata["method"], "config/read");
+            assert_eq!(metadata["params"]["includeLayers"], false);
+            send(
+                &mut peer,
+                json!({"id":metadata["id"],"result":{"config":{}}}),
+            )
+            .await;
             let call = request(&mut peer).await;
             assert_eq!(call["method"], "thread/start");
             let mut reply = reply;

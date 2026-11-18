@@ -11,13 +11,15 @@ use tokio::sync::Mutex;
 use crate::card_role_cache::CardRoleCache;
 use crate::db::sqlite::{
     session_bind_attribution_tx, session_clear_terminal_run_id_tx, session_complete_tx,
-    session_projection_by_id_tx, session_set_status_tx,
+    session_projection_by_id_tx, session_projection_projectable_for_card_tx,
+    session_set_handle_state_of_retired_runtime_tx, session_set_handle_state_tx,
+    session_set_status_tx,
 };
-use crate::db::{Repo, RepoEventWrite, write_with_event_typed, write_with_events_typed};
+use crate::db::{Repo, RepoEventWrite, write_in_tx_typed, write_with_events_typed};
 use crate::error::{CalmError, Result};
 use crate::event::{Event, EventBus};
 use crate::ids::ActorId;
-use crate::model::CardRole;
+use crate::model::{CardRole, now_ms};
 use crate::session_projection_repo::{
     AgentProvider, ThreadAttribution, WorkerSessionKind, WorkerSessionState,
 };
@@ -306,6 +308,7 @@ impl PendingThreadStartRegistry {
             &self.events,
             &entry.card_id,
             &entry.worker_session_id,
+            false,
         )
         .await
         .is_ok();
@@ -463,11 +466,15 @@ fn runtime_status_is_active(status: &WorkerSessionState) -> bool {
     )
 }
 
+/// Commit the original card start's failure and its Kernel update together.
+/// A native empty-card viewer failure keeps its thread and records a separate
+/// presentation fact; released pending starts still need no marker.
 pub(crate) async fn card_payload_clear_pending_status(
     repo: &dyn RepoEventWrite,
     events: &EventBus,
     card_id: &str,
     runtime_id: &str,
+    viewer_start_failed: bool,
 ) -> Result<()> {
     let card = repo
         .card_get(card_id)
@@ -480,26 +487,65 @@ pub(crate) async fn card_payload_clear_pending_status(
     let card_role_cache = CardRoleCache::default();
     let track_area_cache = TrackAreaCache::default();
     let write = WriteContext::new(card_role_cache.clone(), track_area_cache.clone());
-    let (_updated, _id) = write_with_event_typed(
-        repo,
-        ActorId::Kernel,
-        scope,
-        None,
-        events,
-        &write,
-        move |tx| {
-            Box::pin(async move {
-                if let Some(runtime) = session_projection_by_id_tx(tx, &runtime_id_for_tx).await?
-                    && runtime_status_is_active(&runtime.status)
-                {
+    let (pending, ids) = write_in_tx_typed(repo, move |tx| {
+        Box::pin(async move {
+            if let Some(runtime) =
+                session_projection_projectable_for_card_tx(tx, card_for_event.id.as_str()).await?
+            {
+                if runtime.id != runtime_id_for_tx {
+                    return Ok((Vec::new(), Vec::new()));
+                }
+                let status_changed = runtime_status_is_active(&runtime.status);
+                if !status_changed && runtime.status != WorkerSessionState::Failed {
+                    return Ok((Vec::new(), Vec::new()));
+                }
+                let mut marker_changed = false;
+                if viewer_start_failed {
+                    let key = crate::session_projection_lookup::CODEX_VIEWER_START_FAILED_STATE_KEY;
+                    let mut state = runtime
+                        .handle_state_json
+                        .unwrap_or_else(|| serde_json::json!({}));
+                    let values = state.as_object_mut().ok_or_else(|| {
+                        CalmError::Internal("Codex viewer state is not an object".into())
+                    })?;
+                    marker_changed = values.get(key) != Some(&serde_json::Value::Bool(true));
+                    if marker_changed {
+                        values.insert(key.into(), serde_json::Value::Bool(true));
+                        let written = if status_changed {
+                            session_set_handle_state_tx(tx, &runtime.id, Some(state)).await?
+                        } else {
+                            session_set_handle_state_of_retired_runtime_tx(
+                                tx,
+                                &runtime.id,
+                                Some(state),
+                                now_ms(),
+                            )
+                            .await?
+                        };
+                        if !written {
+                            return Err(CalmError::Conflict("Codex viewer runtime changed".into()));
+                        }
+                    }
+                }
+                if status_changed {
                     session_complete_tx(tx, &runtime.id, WorkerSessionState::Failed).await?;
                 }
-                let card = card_for_event;
-                Ok((card.clone(), Event::CardUpdated(card)))
-            })
-        },
-    )
+                if !status_changed && !marker_changed {
+                    return Ok((Vec::new(), Vec::new()));
+                }
+            } else if viewer_start_failed {
+                return Ok((Vec::new(), Vec::new()));
+            }
+            // A consumed legacy orphan still publishes its original card update,
+            // even without a session. A different current owner returned above.
+            let pending = vec![(ActorId::Kernel, scope, Event::CardUpdated(card_for_event))];
+            let (ids, _) =
+                crate::db::sqlite::append_actor_events_in_tx(tx, None, &write, &pending).await?;
+            Ok((pending, ids))
+        })
+    })
     .await?;
+    crate::db::sqlite::broadcast_actor_events(events, &ids, pending);
     Ok(())
 }
 
@@ -534,6 +580,7 @@ pub fn spawn_periodic_expire_task(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::db::RepoRead;
     use crate::db::prelude::*;
     use crate::db::sqlite::SqlxRepo;
     use crate::model::{NewArea, NewCard, NewTrack};
@@ -598,5 +645,73 @@ mod tests {
                 reason: PENDING_RUNTIME_ORPHAN_MISSING,
             }
         );
+    }
+
+    #[tokio::test]
+    async fn viewer_failure_without_a_current_session_emits_no_update() {
+        let (repo, events, card_id) = seed_card_without_runtime().await;
+        let before = repo.card_get(&card_id).await.unwrap().unwrap().payload;
+        let mut receiver = events.subscribe();
+
+        card_payload_clear_pending_status(repo.as_ref(), &events, &card_id, "missing", true)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            repo.card_get(&card_id).await.unwrap().unwrap().payload,
+            before
+        );
+        assert!(receiver.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn legacy_pending_cleanup_preserves_a_current_successor() {
+        use crate::db::sqlite::session_start_runtime_tx;
+        use crate::session_projection_repo::WorkerSessionInit;
+
+        let (repo, events, card_id) = seed_card_without_runtime().await;
+        let card = repo.card_get(&card_id).await.unwrap().unwrap();
+        let card_to_start = card_id.clone();
+        write_in_tx_typed(repo.as_ref(), move |tx| {
+            Box::pin(async move {
+                session_start_runtime_tx(
+                    tx,
+                    WorkerSessionInit {
+                        id: "successor".into(),
+                        card_id: card_to_start,
+                        kind: WorkerSessionKind::CodexCard,
+                        agent_provider: Some(AgentProvider::Codex),
+                        status: WorkerSessionState::Running,
+                        terminal_run_id: None,
+                        thread_id: Some("successor-thread".into()),
+                        session_id: None,
+                        active_turn_id: None,
+                        handle_state_json: Some(json!({"successor":true})),
+                        spawn_op_id: None,
+                        now_ms: now_ms(),
+                    },
+                )
+                .await?;
+                Ok(())
+            })
+        })
+        .await
+        .unwrap();
+        let before = repo.session_projection_by_id("successor").await.unwrap();
+        let mut receiver = events.subscribe();
+
+        card_payload_clear_pending_status(repo.as_ref(), &events, &card_id, "missing", false)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            repo.session_projection_by_id("successor").await.unwrap(),
+            before
+        );
+        assert_eq!(
+            repo.card_get(&card_id).await.unwrap().unwrap().payload,
+            card.payload
+        );
+        assert!(receiver.try_recv().is_err());
     }
 }

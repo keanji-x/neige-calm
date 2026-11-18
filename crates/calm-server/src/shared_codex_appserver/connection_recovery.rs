@@ -73,7 +73,7 @@ impl SharedCodexAppServer {
         // Pending cold progress belongs to this PROCESS and survives cancellation
         // and socket replacement. Only a completed process starts a new hot pass.
         if matches!(replay, ConnectionReplay::Complete) {
-            *replay = ConnectionReplay::Pending(ReplayPlan::new(ResumeMode::HotTakeover));
+            *replay = ConnectionReplay::Pending(ReplayPlan::default());
         }
         self.native_turns.publish(&client);
         *installed = client.clone();

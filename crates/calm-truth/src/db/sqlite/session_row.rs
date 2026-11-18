@@ -415,6 +415,29 @@ pub async fn session_get_tx(
     row.as_ref().map(worker_session_from_row).transpose()
 }
 
+/// Recover a historical session from its card and terminal, including retired rows.
+/// Terminal reuse is ambiguous even when only one of the matching rows is active.
+pub async fn session_unique_for_card_terminal_tx(
+    tx: &mut SessionTx<'_>,
+    card_id: &str,
+    terminal_id: &str,
+) -> Result<Option<WorkerSession>> {
+    let ids: Vec<String> = sqlx::query_scalar(
+        "SELECT id FROM worker_sessions WHERE card_id = ?1 AND terminal_run_id = ?2 LIMIT 2",
+    )
+    .bind(card_id)
+    .bind(terminal_id)
+    .fetch_all(&mut **tx)
+    .await?;
+    match ids.as_slice() {
+        [] => Ok(None),
+        [id] => session_get_tx(tx, &WorkerSessionId(id.clone())).await,
+        _ => Err(CalmError::Conflict(
+            "historical session terminal binding is ambiguous",
+        )),
+    }
+}
+
 pub async fn session_set_liveness_tx(
     tx: &mut SessionTx<'_>,
     id: &WorkerSessionId,

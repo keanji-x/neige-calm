@@ -12,12 +12,15 @@ use calm_types::runtime::AgentProvider;
 use provider::acp::{Incoming, configuration::Configuration, protocol};
 use std::{
     collections::{HashMap, HashSet},
+    future::Future,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
     time::Duration,
 };
+pub(crate) type ServerSlot = Arc<tokio::sync::Mutex<Option<Server>>>;
+
 #[derive(Debug)]
 pub(crate) struct Binding {
     pub(crate) native: String,
@@ -53,6 +56,7 @@ impl Generation {
 
 #[derive(Clone)]
 pub(crate) struct CleanupWitness {
+    pub(crate) slot: ServerSlot,
     pub(crate) generation: Arc<Generation>,
     /// One attachment instance; resuming the same native id gets a fresh witness.
     pub(crate) closed: Arc<AtomicBool>,
@@ -123,8 +127,8 @@ pub(crate) async fn detach_worker(
     if !close_session {
         return drain_workers(host, &[worker]).await;
     }
-    for provider in host.shared_servers.keys() {
-        detach_workers_for_provider(host, &[worker], provider, None, false).await?;
+    for slot in host.resident_slots() {
+        detach_workers_for_server(host, &[worker], slot, None, false).await?;
     }
     Ok(())
 }
@@ -135,8 +139,8 @@ pub(crate) async fn drain_workers(host: &AcpHost, workers: &[&str]) -> Result<()
     }
     let (pool, previous) =
         crate::acp_planner::resident_execution::workspace_generations(host, workers).await?;
-    for provider in host.shared_servers.keys() {
-        detach_workers_for_provider(host, workers, provider, None, true).await?;
+    for slot in host.resident_slots() {
+        detach_workers_for_server(host, workers, slot, None, true).await?;
     }
     crate::acp_planner::resident_execution::stop_detached_workspace(host, &pool, previous).await
 }
@@ -144,28 +148,19 @@ pub(crate) async fn drain_workers(host: &AcpHost, workers: &[&str]) -> Result<()
 pub(crate) async fn detach_worker_with_witness(
     host: &AcpHost,
     worker: &str,
-    provider: &str,
+    slot: ServerSlot,
     expected: Option<(&str, &CleanupWitness)>,
 ) -> Result<()> {
-    detach_workers_for_provider(host, &[worker], provider, expected, false).await
+    detach_workers_for_server(host, &[worker], slot, expected, false).await
 }
 
-async fn detach_workers_for_provider(
+async fn detach_workers_for_server(
     host: &AcpHost,
     workers: &[&str],
-    provider: &str,
+    slot: ServerSlot,
     expected: Option<(&str, &CleanupWitness)>,
     drain_workspace: bool,
 ) -> Result<()> {
-    let Some(slot) = host.shared_servers.get(provider) else {
-        return if expected.is_none() {
-            Ok(())
-        } else {
-            Err(CalmError::Conflict(
-                "Original ACP generation stop is unconfirmed".into(),
-            ))
-        };
-    };
     let mut owned = slot.lock().await;
     detach_locked_many(host, &mut owned, workers, expected, drain_workspace).await
 }
@@ -278,15 +273,13 @@ async fn detach_locked_many(
 /// under the same lock that admits attachment and mints credentials.
 pub(crate) async fn supervise(
     host: std::sync::Weak<AcpHost>,
-    provider: &'static str,
+    slot: std::sync::Weak<tokio::sync::Mutex<Option<Server>>>,
     generation: uuid::Uuid,
 ) {
     loop {
         tokio::time::sleep(Duration::from_millis(25)).await;
         let Some(host) = host.upgrade() else { return };
-        let Some(slot) = host.shared_servers.get(provider) else {
-            return;
-        };
+        let Some(slot) = slot.upgrade() else { return };
         let Ok(mut owned) = slot.try_lock() else {
             continue;
         };
@@ -389,11 +382,18 @@ pub(crate) async fn revoke_worker(
     })
     .await
 }
-pub(crate) async fn ensure(
+pub(crate) async fn ensure<F>(
     host: &Arc<AcpHost>,
     registration: Registration<'_>,
+    slot: &ServerSlot,
+    track_id: &str,
+    cwd: &std::path::Path,
     owned: &mut Option<Server>,
-) -> Result<()> {
+    revalidate: impl FnOnce() -> F + Send,
+) -> Result<()>
+where
+    F: Future<Output = Result<()>> + Send,
+{
     if owned.as_ref().is_some_and(|server| {
         server.process.connection.client.terminal_error().is_some()
             || server.process.connection.client.can_recycle_shared()
@@ -406,7 +406,7 @@ pub(crate) async fn ensure(
             .resident
             .ok_or_else(|| CalmError::Conflict("Shared ACP profile required".into()))?;
         let process =
-            process::Process::spawn_shared(host, registration, &std::env::temp_dir()).await?;
+            process::Process::spawn_shared(host, registration, track_id, cwd, revalidate).await?;
         if resident.detach == ResidentDetach::CloseSession
             && process.capabilities.session_capabilities.close.is_none()
         {
@@ -430,7 +430,7 @@ pub(crate) async fn ensure(
         });
         tokio::spawn(supervise(
             Arc::downgrade(host),
-            registration.config.provider.wire_name(),
+            Arc::downgrade(slot),
             generation,
         ));
     }

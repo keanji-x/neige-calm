@@ -669,6 +669,8 @@ async fn codex_worker_prompt_includes_completion_task_id() {
 }
 
 #[cfg(test)]
+mod interactive_environment_tests;
+#[cfg(test)]
 mod viewer_cleanup_tests;
 
 #[cfg(test)]

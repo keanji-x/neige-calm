@@ -4,6 +4,9 @@
 
 #![cfg(target_os = "linux")]
 
+#[path = "forge_merge_crash_reboot/environment.rs"]
+mod environment;
+
 use crate::support;
 use calm_truth::db::RepoOutOfDomain as _;
 use calm_truth::db::RepoRead;
@@ -90,6 +93,8 @@ async fn assert_merge_crash(probe_window: Option<bool>) {
     std::fs::create_dir_all(&shim_dir).expect("create gh shim dir");
     write_gh_shim(&shim_dir);
 
+    let (project_environment, _environment_guards) = environment::prepare(&tmp_path);
+
     install_git_forge_plugin_files(&tmp_path);
 
     // ONE reader pool for the whole test, opened BEFORE boot#1: re-`open()` against a live kernel
@@ -100,12 +105,13 @@ async fn assert_merge_crash(probe_window: Option<bool>) {
     seed_plugin_row(&repo, &tmp_path).await;
 
     let path_value = prepend_to_path(&shim_dir);
-    let base_env: Vec<(&str, OsString)> = vec![
+    let mut base_env: Vec<(&str, OsString)> = vec![
         // The wrapper/probe subprocess env re-reads the kernel's PATH, so prepending the shim dir
         // guarantees `gh` resolves to the shim on BOTH boots.
         ("PATH", path_value),
         ("NEIGE_TRUSTED_FORGE_PLUGINS", OsString::from(PLUGIN_ID)),
     ];
+    base_env.extend(project_environment);
     let mut crash_env = base_env.clone();
     let crash_point = match probe_window {
         None => CRASH_POINT,
@@ -348,6 +354,8 @@ async fn kernel_abort_pre_go_token_then_reboot_never_runs_action() {
     std::fs::create_dir_all(&shim_dir).expect("create gh shim dir");
     write_gh_shim(&shim_dir);
 
+    let (project_environment, _environment_guards) = environment::prepare(&tmp_path);
+
     install_git_forge_plugin_files(&tmp_path);
 
     let repo = Arc::new(SqlxRepo::open(&db_url).await.expect("open file db"));
@@ -357,10 +365,11 @@ async fn kernel_abort_pre_go_token_then_reboot_never_runs_action() {
 
     let path_value = prepend_to_path(&shim_dir);
     // Same base_env on BOTH boots: the recovery probe's `gh` must resolve to the shim on boot#2 too.
-    let base_env: Vec<(&str, OsString)> = vec![
+    let mut base_env: Vec<(&str, OsString)> = vec![
         ("PATH", path_value),
         ("NEIGE_TRUSTED_FORGE_PLUGINS", OsString::from(PLUGIN_ID)),
     ];
+    base_env.extend(project_environment);
     let mut crash_env = base_env.clone();
     crash_env.push(("CALM_TEST_CRASH_AT", OsString::from(PRE_GO_CRASH_POINT)));
 

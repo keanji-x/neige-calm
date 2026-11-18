@@ -165,8 +165,8 @@ pub trait WorkerSessionProjectionRepo {
         card_id: &CardId,
     ) -> Result<Option<WorkerSessionProjection>>;
 
-    /// The active runtime, or else a latest failed no-thread runtime so the legacy
-    /// `failed_to_spawn` state still surfaces.
+    /// The card's current non-superseded runtime, including completed failures
+    /// whose presentation and native identity remain visible.
     async fn session_projection_projectable_for_card(
         &self,
         card_id: &CardId,

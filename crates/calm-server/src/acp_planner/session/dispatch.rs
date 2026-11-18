@@ -67,6 +67,15 @@ pub(super) async fn send(
             if params.seals.is_sealed(thread) || shared.state.lock().expect("ACP state").closed {
                 return Err(refused("ACP conversation was sealed before dispatch"));
             }
+            if let Some(hook) = &guard
+                .process
+                .as_ref()
+                .expect("prepared ACP process")
+                .tool_environment
+            {
+                hook.check_ready()
+                    .map_err(|error| refused(&error.to_string()))?;
+            }
             guard
                 .process
                 .as_ref()

@@ -10,6 +10,14 @@ async fn w_terminal_worker_prepare_freezes_managed_workspace() {
         )),
     )
     .await;
+    // Production creation prepares this directory; the fixture only created its binding.
+    let track = h.db.track_get(&h.task.track_id).await.unwrap().unwrap();
+    workspace_runtime::selection::materialize_workspace(
+        &track.workspace,
+        workspace_root.path(),
+        track.id.as_str(),
+    )
+    .unwrap();
     let before: (Option<i64>, Option<i64>) = sqlx::query_as(
         "SELECT t.workspace_frozen_at,b.frozen_at_ms FROM tracks t \
          JOIN track_workspace_bindings b ON b.track_id=t.id WHERE t.id=?1",
@@ -105,17 +113,20 @@ async fn w_terminal_worker_ambient_secret_proxy_refused_before_admit() {
 }
 
 #[tokio::test]
-async fn w_terminal_worker_ambient_values_not_persisted() {
-    const NAME: &str = "operation::terminal_adapter::pipe_worker::tests::preparation::w_terminal_worker_ambient_values_not_persisted";
+async fn w_terminal_worker_environment_values_not_persisted() {
+    const NAME: &str = "operation::terminal_adapter::pipe_worker::tests::preparation::w_terminal_worker_environment_values_not_persisted";
     const SOCK: &str = "/tmp/wt2-ambient-agent.sock";
     const CERT: &str = "/tmp/wt2-ambient-cert.pem";
     const MARKER: &str = "WT2_AMBIENT_CHILD";
     if std::env::var_os(MARKER).is_none() {
+        let home = tempfile::tempdir().unwrap();
         let output = std::process::Command::new(std::env::current_exe().unwrap())
             .args([NAME, "--exact", "--nocapture", "--test-threads=1"])
             .env(MARKER, "1")
             .env("SSH_AUTH_SOCK", SOCK)
             .env("SSL_CERT_FILE", CERT)
+            .env("DIRENV_CONFIG", home.path().join("config"))
+            .env("XDG_DATA_HOME", home.path().join("data"))
             .output()
             .unwrap();
         assert!(
@@ -129,6 +140,21 @@ async fn w_terminal_worker_ambient_values_not_persisted() {
     }
     let h = Harness::new("printf '%s\\n%s' \"$SSH_AUTH_SOCK\" \"$SSL_CERT_FILE\" > ambient-values")
         .await;
+    // SSH credentials belong to the project; certificates may come from the service.
+    std::fs::write(
+        h.root.path().join(".envrc"),
+        format!("export SSH_AUTH_SOCK='{SOCK}'\n"),
+    )
+    .unwrap();
+    assert!(
+        std::process::Command::new("direnv")
+            .arg("allow")
+            .arg(h.root.path())
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
     h.park().await;
     h.release().await;
     h.settled().await;

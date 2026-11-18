@@ -131,6 +131,46 @@ pub(crate) async fn admit(
 }
 
 /// All record transitions are fenced by the parked claim and compare the entire v1 record.
+async fn require_transition_owner_tx(
+    config: PipeConfig,
+    tx: &mut Tx<'_>,
+    op: &Operation,
+    old: &Record,
+    authority: Option<&dyn ReleaseAuthorization>,
+) -> Result<()> {
+    crate::operation::repo_sqlite::require_live_claim_tx(tx, op).await?;
+    if let Some(authority) = authority {
+        authority.authorize_tx(tx).await?;
+    }
+    sql::require_record(tx, &op.id, config.record_key, &serde_json::to_string(old)?).await?;
+    Ok(())
+}
+
+/// Recheck the original Held owner after the environment worker has acquired its resource.
+pub(crate) async fn require_release_owner(
+    config: PipeConfig,
+    ctx: &SpawnCtx,
+    op: &Operation,
+    old: &Record,
+    authority: &dyn ReleaseAuthorization,
+) -> Result<()> {
+    if old.release != Release::Held || old.decision != Decision::Observing {
+        return Err(conflict("execution is no longer held for release"));
+    }
+    let db = ctx.operation_repo.sqlite_db().clone();
+    db.writer()
+        .with_writer(|session| {
+            Box::pin(async move {
+                let mut tx = session.begin_immediate().await?;
+                require_transition_owner_tx(config, &mut tx, op, old, Some(authority)).await?;
+                tx.rollback().await?;
+                Ok(())
+            })
+        })
+        .await
+        .map_err(calm_truth::TruthError::from)?
+}
+
 pub(crate) async fn transition(
     config: PipeConfig,
     ctx: &SpawnCtx,
@@ -146,10 +186,7 @@ pub(crate) async fn transition(
         .with_writer(|write_session| {
             Box::pin(async move {
                 let mut tx = write_session.begin_immediate().await?;
-                crate::operation::repo_sqlite::require_live_claim_tx(&mut tx, op).await?;
-                if let Some(authority) = authority {
-                    authority.authorize_tx(&mut tx).await?;
-                }
+                require_transition_owner_tx(config, &mut tx, op, old, authority).await?;
                 sql::compare_exchange(
                     &mut tx,
                     &op.id,

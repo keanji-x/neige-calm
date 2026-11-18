@@ -165,6 +165,7 @@ pub(super) async fn second_turn(
     let mut reads = 0;
     let mut resumes = 0;
     let mut metadata_reads = 0;
+    let mut workspace_reads = 0;
     let mut tail_input = None;
     let call = tokio::time::timeout(Duration::from_secs(5), async {
         loop {
@@ -191,7 +192,10 @@ pub(super) async fn second_turn(
                     json!({"thread":{"id":THREAD,"status":{"type":"idle"},"turns":[]}})
                 }
                 "config/read" => {
-                    if scenario == Scenario::AppendAfterFreeze && metadata_reads == 0 {
+                    if resumes == 0 {
+                        assert_eq!(reads, 1);
+                        workspace_reads += 1;
+                    } else if scenario == Scenario::AppendAfterFreeze && metadata_reads == 0 {
                         assert_eq!((reads, resumes), (1, 1));
                         // This is advance_once's real metadata read after its
                         // SelectionReadAdmission froze the pending prefix.
@@ -199,7 +203,9 @@ pub(super) async fn second_turn(
                             "tail", json!({"text":"Keep this newer pending input"})).await);
                         eprintln!("cold append accepted during config/read, after prefix freeze");
                     }
-                    metadata_reads += 1;
+                    if resumes != 0 {
+                        metadata_reads += 1;
+                    }
                     if scenario == Scenario::AppendAfterFreeze {
                         json!({"config":{"model":"fixture-private-model"}})
                     } else {
@@ -225,8 +231,9 @@ pub(super) async fn second_turn(
     assert_eq!((reads, resumes), (1, 1));
     if scenario == Scenario::AppendAfterFreeze {
         assert_eq!(
-            metadata_reads, 1,
-            "the real post-freeze model read must have occurred"
+            (workspace_reads, metadata_reads),
+            (1, 1),
+            "workspace loading precedes resume; the model read observes the frozen prefix"
         );
     }
     assert_eq!(call["params"]["threadId"], THREAD);

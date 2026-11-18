@@ -71,6 +71,7 @@ with (root / 'environment.jsonl').open('a') as output:
         'NEIGE_MCP_DAEMON_TOKEN', 'NEIGE_MCP_TOKEN', 'NEIGE_MCP_SOCKET', 'ACP_AMBIENT_SENTINEL',
         'XAI_API_KEY', 'GROK_CODE_XAI_API_KEY']}
     presence['_pid'] = os.getpid()
+    presence['cwd'] = os.getcwd()
     presence['probe'] = {key: hashlib.sha256(os.environ.get(key, '').encode()).hexdigest() for key in os.environ.get('ACP_FIXTURE_PROBE_KEYS', '').split(',') if key}
     presence['opencode_config_content'] = os.environ.get('OPENCODE_CONFIG_CONTENT')
     output.write(json.dumps(presence) + '\n')
@@ -103,6 +104,14 @@ def emit(value):
         print(json.dumps(value, ensure_ascii=False), flush=True)
 
 def result(request, value):
+    if request.get('method') in ['session/new', 'session/load', 'session/resume']:
+        # Emulate the declared native plugin activation at catalog/attachment completion.
+        # A missing activation is an explicit fixture failure case, never a kernel bypass.
+        content = json.loads(os.environ.get('OPENCODE_CONFIG_CONTENT', '{}'))
+        for plugin in content.get('plugins', []):
+            options = plugin.get('options', {}) if isinstance(plugin, dict) else {}
+            if 'ready' in options and not (root / 'workspace-hook-not-ready').exists():
+                pathlib.Path(options['ready']).write_text('ready')
     if request.get('method') == 'session/new':
         cold_trace('result', request, value)
     emit({'jsonrpc': '2.0', 'id': request['id'], 'result': value})

@@ -158,6 +158,8 @@ impl AcpPlannerSession {
             }
         };
         let mut usage = provider::acp::usage::UsageTracker::new(registration.profile.usage);
+        let owner = shared.admission(thread, Some(permission), Some(&native), None);
+        let combined = admission.combined(&owner);
         let prepared = async {
             guard
                 .launch(
@@ -169,6 +171,7 @@ impl AcpPlannerSession {
                         turn_id: turn.clone(),
                     },
                     track_fence,
+                    &combined,
                 )
                 .await?;
             let capabilities = super::super::process::negotiate(
@@ -189,8 +192,6 @@ impl AcpPlannerSession {
                 .expect("admitted process")
                 .capabilities = capabilities.capabilities;
             let process = guard.process.as_mut().expect("ACP maintenance process");
-            let owner = shared.admission(thread, Some(permission), Some(&native), None);
-            let combined = admission.combined(&owner);
             let mcp = [params.mcp_server(server.clone(), &token)];
             let (_, configuration) = setup::attach(
                 process,

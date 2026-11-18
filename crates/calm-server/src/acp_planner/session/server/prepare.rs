@@ -6,15 +6,15 @@ use crate::{
 };
 
 #[allow(clippy::too_many_arguments)]
-pub(super) async fn prepare<'a>(
-    shared: &'a Arc<Shared>,
+pub(super) async fn prepare(
+    shared: &Arc<Shared>,
     registration: Registration<'_>,
     original_native: Option<String>,
     thread: &str,
     selection: &provider::TurnModelSelection,
     permission: PlannerPermissionMode,
     source: &NativePromptAdmission<'_>,
-) -> std::result::Result<attachment::Attached<'a>, StartFailure> {
+) -> std::result::Result<attachment::Attached, StartFailure> {
     let params = &shared.params;
     attachment::attach(
         &params.host,

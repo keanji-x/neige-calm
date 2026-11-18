@@ -218,7 +218,8 @@ impl SharedCodexAppServer {
         &self,
         client: &RecoveryClient,
         thread_id: &str,
-        config: ThreadConfig,
+        card_id: &str,
+        config: ResumeConfig,
         admit: &NativePromptAdmission<'_>,
     ) -> Result<Value> {
         #[cfg(feature = "fixtures")]
@@ -234,12 +235,19 @@ impl SharedCodexAppServer {
                 .expect("fake resumed threads mutex")
                 .push((
                     thread_id.to_owned(),
-                    matches!(config, ThreadConfig::McpShell { .. }),
+                    matches!(config, ResumeConfig::Reload(ThreadConfig::McpShell { .. })),
                 ));
             return Ok(json!({"id":thread_id,"status":{"type":"idle"}}));
         }
-        let config = config.to_wire_config()?;
+        admit.check_local().await?;
         let client = client.native()?;
+        let config = match config {
+            ResumeConfig::Retain => None,
+            ResumeConfig::Reload(config) => {
+                self.workspace_thread_config(client, card_id, None, &config, admit)
+                    .await?
+            }
+        };
         let gate = admit;
         Ok(gate
             .finish(
@@ -340,12 +348,12 @@ impl RecoveryThread<'_> {
     }
     pub(crate) async fn resume(
         &self,
-        config: ThreadConfig,
+        config: ResumeConfig,
         admit: &NativePromptAdmission<'_>,
     ) -> Result<RecoveryState> {
         let thread = self
             .daemon
-            .resume_recovery_thread(&self.client, self.thread_id, config, admit)
+            .resume_recovery_thread(&self.client, self.thread_id, self.card_id, config, admit)
             .await?;
         Ok(RecoveryState::from_thread(&thread))
     }
@@ -512,7 +520,13 @@ impl SharedCodexAppServer {
             let transcript = canonical_terminal_receipt(native.thread_id, turn, terminal)?;
             // The provider retains its error flag after END and resume; only a
             // new turn clears it. Retirement requires inactivity, not a new turn.
-            let resumed = native.resume(ThreadConfig::NoMcp, admit).await?;
+            let config =
+                if thread.pointer("/status/type").and_then(Value::as_str) == Some("notLoaded") {
+                    ResumeConfig::Reload(ThreadConfig::NoMcp)
+                } else {
+                    ResumeConfig::Retain
+                };
+            let resumed = native.resume(config, admit).await?;
             if resumed.id.as_deref() != Some(native.thread_id)
                 || !matches!(resumed.status.as_deref(), Some("idle" | "systemError"))
             {

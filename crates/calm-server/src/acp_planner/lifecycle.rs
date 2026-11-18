@@ -44,8 +44,13 @@ impl ResidentQuiescence {
         .await?;
         if !matches!(owner, Some(AcpSharedRestartOwner::Execution { execution_id }) if execution_id == self.execution)
             || bound
-            || !super::resident_execution::has_drained_tx(tx, &self.provider, &self.execution)
-                .await?
+            || !super::resident_execution::has_drained_tx(
+                tx,
+                &self.provider,
+                &self.worker,
+                &self.execution,
+            )
+            .await?
         {
             return Err(CalmError::Conflict(
                 "Resident ACP execution quiescence is unproven".into(),

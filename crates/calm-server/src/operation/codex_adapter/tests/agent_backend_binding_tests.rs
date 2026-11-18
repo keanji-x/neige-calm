@@ -192,7 +192,7 @@ async fn agent_backend_worker_env_codex_home_matches_binding() {
 #[tokio::test]
 async fn agent_backend_bound_backend_down_or_unknown_mint_never_reselects() {
     use crate::agent_backend_pool::codex::codex_route_tests::rebuild_pool;
-    use crate::shared_codex_appserver::native_owner_tests::request;
+    use crate::shared_codex_appserver::native_owner_tests::{request, send};
     for unknown in [false, true] {
         let mut h = worker_lease_harness().await;
         let (root, pool) = pool_for_repo(h.repo.clone()).await;
@@ -241,6 +241,18 @@ async fn agent_backend_bound_backend_down_or_unknown_mint_never_reselects() {
             .unwrap();
         if unknown {
             let serve = async {
+                let metadata = request(&mut peer).await;
+                assert_eq!(metadata["method"], "config/read");
+                assert_eq!(metadata["params"]["includeLayers"], false);
+                assert_eq!(
+                    metadata["params"]["cwd"],
+                    output.output_string("cwd", "test").unwrap()
+                );
+                send(
+                    &mut peer,
+                    json!({"id":metadata["id"],"result":{"config":{}}}),
+                )
+                .await;
                 let frame = request(&mut peer).await;
                 assert_eq!(frame["method"], "thread/start");
                 // Native start may have succeeded; its receipt is lost.
@@ -303,6 +315,27 @@ async fn agent_backend_restart_resumes_bound_worker_only_on_its_backend() {
             assert_no_request(&mut peer).await;
         } else {
             let serve = async {
+                let read = request(&mut peer).await;
+                assert_eq!(read["method"], "thread/read");
+                assert_eq!(read["params"]["threadId"], "restart-thread");
+                assert_eq!(read["params"]["includeTurns"], false);
+                send(
+                    &mut peer,
+                    json!({"id":read["id"],"result":{"thread":{"id":"restart-thread","status":{"type":"notLoaded"},"turns":[]}}}),
+                )
+                .await;
+                let metadata = request(&mut peer).await;
+                assert_eq!(metadata["method"], "config/read");
+                assert_eq!(metadata["params"]["includeLayers"], false);
+                assert_eq!(
+                    metadata["params"]["cwd"],
+                    output.output_string("cwd", "test").unwrap()
+                );
+                send(
+                    &mut peer,
+                    json!({"id":metadata["id"],"result":{"config":{}}}),
+                )
+                .await;
                 let frame = request(&mut peer).await;
                 assert_eq!(frame["method"], "thread/resume");
                 assert_eq!(frame["params"]["threadId"], "restart-thread");

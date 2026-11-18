@@ -16,7 +16,7 @@ use serde_json::{Value, json};
 
 use crate::git_delivery::{Fx, git, git_output, ref_target, write_executable};
 use crate::mcp_track_report::{call_tool, planner_identity};
-use crate::support::forge_env::{EnvGuard, FORGE_ENV_LOCK};
+use crate::support::forge_env::{EnvGuard, FORGE_ENV_LOCK, ProjectEnvironment};
 use crate::support::gh_shim::{run_gh, write_gh_shim};
 use crate::track_worker_cwd::{
     candidate_commit, declare_task, development_world, wait_running, wait_task,
@@ -25,10 +25,12 @@ use crate::track_worker_cwd::{
 const TOOL: &str = "plugin_gitforge_publish";
 
 /// The process environment of one test: the `gh` shim first on PATH, and optionally a
-/// `GH_TOKEN` in the kernel's own environment (which the forge child inherits).
+/// `GH_TOKEN` in the kernel's own environment. Publication declares its own
+/// synthetic project identity independently of that ambient credential.
 pub(super) struct PublishEnv {
     _token: Option<EnvGuard>,
     _path: EnvGuard,
+    _project_environment: ProjectEnvironment,
     _shim_dir: tempfile::TempDir,
     _lock: tokio::sync::MutexGuard<'static, ()>,
 }
@@ -48,6 +50,7 @@ pub(super) async fn publish_env(token: Option<&str>) -> PublishEnv {
     PublishEnv {
         _path: EnvGuard::set("PATH", path),
         _token: token.map(|token| EnvGuard::set("GH_TOKEN", token)),
+        _project_environment: ProjectEnvironment::new(),
         _shim_dir: shim_dir,
         _lock: lock,
     }
@@ -72,6 +75,8 @@ pub(super) async fn publish(fx: &Fx, key: &str) -> Result<Value, RpcError> {
 }
 
 async fn publish_titled(fx: &Fx, key: &str, title: &str, body: &str) -> Result<Value, RpcError> {
+    let project_environment = ProjectEnvironment::new();
+    project_environment.declare_forge_identity(fx.track_root.parent().unwrap());
     call_tool(
         &fx.boot,
         TOOL,

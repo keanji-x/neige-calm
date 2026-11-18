@@ -37,6 +37,7 @@ pub(crate) mod native_owner_tests;
 pub(crate) use prompt_attempt::{CodexPromptDelivery, CodexPromptReport};
 mod connection_recovery;
 mod resume_replay;
+mod workspace_environment;
 use resume_replay::{ConnectionReplay, ReplayPlan};
 #[cfg(test)]
 mod persisted_identity_tests;
@@ -107,12 +108,6 @@ use provider::codex::shared::liveness_facts_from_read;
 pub type TurnId = String;
 
 pub use provider::codex::shared::SPAWN_ENV_PASSTHROUGH;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ResumeMode {
-    ColdRespawn,
-    HotTakeover,
-}
 
 /// How the shared start body established the Running daemon.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -373,7 +368,7 @@ fn unreconciled_message(
 
 #[derive(Clone)]
 pub enum ThreadConfig {
-    /// No per-card MCP credentials injected. Serializes to omitted `config`.
+    /// No per-card MCP credentials; the workspace shell environment still applies.
     NoMcp,
     /// Per-card MCP shell env injected through `shell_environment_policy.set`.
     McpShell {
@@ -382,6 +377,12 @@ pub enum ThreadConfig {
         raw_token: String,
         selection: TurnModelSelection,
     },
+}
+
+/// A loaded native context keeps its snapshot; only a cold load receives new inputs.
+pub(crate) enum ResumeConfig {
+    Retain,
+    Reload(ThreadConfig),
 }
 
 impl ThreadConfig {
@@ -1021,6 +1022,8 @@ impl SharedCodexAppServer {
         CalmError::Internal(self.not_running_message())
     }
 
+    /// Fixture-only native setup without an operation or task owner.
+    #[cfg(any(test, feature = "fixtures"))]
     pub async fn thread_start_for_card(
         self: &Arc<Self>,
         card_id: &str,
@@ -1053,8 +1056,9 @@ impl SharedCodexAppServer {
         Ok(thread_id)
     }
 
-    /// Kernel-only thread mint: performs `thread/start` and populates in-memory caches without
-    /// touching durable runtime rows.
+    /// Fixture-only mint populates native caches without durable runtime rows.
+    /// Production callers must supply their original launch admission instead.
+    #[cfg(any(test, feature = "fixtures"))]
     pub async fn thread_start_mint_for_card(
         self: &Arc<Self>,
         card_id: &str,
@@ -1116,7 +1120,8 @@ impl SharedCodexAppServer {
             .await
     }
 
-    /// Worker mint: inject per-card MCP shell credentials without Planner tool delegation.
+    /// Fixture-only worker mint without operation/task admission.
+    #[cfg(any(test, feature = "fixtures"))]
     pub async fn thread_start_mint_mcp_shell(
         self: &Arc<Self>,
         card_id: &str,
@@ -1125,10 +1130,35 @@ impl SharedCodexAppServer {
         socket_path: PathBuf,
         raw_token: String,
     ) -> Result<MintedThread> {
+        self.thread_start_mint_mcp_shell_admitted(
+            card_id,
+            cwd,
+            developer_instructions,
+            socket_path,
+            raw_token,
+            &NativePromptAdmission::new(|| Ok(()), || Box::pin(async { Ok(()) })),
+        )
+        .await
+        .map_err(Into::into)
+    }
+
+    /// Worker mint retains caller admission through metadata, local evaluation,
+    /// and the native send, without granting Planner tool delegation.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn thread_start_mint_mcp_shell_admitted(
+        self: &Arc<Self>,
+        card_id: &str,
+        cwd: String,
+        developer_instructions: Option<String>,
+        socket_path: PathBuf,
+        raw_token: String,
+        admission: &NativePromptAdmission<'_>,
+    ) -> std::result::Result<MintedThread, ThreadMintFailure> {
         let card = self
             .repo
             .card_get(card_id)
-            .await?
+            .await
+            .map_err(CalmError::from)?
             .ok_or_else(|| CalmError::NotFound(format!("card {card_id}")))?;
         let selection = crate::worker_model_defaults::from_payload(
             &card.payload,
@@ -1154,10 +1184,12 @@ impl SharedCodexAppServer {
             },
         };
         let _start_guard = self.kernel_thread_start_serial.lock().await;
-        self.thread_start_mint_inner(card_id, params).await
+        self.thread_start_mint_inner_admitted(card_id, params, admission)
+            .await
     }
 
     /// Caller MUST hold `kernel_thread_start_serial`.
+    #[cfg(any(test, feature = "fixtures"))]
     async fn thread_start_mint_inner(
         self: &Arc<Self>,
         card_id: &str,
@@ -1215,7 +1247,16 @@ impl SharedCodexAppServer {
     ) -> std::result::Result<MintedThread, ThreadMintFailure> {
         self.reap_and_respawn_with_current_settings().await?;
         let client = self.connected_client().await?;
-        let config = params.config.to_wire_config()?;
+        admission.check_local().await?;
+        let config = self
+            .workspace_thread_config(
+                &client,
+                card_id,
+                Some(std::path::Path::new(&params.cwd)),
+                &params.config,
+                admission,
+            )
+            .await?;
         let thread = admission.finish_mint(
             client
                 .thread_start_with_params_gated(
@@ -2021,7 +2062,7 @@ impl SharedCodexAppServer {
                         child: None,
                         client,
                         runtime,
-                        replay: ConnectionReplay::Pending(ReplayPlan::new(ResumeMode::HotTakeover)),
+                        replay: ConnectionReplay::Pending(ReplayPlan::default()),
                         watcher: SupervisorWatcher {
                             #[cfg(any(test, feature = "fixtures"))]
                             kind: WatcherKind::TakenOverPid,
@@ -2804,7 +2845,7 @@ impl SharedCodexAppServer {
             child: Some(child),
             client,
             runtime,
-            replay: ConnectionReplay::Pending(ReplayPlan::new(ResumeMode::ColdRespawn)),
+            replay: ConnectionReplay::Pending(ReplayPlan::default()),
             watcher: SupervisorWatcher {
                 #[cfg(any(test, feature = "fixtures"))]
                 kind: WatcherKind::SpawnedChild,

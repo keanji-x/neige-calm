@@ -17,6 +17,32 @@ use crate::session_projection_repo::WorkerSessionKind;
 use crate::track_area_cache::TrackAreaCache;
 use calm_types::worker::{WorkerSession, WorkerSessionId};
 
+async fn read_workspace_lease(
+    pool: &sqlx::SqlitePool,
+    card_id: &str,
+    held_only: bool,
+) -> Result<Option<WorkspaceLease>> {
+    let row = sqlx::query(
+        "SELECT lease_id, card_id, track_id, path, state FROM workspace_leases \
+         WHERE card_id=?1 AND (?2=0 OR state='held') \
+         ORDER BY created_at_ms DESC, lease_id DESC LIMIT 1",
+    )
+    .bind(card_id)
+    .bind(held_only)
+    .fetch_optional(pool)
+    .await?;
+    row.map(|row| {
+        Ok(WorkspaceLease {
+            lease_id: row.try_get("lease_id")?,
+            card_id: row.try_get("card_id")?,
+            track_id: row.try_get("track_id")?,
+            path: row.try_get("path")?,
+            state: row.try_get("state")?,
+        })
+    })
+    .transpose()
+}
+
 /// Row shape of the single-statement `track_detail` read.
 #[derive(sqlx::FromRow)]
 struct TrackDetailRow {
@@ -1147,27 +1173,14 @@ impl RepoRead for SqlxRepo {
     }
 
     async fn workspace_lease_for_card(&self, card_id: &str) -> Result<Option<WorkspaceLease>> {
-        let row = sqlx::query(
-            r#"SELECT lease_id, card_id, track_id, path, state
-               FROM workspace_leases
-               WHERE card_id = ?1
-                 AND state = 'held'
-               ORDER BY created_at_ms DESC, lease_id DESC
-               LIMIT 1"#,
-        )
-        .bind(card_id)
-        .fetch_optional(self.db.read_pool())
-        .await?;
-        row.map(|row| {
-            Ok(WorkspaceLease {
-                lease_id: row.try_get("lease_id")?,
-                card_id: row.try_get("card_id")?,
-                track_id: row.try_get("track_id")?,
-                path: row.try_get("path")?,
-                state: row.try_get("state")?,
-            })
-        })
-        .transpose()
+        read_workspace_lease(self.db.read_pool(), card_id, true).await
+    }
+
+    async fn latest_workspace_lease_for_card(
+        &self,
+        card_id: &str,
+    ) -> Result<Option<WorkspaceLease>> {
+        read_workspace_lease(self.db.read_pool(), card_id, false).await
     }
 
     async fn session_get_by_active_token_hash(

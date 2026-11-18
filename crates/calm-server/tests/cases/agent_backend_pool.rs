@@ -130,6 +130,7 @@ async fn agent_backend_b7_legacy_threads_only_resume_on_default() {
     let backends = pool(&multi_backend_cfg(&root), repo).await;
     let mut cleanup = Vec::new();
     for instance in backends.instances() {
+        script_unloaded_threads(instance, &["legacy-thread"]);
         instance.boot().await.unwrap();
         cleanup.push(DaemonGroup(instance.status_snapshot().runtime.unwrap().pid));
         let candidates = instance.resume_candidates_for_test();

@@ -1,6 +1,55 @@
 use super::*;
 
 #[tokio::test]
+async fn thread_status_read_rechecks_gate_after_sink_wait_and_preserves_protocol() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let mut h = harness().await;
+    let live = AtomicBool::new(true);
+    let gate = PreSendGate::new(|| {
+        Box::pin(async {
+            if live.load(Ordering::SeqCst) {
+                Ok(())
+            } else {
+                Err(crate::send_boundary::SendRefusal("revoked".into()))
+            }
+        })
+    });
+    let held = h.client.sink.lock().await;
+    let reading = h.client.thread_read_gated("original-thread", false, &gate);
+    tokio::pin!(reading);
+    assert!(futures_util::poll!(&mut reading).is_pending());
+    live.store(false, Ordering::SeqCst);
+    drop(held);
+    assert!(matches!(reading.await, Err(Error::Refused(_))));
+    assert!(h.client.pending.lock().unwrap().is_empty());
+    assert!(h.client.transport.check().is_ok());
+    assert!(
+        tokio::time::timeout(Duration::from_millis(20), h.server.next())
+            .await
+            .is_err()
+    );
+    live.store(true, Ordering::SeqCst);
+    let response = async {
+        let call = server_recv_json(&mut h.server).await;
+        assert_eq!(call["method"], "thread/read");
+        assert_eq!(
+            call["params"],
+            json!({"threadId":"original-thread","includeTurns":false})
+        );
+        server_send_json(
+            &mut h.server,
+            json!({"id":call["id"],"result":{"thread":{"status":{"type":"idle"}}}}),
+        )
+        .await;
+    };
+    let (result, ()) = tokio::join!(
+        h.client.thread_read_gated("original-thread", false, &gate),
+        response,
+    );
+    assert_eq!(result.unwrap().thread.status, ThreadStatus::Idle);
+}
+
+#[tokio::test]
 async fn expired_attempt_has_pre_send_evidence_and_never_reaches_peer() {
     let mut h = harness().await;
     let deadline = tokio::time::Instant::now() - Duration::from_secs(1);

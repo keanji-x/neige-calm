@@ -28,7 +28,7 @@ async fn an_over_long_key_is_invalid_and_submits_nothing() {
     let (status, answer) = post(
         boot.app.clone(),
         &boot.track_id,
-        body(None),
+        body(&boot, None),
         Some(&key),
         None,
     )
@@ -56,7 +56,7 @@ async fn a_duplicate_past_the_dedup_check_joins_the_stored_card() {
         post(
             boot.app.clone(),
             &boot.track_id,
-            body(None),
+            body(&boot, None),
             Some("claude-race"),
             None
         ),
@@ -67,7 +67,7 @@ async fn a_duplicate_past_the_dedup_check_joins_the_stored_card() {
             let second = post(
                 boot.app.clone(),
                 &boot.track_id,
-                body(None),
+                body(&boot, None),
                 Some("claude-race"),
                 None,
             )

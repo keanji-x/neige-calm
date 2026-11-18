@@ -208,7 +208,7 @@ async fn replays_stored_operation(
 }
 
 async fn upgraded_checks(completed: bool) {
-    let fx = forge_runtime_fixture().await;
+    let fx = forge_runtime_fixture_for_card("caller").await;
     let stored = stored_payload(&fx);
     let event = replays_stored_operation(&fx, stored, current_payload(), completed).await;
     let events = event_payloads(&fx.repo, "forge.pr.checks").await;
@@ -224,7 +224,7 @@ async fn upgraded_checks(completed: bool) {
 /// new operation and the stored row is left as it was.
 async fn released_rows_start_a_new_operation(completed: bool) {
     for index in 0..6 {
-        let fx = forge_runtime_fixture().await;
+        let fx = forge_runtime_fixture_for_card("caller").await;
         let mut rows = released_rows(&fx);
         assert_eq!(rows.len(), 6);
         let (stored, args) = rows.swap_remove(index);
@@ -287,7 +287,7 @@ async fn checks_upgrade_completed_reuses_any_version_result() {
 
 #[tokio::test]
 async fn checks_upgrade_all_mode_retry_after_program_change_replays() {
-    let fx = forge_runtime_fixture().await;
+    let fx = forge_runtime_fixture_for_card("caller").await;
     let all = || {
         lowered(json!({
             "repo": "owner/repo", "pr": 42, "attempt": "upgrade", "wait_for_all": true
@@ -302,7 +302,7 @@ async fn checks_upgrade_all_mode_retry_after_program_change_replays() {
 
 #[tokio::test]
 async fn checks_upgrade_rejects_different_parameters_and_scopes() {
-    let fx = forge_runtime_fixture().await;
+    let fx = forge_runtime_fixture_for_card("caller").await;
     let op_id = submit(&fx, stored_payload(&fx)).await;
     std::fs::write(fx.cwd.path().join("release"), "").unwrap();
     fx.runtime.wait(&op_id).await.unwrap();

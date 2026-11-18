@@ -77,6 +77,25 @@ async fn server(root: &tempfile::TempDir, repo: Arc<dyn Repo>) -> Arc<SharedCode
     SharedCodexAppServer::new(&cfg, Arc::new(home), repo)
 }
 
+fn script_unloaded_threads(daemon: &SharedCodexAppServer, threads: &[&str]) {
+    let socket = daemon.sock_path();
+    std::fs::create_dir_all(socket.parent().unwrap()).unwrap();
+    let answers: serde_json::Map<String, Value> = threads
+        .iter()
+        .map(|thread| {
+            (
+                (*thread).to_owned(),
+                json!({"thread":{"id":thread,"status":{"type":"notLoaded"},"turns":[]}}),
+            )
+        })
+        .collect();
+    std::fs::write(
+        socket.with_extension("thread-reads"),
+        serde_json::to_vec(&answers).unwrap(),
+    )
+    .unwrap();
+}
+
 fn effective_test_env_signature(ingest_url: &str) -> String {
     let http_proxy = SharedCodexAppServer::effective_proxy_env(None, &["HTTP_PROXY", "http_proxy"]);
     let https_proxy =
@@ -1166,6 +1185,7 @@ async fn boot_replaces_a_daemon_with_a_stale_env_signature_before_recovery() {
     .await;
 
     let daemon = server(&root, repo.clone()).await;
+    script_unloaded_threads(&daemon, &["thread-planner"]);
     let events = calm_server::event::EventBus::new();
     let state = calm_server::state::AppState::from_parts(
         repo.clone(),
@@ -1616,6 +1636,12 @@ async fn hot_takeover_plain_resumes_without_rotating_cached_thread_token() {
                     .await;
 
                 let daemon = server(&root, repo.clone()).await;
+                std::fs::write(
+                    sock.with_extension("thread-read"),
+                    json!({"thread":{"id":"thread-hot","status":{"type":"idle"},"turns":[]}})
+                        .to_string(),
+                )
+                .unwrap();
                 daemon.start_or_takeover().await.unwrap();
 
                 let rows = wait_for_requests(&capture, 2).await;
@@ -1684,6 +1710,7 @@ async fn restart_resumes_rollout_backed_threads() {
                 tx.commit().await.unwrap();
 
                 let daemon = server(&root, repo.clone()).await;
+                script_unloaded_threads(&daemon, &["thread-resume"]);
                 daemon.start_or_takeover().await.unwrap();
                 let rows = wait_for_requests(&capture, 2).await;
                 let resumes = rows
@@ -1796,6 +1823,7 @@ async fn cold_respawn_plain_resumes_stale_cache_entry_without_rotating_active_to
                 tx.commit().await.unwrap();
 
                 let daemon = server(&root, repo.clone()).await;
+                script_unloaded_threads(&daemon, &["thread-active", "fake-thread-0001"]);
                 daemon.start_or_takeover().await.unwrap();
                 let rows = wait_for_requests(&capture, 2).await;
                 let first_hash = card_mcp_hash(&repo, &card_id)
@@ -1848,7 +1876,13 @@ async fn cold_respawn_plain_resumes_stale_cache_entry_without_rotating_active_to
                     })
                     .expect("cold respawn must plain-resume the stale cached thread");
                 assert!(
-                    stale_resume.pointer("/params/config").is_none(),
+                    stale_resume
+                        .pointer("/params/config/shell_environment_policy/set/NEIGE_MCP_TOKEN")
+                        .is_none()
+                        && stale_resume
+                            .pointer("/params/config/shell_environment_policy/set/NEIGE_MCP_SOCKET")
+                            .is_none()
+                        && stale_resume.pointer("/params/config/mcp_servers").is_none(),
                     "stale cache entries must not receive reemitted MCP config"
                 );
                 let respawn_hash = auth::hash_token(thread_resume_token(active_resume));
@@ -1890,6 +1924,7 @@ async fn cold_respawn_replay_does_not_resume_a_card_deleted_mid_loop() {
     }
 
     let daemon = server(&root, repo.clone()).await;
+    script_unloaded_threads(&daemon, &["thread-one", "thread-two"]);
     daemon.start_or_takeover().await.unwrap();
     let rows = wait_for_requests(&capture, 3).await;
     assert_eq!(

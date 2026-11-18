@@ -900,7 +900,7 @@ async fn c4_consecutive_acp_turns_launch_with_distinct_execution_aliases() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn antigravity_reuses_one_server_and_revokes_card_authority_on_reset() {
+async fn antigravity_reuses_each_workspace_server_and_revokes_card_authority_on_reset() {
     let root = Root::new("unused");
     let stack = boot_as(
         &root,
@@ -968,10 +968,31 @@ async fn antigravity_reuses_one_server_and_revokes_card_authority_on_reset() {
         stack.wait_outcomes(&first, 3).await[2]["status"],
         "interrupted"
     );
+    assert!(stack.outcomes(&second).await.is_empty());
+    let (status, run) = stack
+        .send("GET", &format!("/api/cards/{second}/planner/run"), None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{run}");
+    assert_eq!(run["phase"], "turn_running", "{run}");
+    let cancels = requests(&root, "session/cancel");
+    assert_eq!(cancels.len(), 1);
+    assert_eq!(cancels[0]["params"]["sessionId"], first_native);
+    let (status, body) = stack
+        .send(
+            "POST",
+            &format!("/api/cards/{second}/planner/interrupt"),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(
         stack.wait_outcomes(&second, 1).await[0]["status"],
-        "completed"
+        "interrupted"
     );
+    let cancels = requests(&root, "session/cancel");
+    assert_eq!(cancels.len(), 2);
+    assert_eq!(cancels[1]["params"]["sessionId"], second_native);
+    assert_ne!(cancels[0]["_pid"], cancels[1]["_pid"]);
 
     // The reset endpoint must revoke the old session before returning success.
     let first_token =
@@ -1041,18 +1062,23 @@ async fn antigravity_reuses_one_server_and_revokes_card_authority_on_reset() {
     );
     let prompts = requests(&root, "session/prompt");
     assert_eq!(prompts.len(), 4);
+    let first_prompts: Vec<_> = prompts
+        .iter()
+        .filter(|prompt| prompt["params"]["sessionId"] == first_native)
+        .collect();
+    assert_eq!(first_prompts.len(), 3);
     assert!(
-        prompts
+        first_prompts
             .iter()
             .all(|prompt| prompt["_pid"] == prompts[0]["_pid"])
     );
     assert_eq!(prompts[0]["params"]["sessionId"], first_native);
     assert_eq!(prompts[1]["params"]["sessionId"], first_native);
-    assert!(
-        prompts[2..]
-            .iter()
-            .any(|prompt| prompt["params"]["sessionId"] == second_native)
-    );
+    let second_prompt = prompts
+        .iter()
+        .find(|prompt| prompt["params"]["sessionId"] == second_native)
+        .expect("second workspace prompt");
+    assert_ne!(second_prompt["_pid"], prompts[0]["_pid"]);
     std::fs::write(root.path().join("scenario"), "reply").unwrap();
     let (status, body) = stack
         .send_with(

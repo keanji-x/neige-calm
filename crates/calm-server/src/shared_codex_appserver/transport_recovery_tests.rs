@@ -1,5 +1,7 @@
 //! Scripted app-server connections; production transport, replay and native owner.
 use super::*;
+mod environment;
+mod owner_proxy;
 use futures_util::{SinkExt, StreamExt};
 use provider::codex::RequestCrossing;
 use serde_json::{Value, json};
@@ -57,17 +59,16 @@ async fn next_request_reconnects_without_resending_unknown_turn() {
 async fn failed_startup_resume_does_not_block_other_threads_or_new_work() {
     let f = fixture().await;
     for thread in ["before", "broken", "after"] {
-        f.daemon
-            .thread_cache
-            .insert(thread.into(), format!("card-{thread}"));
+        seed_cached_thread(&f, thread).await;
     }
+    let broken_card = f.daemon.cached_card_for_thread("broken").unwrap();
     f.closed.lock().unwrap().insert("broken".into());
     {
         let mut core = f.daemon.core.lock().await;
         let SupervisorState::Running { replay, .. } = &mut core.state else {
             panic!("running fixture")
         };
-        *replay = ConnectionReplay::Pending(ReplayPlan::new(ResumeMode::HotTakeover));
+        *replay = ConnectionReplay::Pending(ReplayPlan::default());
     }
     f.daemon.resume_cached_threads().await;
     f.daemon
@@ -81,7 +82,7 @@ async fn failed_startup_resume_does_not_block_other_threads_or_new_work() {
         .expect("worker mint remains usable");
     // The deletion cleanup uses the recovered connection and drops only its mapping.
     f.daemon
-        .forget_threads_for_deleted_cards(&HashSet::from(["card-broken".into()]))
+        .forget_threads_for_deleted_cards(&HashSet::from([broken_card]))
         .await;
     assert!(!f.daemon.thread_cache.contains_key("broken"));
     let seen = f.seen.lock().unwrap();
@@ -115,9 +116,7 @@ async fn cancelled_subscription_recovery_is_finished_by_the_next_caller() {
     );
     native_owner_tests::reader_finished(&original).await;
     f.closed.lock().unwrap().clear();
-    f.daemon
-        .thread_cache
-        .insert("restore".into(), "card-restore".into());
+    seed_cached_thread(&f, "restore").await;
     let fence = f.daemon.resume_replay_serial.lock().await;
     let daemon = f.daemon.clone();
     let recovering = tokio::spawn(async move { daemon.connected_client().await });
@@ -217,9 +216,7 @@ async fn connection_replay_fences_process_replacement() {
     );
     native_owner_tests::reader_finished(&original).await;
     f.closed.lock().unwrap().clear();
-    f.daemon
-        .thread_cache
-        .insert("restore".into(), "card-restore".into());
+    seed_cached_thread(&f, "restore").await;
     let replay = f.daemon.resume_replay_serial.lock().await;
     let daemon = f.daemon.clone();
     let recovering = tokio::spawn(async move { daemon.connected_client().await });
@@ -259,11 +256,16 @@ async fn connection_replay_fences_process_replacement() {
     );
 }
 
-async fn seed_cold_owner(f: &Fixture) -> (String, String) {
-    use crate::model::{NewArea, NewCard, NewTrack, new_id};
-    use crate::session_projection_repo::{
-        WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
-    };
+async fn seed_cached_thread(f: &Fixture, thread_id: &str) -> String {
+    let card_id = seed_thread_card(f).await;
+    f.daemon
+        .thread_cache
+        .insert(thread_id.to_owned(), card_id.clone());
+    card_id
+}
+
+async fn seed_thread_card(f: &Fixture) -> String {
+    use crate::model::{NewArea, NewCard, NewTrack};
     let area = f
         .daemon
         .repo
@@ -297,7 +299,15 @@ async fn seed_cold_owner(f: &Fixture) -> (String, String) {
         track_id:track.id,title:None,kind:"terminal".into(),sort:None,
         payload:json!({"terminal_presentation":{"source":"unrecorded","in_workbench":false},"codex_source":"shared"}),
     }).await.unwrap();
-    let card_id = card.id.to_string();
+    card.id.to_string()
+}
+
+async fn seed_cold_owner(f: &Fixture) -> (String, String) {
+    use crate::model::new_id;
+    use crate::session_projection_repo::{
+        WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
+    };
+    let card_id = seed_cached_thread(f, "cold-thread").await;
     let runtime = new_id();
     let init = WorkerSessionInit {
         id: runtime.clone(),
@@ -321,14 +331,17 @@ async fn seed_cold_owner(f: &Fixture) -> (String, String) {
     })
     .await
     .unwrap();
-    f.daemon
-        .thread_cache
-        .insert("cold-thread".into(), card_id.clone());
+    f.answers.lock().unwrap().insert(
+        "thread/read".into(),
+        json!({
+            "result":{"thread":{"id":"cold-thread","status":{"type":"notLoaded"},"turns":[]}}
+        }),
+    );
     let mut core = f.daemon.core.lock().await;
     let SupervisorState::Running { replay, .. } = &mut core.state else {
         panic!("running fixture")
     };
-    *replay = ConnectionReplay::Pending(ReplayPlan::new(ResumeMode::ColdRespawn));
+    *replay = ConnectionReplay::Pending(ReplayPlan::default());
     (card_id, runtime)
 }
 
@@ -389,7 +402,7 @@ async fn cancelled_cold_replay_reuses_prepared_credentials_and_completes_once() 
     );
     assert_eq!(
         hashes[0], hashes[1],
-        "cancellation must not rotate credentials of an already loaded thread"
+        "a still-cold retry must reuse its committed credentials"
     );
 }
 
@@ -436,7 +449,7 @@ async fn fresh_process_discards_cancelled_cold_credentials() {
     native_owner_tests::publish_replay(
         &f.daemon,
         client,
-        ConnectionReplay::Pending(ReplayPlan::new(ResumeMode::ColdRespawn)),
+        ConnectionReplay::Pending(ReplayPlan::default()),
     )
     .await;
     drop(transition);

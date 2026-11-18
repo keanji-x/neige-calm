@@ -33,3 +33,6 @@ mod worker_flow_driver_suite;
 
 #[path = "execution_hooks.rs"]
 mod execution_hooks;
+
+#[path = "workspace_environment.rs"]
+mod workspace_environment;
