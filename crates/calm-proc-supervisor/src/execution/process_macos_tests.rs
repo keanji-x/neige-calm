@@ -205,7 +205,6 @@ impl Payload {
         let (process, _) = spawn(
             &File::open(root.path()).unwrap(),
             &specification,
-            CapabilityToken::fresh().unwrap(),
             output.clone(),
         )
         .unwrap();

@@ -313,20 +313,28 @@ impl Drop for SpawnAttributes {
         }
     }
 }
-pub(super) fn identity_nonce() -> anyhow::Result<CapabilityToken> {
+fn identity_nonce() -> anyhow::Result<CapabilityToken> {
     #[cfg(test)]
     tests::fault(tests::Fault::Nonce)?;
     Ok(CapabilityToken::fresh()?)
 }
 
+struct SuspendedChild {
+    child: Child,
+    nonce: CapabilityToken,
+    input_write: File,
+    output_read: File,
+}
+
 fn spawn_suspended(
     cwd: &File,
     specification: &ExecutionSpecification,
-) -> anyhow::Result<(Child, File, File)> {
+) -> anyhow::Result<SuspendedChild> {
     anyhow::ensure!(
         matches!(specification.io_mode, IoMode::Pipe),
         "native registered execution supports Pipe only"
     );
+    let nonce = identity_nonce()?;
     let program = CString::new(specification.program.as_os_str().as_encoded_bytes())?;
     let arguments = std::iter::once(program.clone())
         .chain(
@@ -420,17 +428,25 @@ fn spawn_suspended(
             envp.as_ptr(),
         )
     })?;
-    Ok((Child::new(pid), input_write, output_read))
+    Ok(SuspendedChild {
+        child: Child::new(pid),
+        nonce,
+        input_write,
+        output_read,
+    })
 }
 
 pub(super) fn spawn(
     cwd: &File,
     specification: &ExecutionSpecification,
-    nonce: CapabilityToken,
     output: Arc<super::output::OutputLog>,
 ) -> anyhow::Result<(Arc<Process>, NativeProcessIdentity)> {
-    let (mut child, input_write, output_read) =
-        spawn_suspended(cwd, specification).map_err(NoChild)?;
+    let SuspendedChild {
+        mut child,
+        nonce,
+        input_write,
+        output_read,
+    } = spawn_suspended(cwd, specification).map_err(NoChild)?;
     let pid = child.pid;
     child.record(
         "spawn",

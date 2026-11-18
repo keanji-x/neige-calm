@@ -162,13 +162,8 @@ impl Executor {
             output_log,
         );
         #[cfg(target_os = "macos")]
-        let result = process::spawn(
-            cwd.directory(),
-            &record.request.specification,
-            process::identity_nonce()?,
-            output_log,
-        )
-        .map(|(process, native)| (process, native, ()));
+        let result = process::spawn(cwd.directory(), &record.request.specification, output_log)
+            .map(|(process, native)| (process, native, ()));
         let (process, native, reports) = match result {
             Ok(spawned) => spawned,
             Err(error) => {
