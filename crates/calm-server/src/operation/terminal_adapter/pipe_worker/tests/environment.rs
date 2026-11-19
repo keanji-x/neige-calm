@@ -119,13 +119,6 @@ async fn terminal_workspace_changed_keys_refuse_release_before_business_command(
 
 #[tokio::test]
 async fn terminal_workspace_closed_track_refuses_rc_before_release() {
-    use axum::{
-        body::Body,
-        http::{Request, StatusCode},
-    };
-    use http_body_util::BodyExt;
-    use tower::ServiceExt;
-
     if !private_child(stringify!(
         terminal_workspace_closed_track_refuses_rc_before_release
     )) {
@@ -152,24 +145,18 @@ async fn terminal_workspace_closed_track_refuses_rc_before_release() {
     );
     std::fs::remove_file(&marker).unwrap();
 
-    // Close through the actual user route while retaining the source, card and Held execution.
-    let state = h.state().await;
-    // The Harness owns release scheduling; the HTTP handler still uses real domain writes.
-    state.dispatcher.abort_event_listener_for_test();
-    let response = Harness::app(state)
-        .oneshot(
-            Request::builder()
-                .method("PATCH")
-                .uri(format!("/api/tracks/{}", h.task.track_id))
-                .header("content-type", "application/json")
-                .body(Body::from(json!({"closed": true}).to_string()))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    let status = response.status();
-    let body = response.into_body().collect().await.unwrap().to_bytes();
-    assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+    // Older kernels could close a Track while this Terminal execution remained Held.
+    // The current Close API refuses Terminal tasks, so inject that durable legacy state
+    // through the typed row writer to exercise the release fence, not Close admission.
+    h.db.track_update(
+        &h.task.track_id,
+        crate::model::TrackPatch {
+            closed: Some(true),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
     assert!(
         h.db.track_get(&h.task.track_id)
             .await
