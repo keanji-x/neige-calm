@@ -276,6 +276,15 @@ async fn retained_clean_and_delete(cold: bool) {
         result = &mut cleaning => panic!("clean did not fence retained candidate: {result:?}"),
     }
     let worktree = std::path::PathBuf::from(created["workspace"]["worktree"].as_str().unwrap());
+    // The closed candidate is already fenced. Test legal work on an open
+    // Track while preserving clean's published teardown and held Track lock.
+    fixture
+        .repo
+        .db()
+        .writer()
+        .execute(sqlx::query("UPDATE tracks SET closed_at=NULL WHERE id=?").bind(track))
+        .await
+        .unwrap();
     // Both direct live wake and drive-owned recovery must refuse a busy Track
     // without holding up operation drive during clean's filesystem work.
     let refused = tokio::time::timeout(
@@ -603,6 +612,14 @@ async fn retained_handoff_race(mode: u8, cold: bool) {
             _ = admitted.entered() => {},
             result = &mut cleaning => panic!("clean must register before Track: {result:?}"),
         }
+        // Reopening does not revoke the already-published teardown registration.
+        fixture
+            .repo
+            .db()
+            .writer()
+            .execute(sqlx::query("UPDATE tracks SET closed_at=NULL WHERE id=?").bind(track))
+            .await
+            .unwrap();
         drop(waiting);
         handoff.release();
         // Keep the published registration until wake has observed it. Maintenance

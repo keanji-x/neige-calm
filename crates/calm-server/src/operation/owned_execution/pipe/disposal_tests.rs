@@ -45,6 +45,7 @@ impl ExecutionProjection for Projection {
     }
 }
 struct Harness {
+    config: PipeConfig,
     db: Arc<SqlxRepo>,
     repo: Arc<SqlxOperationRepo>,
     ctx: SpawnCtx,
@@ -59,6 +60,9 @@ impl Harness {
         Self::with_card(false).await
     }
     async fn with_card(card_target: bool) -> Self {
+        Self::with_config(card_target, CONFIG, "disposal-test").await
+    }
+    async fn with_config(card_target: bool, config: PipeConfig, kind: &str) -> Self {
         let db = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
         let (track, card) = if card_target {
             card_tests::seed_card(&db).await
@@ -68,7 +72,7 @@ impl Harness {
         let repo = Arc::new(SqlxOperationRepo::new(db.db().clone()));
         let id = repo
             .insert_operation(
-                "disposal-test",
+                kind,
                 OperationKey {
                     operation_key: crate::model::new_id(),
                     idempotency_key: None,
@@ -118,7 +122,7 @@ impl Harness {
             Arc::new(Projection)
         };
         let store = SqliteExecutionStore::new(db.db().clone())
-            .with_projection(CONFIG.consumer.into(), projection);
+            .with_projection(config.consumer.into(), projection);
         let engine = Arc::new(Engine::new(
             store.clone(),
             session_executor::SessionExecutor::new(
@@ -142,7 +146,7 @@ impl Harness {
         .with_execution(lifecycle);
         let root = executor._root.path().canonicalize().unwrap();
         admit(
-            CONFIG,
+            config,
             &op,
             &ctx,
             root,
@@ -167,7 +171,7 @@ impl Harness {
         .await
         .unwrap();
         let op = repo.get_operation(&id).await.unwrap().unwrap();
-        let record = record(CONFIG, &op).unwrap();
+        let record = record(config, &op).unwrap();
         let write_db = (db.db()).clone();
         write_db
             .writer()
@@ -214,6 +218,7 @@ impl Harness {
                         ctx.clone(),
                     ));
                     Self {
+                        config,
                         db,
                         repo,
                         ctx,
@@ -235,11 +240,11 @@ impl Harness {
             .with_writer(|write_session| {
                 Box::pin(async move {
                     let mut tx = write_session.begin_immediate().await.unwrap();
-                    CONFIG
+                    self.config
                         .prepare_disposal_tx(&mut tx, &self.metadata)
                         .await
                         .unwrap();
-                    let _events = CONFIG.stop_tx(&mut tx, &self.metadata).await.unwrap();
+                    let _events = self.config.stop_tx(&mut tx, &self.metadata).await.unwrap();
                     tx.commit().await.unwrap();
                     self.ctx.execution.drive([self.metadata.id.clone()]);
                 })
@@ -263,6 +268,68 @@ impl ReleaseAuthorization for Authority {
     async fn authorize_tx(&self, _: &mut Tx<'_>) -> Result<()> {
         Ok(())
     }
+}
+
+#[tokio::test]
+async fn close_p1_gate_reference_cannot_dispose_another_operations_execution() {
+    let config = crate::operation::gate_execution::CONFIG;
+    let h = Harness::with_config(
+        false,
+        config,
+        crate::operation::task_verify_adapter::TASK_VERIFY_KIND,
+    )
+    .await;
+    let id = h
+        .repo
+        .insert_operation(
+            crate::operation::task_verify_adapter::TASK_VERIFY_KIND,
+            OperationKey {
+                operation_key: crate::model::new_id(),
+                idempotency_key: Some("damaged-task#g1".into()),
+                payload_hash: "damaged-task".into(),
+            },
+            json!({"actor":crate::ids::ActorId::User,"track_id":"track","task_id":"damaged-task","attempt":1}),
+        )
+        .await
+        .unwrap();
+    let mut output = TxOutput::new("task", Some("damaged-task".into()), json!({}));
+    output.data = json!({"gate_execution":record(config, &h.op).unwrap()});
+    h.db.db()
+        .writer()
+        .execute(
+            sqlx::query(
+                "UPDATE operations SET phase='parked',parked_at_ms=1,\
+                 parked_deadline_ms=9223372036854775807,tx_output_json=?2 WHERE id=?1",
+            )
+            .bind(&id)
+            .bind(serde_json::to_string(&output).unwrap()),
+        )
+        .await
+        .unwrap();
+    let result =
+        h.db.db()
+            .writer()
+            .with_writer(|session| {
+                Box::pin(async move {
+                    let mut tx = session.begin_immediate().await.unwrap();
+                    let result = crate::operation::task_verify_adapter::cancel_child_gate_tx(
+                        &mut tx,
+                        "damaged-task",
+                        "track",
+                    )
+                    .await;
+                    tx.rollback().await.unwrap();
+                    result
+                })
+            })
+            .await
+            .unwrap();
+    h.stop().await;
+    h.settle().await;
+    assert!(
+        matches!(result, Err(CalmError::Conflict(_))),
+        "a selected operation cannot borrow another gate's valid Stop authority"
+    );
 }
 
 #[tokio::test]

@@ -5,13 +5,13 @@ use serde_json::Value;
 #[cfg(feature = "fixtures")]
 use serde_json::json;
 
-/// Only the native identity and status are needed to confirm resume.
+/// Native identity and status reported for an exact-thread observation.
 pub(crate) struct RecoveryState {
     pub(crate) id: Option<String>,
     pub(crate) status: Option<String>,
 }
 impl RecoveryState {
-    fn from_thread(thread: &Value) -> Self {
+    pub(super) fn from_thread(thread: &Value) -> Self {
         Self {
             id: thread.get("id").and_then(Value::as_str).map(str::to_owned),
             status: thread
@@ -26,6 +26,21 @@ impl RecoveryState {
 pub(crate) struct RecoveryRead {
     pub(crate) state: RecoveryState,
     pub(crate) terminal: Option<Value>,
+}
+
+pub(super) fn turn_is_terminal(turn: &Value) -> bool {
+    matches!(
+        turn.get("status").and_then(Value::as_str),
+        Some("completed" | "failed" | "interrupted")
+    )
+}
+
+pub(super) fn terminal_turn<'a>(thread: &'a Value, id: &str) -> Option<&'a Value> {
+    thread
+        .get("turns")
+        .and_then(Value::as_array)?
+        .iter()
+        .find(|turn| turn.get("id").and_then(Value::as_str) == Some(id) && turn_is_terminal(turn))
 }
 
 enum RecoveryClient {
@@ -122,6 +137,30 @@ impl SharedCodexAppServer {
         };
         #[cfg(not(feature = "fixtures"))]
         let client = RecoveryClient::Native(self.acquire_exact_client(target).await?);
+        self.with_recovery_client(target, client, run).await
+    }
+
+    /// Close only observes a connected peer. Recovery/replay remains owned by
+    /// callers that admit those effects before entering the exact-thread scope.
+    pub(crate) async fn with_ready_thread<T>(
+        &self,
+        target: &RecoveryTarget,
+        run: impl for<'scope> AsyncFnOnce(RecoveryThread<'scope>) -> Result<T>,
+    ) -> Result<T> {
+        let client = self
+            .ready_client()
+            .await
+            .ok_or(CalmError::ExecutionUnavailable)?;
+        self.with_recovery_client(target, RecoveryClient::Native(client), run)
+            .await
+    }
+
+    async fn with_recovery_client<T>(
+        &self,
+        target: &RecoveryTarget,
+        client: RecoveryClient,
+        run: impl for<'scope> AsyncFnOnce(RecoveryThread<'scope>) -> Result<T>,
+    ) -> Result<T> {
         let _transition = self.transition_serial.lock().await;
         let _replay = self.resume_replay_serial.lock().await;
         match &client {
@@ -292,20 +331,7 @@ impl RecoveryThread<'_> {
             .read_recovery_thread(&self.client, self.thread_id, admit)
             .await?;
         let terminal = expected_turn
-            .and_then(|id| {
-                thread
-                    .get("turns")
-                    .and_then(Value::as_array)
-                    .and_then(|turns| {
-                        turns.iter().find(|turn| {
-                            turn.get("id").and_then(Value::as_str) == Some(id)
-                                && matches!(
-                                    turn.get("status").and_then(Value::as_str),
-                                    Some("completed" | "failed" | "interrupted")
-                                )
-                        })
-                    })
-            })
+            .and_then(|id| terminal_turn(&thread, id))
             .cloned();
         Ok(RecoveryRead {
             state: RecoveryState::from_thread(&thread),

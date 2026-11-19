@@ -234,7 +234,7 @@ async fn subtrack_admin_revoked_parent_can_continue_child_and_rejects_stale_atte
         .expect("independent write operation")
 }
 
-fn child_adapter(boot: &Boot) -> Arc<dyn ProviderAdapter> {
+pub(super) fn child_adapter(boot: &Boot) -> Arc<dyn ProviderAdapter> {
     Arc::new(ChildTrackAdapter::new(
         Arc::new(calm_server::acp_planner::config::AcpPlannerHost::unconfigured_scratch().unwrap()),
         boot.card_role_cache.clone(),

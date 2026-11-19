@@ -59,6 +59,13 @@ WITH RECURSIVE down(id, depth) AS (
     };
 }
 
+/// A bounded cancellation snapshot, including duplicate/corrupt edges and the sentinel row.
+/// Unlike quota aggregation, close must reject a truncated or repeated membership inventory.
+pub const TRACK_BOUNDED_SUBTREE_SQL: &str = concat!(
+    bounded_track_descendant_cte!(),
+    "SELECT id,depth FROM down LIMIT ?3"
+);
+
 pub const TRACK_ROOT_DEPTH_SQL: &str = concat!(
     bounded_track_ancestor_cte!(),
     "SELECT id AS root_id, depth AS parent_depth FROM up WHERE parent_track_id IS NULL"

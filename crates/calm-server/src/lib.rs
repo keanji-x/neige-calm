@@ -32,6 +32,7 @@ mod share_access;
 pub(crate) mod shell_command;
 mod state_clients;
 mod time_format;
+pub(crate) mod track_close;
 // Integration tests compile the library without `cfg(test)`, so re-gating this module for
 // them must also revisit its nested `cfg(test)` interceptor and test-module gates.
 #[cfg(test)]

@@ -46,7 +46,12 @@ async fn sample_tx(
         || recorded_provider != provider
         || binding.profile != *profile
         || original.correlation.provider != *provider
-        || current.thread_id.as_deref() != Some(original.correlation.thread_id.as_str())
+        || crate::harness::effective_thread_id(
+            current.thread_id.as_deref(),
+            current.handle_state_json.as_ref(),
+        )
+        .as_deref()
+            != Some(original.correlation.thread_id.as_str())
     {
         return Ok(None);
     }
@@ -188,6 +193,63 @@ pub(crate) async fn complete_once(
     .await
 }
 
+/// A stopped physical owner grants no END. Close may retire its obligation only
+/// after this original fact owner has settled the unchanged execution. A moved
+/// or completed predecessor cannot revive or modify its successor.
+pub(crate) async fn settle_closed_execution(
+    repo: &dyn Repo,
+    observer: Option<&PlannerBackend>,
+    card: &str,
+    worker: &str,
+) -> Result<()> {
+    let db = repo
+        .sqlite_db()
+        .ok_or(crate::error::CalmError::ExecutionUnavailable)?;
+    if !closed_execution_needs_end(db.read_pool(), card, worker).await? {
+        return Ok(());
+    }
+    let observer = observer.ok_or_else(|| {
+        crate::error::CalmError::Conflict("closed Planner execution END unavailable".into())
+    })?;
+    let _ = complete_once(repo, observer, card, worker).await?;
+    let after =
+        crate::db::sqlite::conversation::runtime_frame_observation(db.read_pool(), card, worker)
+            .await?;
+    if after.snapshot.canonical_inputs.active.is_some() {
+        return Err(crate::error::CalmError::Conflict(
+            "closed Planner execution END unconfirmed".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// END belongs only to the current, uncompleted canonical carrier. Superseded
+/// predecessors still require their original physical Stop, never a successor END.
+pub(crate) async fn closed_execution_needs_end<'e>(
+    executor: impl sqlx::SqliteExecutor<'e>,
+    card: &str,
+    worker: &str,
+) -> Result<bool> {
+    let raw: Option<Option<String>> = sqlx::query_scalar(
+        "SELECT ws.handle_state_json FROM cards c \
+         JOIN worker_sessions ws ON ws.id=c.session_id \
+         WHERE c.id=?1 AND ws.id=?2 AND ws.completed_at_ms IS NULL",
+    )
+    .bind(card)
+    .bind(worker)
+    .fetch_optional(executor)
+    .await?;
+    let Some(Some(raw)) = raw else {
+        return Ok(false);
+    };
+    let value: serde_json::Value = serde_json::from_str(&raw)?;
+    if value.get("canonical_inputs").is_none() {
+        return Ok(false);
+    }
+    let frame: crate::harness::snapshot::CanonicalHarnessSnapshot = serde_json::from_value(value)?;
+    Ok(frame.canonical_inputs.active.is_some())
+}
+
 /// Accepted original execution, not authority to dispatch or control another turn.
 pub(crate) struct AcceptedRecovery {
     sample: Sample,
@@ -239,6 +301,29 @@ pub(crate) async fn accepted_recovery_tx(
     worker: &str,
     owner: &str,
 ) -> Result<Option<AcceptedRecovery>> {
+    let Some(accepted) = accepted_native_fact_tx(tx, card, worker).await? else {
+        return Ok(None);
+    };
+    let deployment_owner_user_id = match &accepted.sample.original.identity.execution {
+        calm_types::conversation::ConversationExecutionProvenance::LegacySingleUserDeployment {
+            deployment_owner_user_id,
+            ..
+        } => deployment_owner_user_id,
+        calm_types::conversation::ConversationExecutionProvenance::ShareDelegation {
+            delegation,
+            ..
+        } => &delegation.approver_user_id,
+    };
+    Ok((deployment_owner_user_id == owner).then_some(accepted))
+}
+
+/// Immutable delivery evidence only. Close supplies its committed request fence;
+/// source-driven recovery still verifies the current Human owner above.
+pub(crate) async fn accepted_native_fact_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    card: &str,
+    worker: &str,
+) -> Result<Option<AcceptedRecovery>> {
     use calm_types::conversation::{InputDeliveryFact, NativeInputAcceptance};
     let Some(sample) = sample_tx(tx, card, worker, &AgentProvider::Codex, true).await? else {
         return Ok(None);
@@ -250,16 +335,6 @@ pub(crate) async fn accepted_recovery_tx(
     else {
         return Ok(None);
     };
-    let deployment_owner_user_id = match &sample.original.identity.execution {
-        calm_types::conversation::ConversationExecutionProvenance::LegacySingleUserDeployment {
-            deployment_owner_user_id,
-            ..
-        } => deployment_owner_user_id,
-        calm_types::conversation::ConversationExecutionProvenance::ShareDelegation {
-            delegation,
-            ..
-        } => &delegation.approver_user_id,
-    };
     let accepted = matches!((&sample.target.scope,&fact.delivery),
         (ExecutionEndScope::NativeTurn{native_turn_id,..},InputDeliveryFact::Accepted{evidence:NativeInputAcceptance::NativeTurn{native_turn_id:accepted},..}) if native_turn_id==accepted);
     let scope = crate::db::sqlite::session_backend::codex_backend_scope_tx(
@@ -270,8 +345,7 @@ pub(crate) async fn accepted_recovery_tx(
     let crate::db::sqlite::session_backend::CodexScope::Bound(backend) = scope else {
         return Ok(None);
     };
-    Ok((accepted && deployment_owner_user_id == owner)
-        .then_some(AcceptedRecovery { sample, backend }))
+    Ok(accepted.then_some(AcceptedRecovery { sample, backend }))
 }
 
 /// Current original target independent of supplemental report settlement. No END authority.

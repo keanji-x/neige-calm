@@ -232,6 +232,18 @@ pub(crate) async fn stop_session(
         .await
 }
 
+/// Settle the exact registered execution and require the boot sweep to account
+/// for a detached session from before provider execution registration.
+pub(crate) async fn stop_detached_for_close(host: &ClaudePlannerHost, session: &str) -> Result<()> {
+    stop_session(
+        host,
+        session,
+        crate::provider_execution::StopReason::Shutdown,
+    )
+    .await?;
+    crate::provider_execution::PreC4Sweep::require_absent(host.pre_c4.get(), &[session.into()])
+}
+
 /// R2 preflight outside SQL. A Live handle supplies the old session's issue lock;
 /// without a Live handle there is no issuer, and the registered owner reconciles it.
 pub(crate) async fn transition_gate(

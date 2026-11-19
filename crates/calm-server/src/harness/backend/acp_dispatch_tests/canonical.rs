@@ -3,6 +3,7 @@
 mod attach;
 mod carrier;
 mod cleanup;
+mod closed;
 mod compact;
 mod completion;
 mod shared;

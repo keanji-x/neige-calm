@@ -183,6 +183,19 @@ impl Fixture {
             .unwrap();
     }
 
+    async fn reopen(&self) {
+        self.repo
+            .track_update(
+                self.harness.inner.track_id.as_str(),
+                TrackPatch {
+                    closed: Some(false),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+    }
+
     async fn commit(&self) -> (i64, QueueEntry) {
         let inner = &self.harness.inner;
         self.event_entry(&Event::WorktreeCommitted {
@@ -300,7 +313,9 @@ async fn queued_commit_before_close_is_consumed_without_a_turn_and_later_user_in
             .len(),
         1
     );
-    // No stuck debounce/state after consuming the only observation.
+    // No stuck debounce/state after consuming the only observation. New work
+    // requires reopening; the closed-track replay assertions above remain.
+    fx.reopen().await;
     fx.harness
         .observe_user_message_durable(
             "please explain the result".into(),
@@ -381,7 +396,8 @@ async fn committed_row_is_not_replayed_and_an_old_queued_commit_is_consumed_once
     .await
     .unwrap();
     assert!(stored.pending_entries().is_empty());
-    // Positive control: the SAME recovered harness still issues a turn for real input.
+    // Positive control: after reopening, the SAME recovered harness still issues.
+    fx.reopen().await;
     recovered
         .observe_user_message_durable(
             "please explain the result".into(),
@@ -414,7 +430,13 @@ async fn completed_commit_filter_keeps_failure_and_user_entries_in_order() {
     let user = QueueEntry::user_message("investigate that failure".into(), None, vec![]);
     let expected =
         input_segments_for_entries(&fx.harness.inner.card_id, &[failure.clone(), user.clone()]);
-    fx.enqueue(vec![commit, failure, user]).await;
+    fx.enqueue(vec![commit, failure.clone(), user.clone()])
+        .await;
+    fx.issue().await;
+    assert_eq!(fx.daemon.turn_start_count_for_test(), 0);
+    assert_eq!(fx.stored().await.pending_entries(), vec![failure, user]);
+    fx.reopen().await;
+    fx.harness.retry_issuance_now().await;
     fx.issue().await;
     let stored = fx.stored().await;
     let actual = &fx.projected_segments().await;
@@ -526,6 +548,7 @@ async fn consuming_a_commit_does_not_bypass_remaining_soft_observation_debounce(
         assert_eq!(debounce.first_pending_at, Some(young));
         assert_eq!(debounce.last_pending_at, Some(young));
     }
+    fx.reopen().await;
     fx.issue().await;
     assert_eq!(fx.daemon.turn_start_count_for_test(), 0);
     // Advance only the controlled queue timestamps, without a wall-clock wait.

@@ -185,14 +185,14 @@ impl NativeTurns {
             && !expected.unresolved
             && !slot.unresolved
             && slot.current.as_ref().map(|c| &c.turn) == expected.current.as_ref()
-            && slot
-                .current
-                .as_ref()
-                .is_none_or(|c| c.turn == *native_turn_id && c.ended && c.input.matches(target))
-            && slot
-                .retired
-                .get(native_turn_id)
-                .is_none_or(|old| old.input.matches(target))
+            && slot.current.as_ref().is_none_or(|c| {
+                c.turn == *native_turn_id
+                    && !c.needs_control()
+                    && (matches!(c.input, NativeInput::Legacy) || c.input.matches(target))
+            })
+            && slot.retired.get(native_turn_id).is_none_or(|old| {
+                matches!(old.input, NativeInput::Legacy) || old.input.matches(target)
+            })
     }
     pub(in crate::shared_codex_appserver) fn recovery_fence_matches(
         &self,
@@ -222,18 +222,24 @@ impl NativeTurns {
             &target.proof,
             false,
         );
-        state
+        let slot = state
             .slots
             .get_mut(&expected.thread)
-            .expect("checked recovery slot")
-            .retain_observed(NativeExecution {
+            .expect("checked recovery slot");
+        // The exact stopped hint may have lost its association on source loss.
+        // Only the accepted proof plus full terminal history above restores it.
+        slot.current = None;
+        slot.retired.insert(
+            native_turn_id.clone(),
+            NativeExecution {
                 turn: native_turn_id.clone(),
                 source: expected.source.clone(),
                 input,
                 ended: true,
                 terminal: Some(terminal_fact(native_turn_id, terminal)),
                 control_visible: false,
-            });
+            },
+        );
         true
     }
 }

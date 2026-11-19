@@ -37,26 +37,8 @@ pub(crate) async fn publish_replay(
     client: Arc<CodexAppServer>,
     replay: ConnectionReplay,
 ) {
-    let launched = client.clone();
     daemon
-        .start_new_process_typestate(|_| async move {
-            Ok(LaunchedSharedDaemon {
-                child: None,
-                client: launched,
-                replay,
-                runtime: SharedDaemonRuntime {
-                    pid: 0,
-                    pgid: 0,
-                    boot_id: "fixture".into(),
-                    process_start_time: 0,
-                    started_at: 0,
-                },
-                watcher: SupervisorWatcher {
-                    kind: WatcherKind::TakenOverPid,
-                    handle: tokio::spawn(async {}),
-                },
-            })
-        })
+        .publish_protocol_peer_for_test(client, replay)
         .await
         .unwrap();
 }

@@ -324,6 +324,10 @@ impl BootState {
                 self.repo.clone(),
                 codex_shell.clone(),
             ));
+        let _ = route
+            .mcp_context
+            .scheduler_poke
+            .set(Arc::new(Arc::downgrade(&self.dispatcher)));
         AppState {
             repo: route_repo,
             events: self.events,
@@ -836,6 +840,36 @@ impl AppState {
         scheduler.mark_boot_sweep_complete();
         scheduler.mark_context_sweep_boot_complete();
         scheduler
+    }
+
+    /// Finish a from_parts fixture after its builders replaced the runtime/backend.
+    /// REST Close must poke the same scheduler/runtime that owns the protocol peer.
+    #[cfg(feature = "fixtures")]
+    pub fn with_current_dispatcher_for_test(mut self) -> Self {
+        self.dispatcher.retire();
+        self.dispatcher = Arc::new(Dispatcher::spawn_with_codex_backends(
+            self.raw.clone(),
+            self.events.clone(),
+            self.route.write.clone(),
+            self.codex.clone(),
+            self.terminal_renderer.clone(),
+            self.mcp_server.clone(),
+            self.harness.clone(),
+            self.codex_backends.clone(),
+            self.operation_runtime.clone(),
+            self.route.planner_recovery_locks.clone(),
+            8,
+            self.route.mcp_context.gate_logs_dir.clone(),
+            crate::scheduler::WorkerLiveness::DEFAULT,
+            crate::provider_registry::WorkerProviderRegistry::for_daemon(
+                &self.daemon,
+                self.shared_codex_appserver.clone(),
+                self.harness.clone(),
+            ),
+        ));
+        self.worker.dispatcher = self.dispatcher.clone();
+        self.refresh_planner_wake();
+        self
     }
 
     /// Fixture assembly only: run this state's Claude Planners under `config` (the typed
@@ -1767,11 +1801,12 @@ impl AppState {
             cfg.worker_liveness(),
             provider_registry,
         ));
-        // The MCP tools' late-bound scheduler trigger (a running-task cancel reaps its worker):
-        // bound once the Dispatcher's scheduler exists.
+
+        // Worker cleanup is available as soon as the scheduler exists, including during boot.
+        // The Planner lifecycle context is bound by into_app_state before its regular sweep.
         let _ = mcp_context
             .scheduler_poke
-            .set(Arc::new(dispatcher.scheduler()));
+            .set(Arc::new(Arc::downgrade(&dispatcher)));
 
         // Per-plugin errors are logged inside `autospawn_enabled`; one broken plugin never blocks boot.
         plugin.reconcile_builtins().await?;

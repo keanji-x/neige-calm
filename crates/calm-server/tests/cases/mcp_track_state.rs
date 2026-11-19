@@ -52,6 +52,20 @@ async fn seed_track_root_session(
         *track_id
     );
     crate::support::planner::start_session(repo, card_id.as_str(), session_id).await;
+    // This caller represents an already-started historical native Planner.
+    let session = session_id.to_owned();
+    calm_server::db::write_in_tx_typed(repo, move |tx| {
+        Box::pin(async move {
+            sqlx::query("UPDATE worker_sessions SET thread_id=?1 WHERE id=?2")
+                .bind(format!("thread-{session}"))
+                .bind(session)
+                .execute(&mut **tx)
+                .await?;
+            Ok(())
+        })
+    })
+    .await
+    .unwrap();
 }
 
 async fn boot() -> Boot {
@@ -192,7 +206,7 @@ fn planner_identity(boot: &Boot) -> ToolCallIdentity {
         session_id: PLANNER_SESSION_ID.to_string(),
         track_id: Some(boot.track_id.as_str().to_string()),
         area_id: boot.area_id.as_str().to_string(),
-        thread_id: "planner-thread".to_string(),
+        thread_id: format!("thread-{PLANNER_SESSION_ID}"),
     }
 }
 

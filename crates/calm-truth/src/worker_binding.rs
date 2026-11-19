@@ -35,3 +35,28 @@ pub async fn operation_idempotency_key<'e>(
             .await?;
     Ok(row.flatten())
 }
+
+/// Exact attempt ownership, shared by cancellation admission and cleanup replay.
+/// `None` retains an unknown obligation; it never supplies stop/release authority.
+pub async fn session_owns_attempt_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    session: &calm_types::worker::WorkerSession,
+    task_id: &str,
+    card_id: &str,
+) -> Result<Option<bool>> {
+    Ok(session_attempt_id_tx(tx, session, card_id)
+        .await?
+        .map(|id| id == task_id))
+}
+
+pub async fn session_attempt_id_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    session: &calm_types::worker::WorkerSession,
+    card_id: &str,
+) -> Result<Option<String>> {
+    match session.spawn_op_id.as_deref() {
+        Some(op) => operation_idempotency_key(&mut **tx,op).await,
+        None => Ok(sqlx::query_scalar("SELECT id FROM tasks WHERE worker_card_id=?1 ORDER BY created_at_ms DESC,id DESC LIMIT 1")
+            .bind(card_id).fetch_optional(&mut **tx).await?),
+    }
+}

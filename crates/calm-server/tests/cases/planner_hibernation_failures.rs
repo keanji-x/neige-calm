@@ -107,9 +107,10 @@ async fn closed_nonquiescent_automatic_install(work: &str) {
             if installed {
                 boot.state.harness.shutdown_and_remove(&id).await.unwrap();
             }
-            assert!(
+            assert_eq!(
                 installed,
-                "automatic installation must restore nonquiescent closed Planner (work={work}, mode={mode:?})"
+                matches!(work, "assistant" | "plain_chat"),
+                "closed Planner installation is fenced (work={work}, mode={mode:?})"
             );
         }
     }
@@ -192,6 +193,7 @@ async fn planner_hibernat_failed_unsubscribe_retries_and_cold_wire_wake() {
         json!({"thread":{"id":thread,"status":{"type":"idle"}}}).to_string(),
     )
     .unwrap();
+    reopen_track(&boot).await;
     let (status, body) = post_planner_input(
         crate::support::authenticated_router::application(boot.state.clone()).await,
         &format!("/api/cards/{}/planner/input", card.id),

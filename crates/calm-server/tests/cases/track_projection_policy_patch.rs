@@ -131,6 +131,87 @@ async fn event_count(repo: &Arc<dyn Repo>) -> i64 {
         .unwrap()
 }
 
+#[tokio::test]
+async fn close_with_policy_change_cannot_leave_old_report_work_pending_on_reopen() {
+    let (state, track, repo) = boot().await;
+    assert_eq!(
+        patch(
+            state.clone(),
+            &track,
+            None,
+            json!({"planner_task_ceiling":0})
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    write_report_task(&state, &repo, &track, "old-declaration").await;
+    let pending = || async {
+        sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM tasks WHERE track_id=?1 AND status='pending'",
+        )
+        .bind(&track)
+        .fetch_one(repo.sqlite_db().unwrap().read_pool())
+        .await
+        .unwrap()
+    };
+    assert_eq!(
+        pending().await,
+        0,
+        "the Report key has not yet materialized"
+    );
+    assert_eq!(
+        patch(
+            state.clone(),
+            &track,
+            None,
+            json!({"closed":true,"planner_task_ceiling":1})
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        pending().await,
+        0,
+        "Close must include tasks materialized by the same PATCH"
+    );
+    assert_eq!(
+        patch(state.clone(), &track, None, json!({"closed":false}))
+            .await
+            .status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        pending().await,
+        0,
+        "Reopen cannot expose the old declaration as pending"
+    );
+    assert_eq!(
+        patch(
+            state.clone(),
+            &track,
+            None,
+            json!({"planner_task_ceiling":1})
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        pending().await,
+        0,
+        "a later refresh cannot revive the canceled declaration"
+    );
+    write_report_task(&state, &repo, &track, "new-declaration").await;
+    assert_eq!(
+        pending().await,
+        1,
+        "a new declaration after Reopen is still admissible"
+    );
+    assert_eq!(columns(&repo, &track).await.0, Some(1));
+}
+
 const TASK_PERSISTENT_COLUMNS: &[&str] = &[
     "id",
     "track_id",
@@ -413,6 +494,61 @@ async fn write_report_block(
     .expect("production report write commits task declaration");
 
     format!("{track_id}:{key}")
+}
+
+#[tokio::test]
+async fn closing_with_a_policy_update_does_not_dispatch_an_older_declaration_on_reopen() {
+    use calm_server::model::TaskStatus;
+    use calm_server::scheduler::PostClaimDriveTestHook;
+    use tokio::sync::Notify;
+
+    let (state, track_id, repo) = boot().await;
+    state.dispatcher.abort_event_listener_for_test();
+    let policy = json!({"planner_task_ceiling": 1});
+    assert_eq!(
+        patch(state.clone(), &track_id, None, policy).await.status(),
+        StatusCode::OK
+    );
+    let first = write_report_task(&state, &repo, &track_id, "first").await;
+    write_report_task(&state, &repo, &track_id, "second").await;
+    let before = repo.tasks_by_track(&track_id).await.unwrap();
+    assert_eq!(before.len(), 1);
+    assert_eq!(before[0].id, first);
+    assert_eq!(before[0].status, TaskStatus::Pending);
+
+    let close = patch(
+        state.clone(),
+        &track_id,
+        None,
+        json!({"closed": true, "planner_task_ceiling": 1}),
+    )
+    .await;
+    assert_eq!(close.status(), StatusCode::OK);
+    let closed = repo.tasks_by_track(&track_id).await.unwrap();
+    assert!(
+        closed
+            .iter()
+            .any(|row| row.id == first && row.status == TaskStatus::Canceled)
+    );
+
+    let scheduler = state.dispatcher.scheduler();
+    let reopened = patch(state, &track_id, None, json!({"closed": false})).await;
+    assert_eq!(reopened.status(), StatusCode::OK);
+    let claimed = Arc::new(Notify::new());
+    scheduler.set_post_claim_drive_test_hook(PostClaimDriveTestHook {
+        claimed: claimed.clone(),
+        resume: Arc::new(Notify::new()),
+    });
+    // Observe the production claim before the provider can start.
+    let dispatched = tokio::select! {
+        _ = scheduler.schedule_track(track_id.into()) => false,
+        _ = claimed.notified() => true,
+    };
+    assert!(
+        !dispatched,
+        "reopening must not dispatch a previously unadmitted declaration"
+    );
+    assert!(closed.iter().all(|row| row.status != TaskStatus::Pending));
 }
 
 #[tokio::test]

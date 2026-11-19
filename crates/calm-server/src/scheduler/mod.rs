@@ -3,6 +3,7 @@
 //! never reorders beyond `(priority DESC, created_at ASC, key ASC)`, never edits the plan.
 
 pub(crate) mod card_disposal;
+pub(crate) mod task_cancel;
 mod terminal_completion;
 mod timeout_cleanup;
 pub(crate) use terminal_completion::complete_terminal_task_tx;
@@ -412,6 +413,8 @@ pub struct Scheduler {
     worker_idle: WorkerIdleWake,
     /// Per-task single-flight for spawned idle rechecks.
     idle_checks: Arc<DashMap<String, ()>>,
+    /// Serialize one resource's cleanup, never unrelated cards or the global drive.
+    timeout_cleanup_locks: PerCardLocks,
     /// Where a re-submitted git delivery's forge result files go (one value with the MCP context's).
     gate_logs_dir: std::path::PathBuf,
     /// Per-track single-flight: exactly the push-locks pattern.
@@ -485,6 +488,7 @@ impl Scheduler {
             liveness_floor_ms: AtomicI64::new(now_ms()),
             worker_idle,
             idle_checks: Self::new_idle_checks(),
+            timeout_cleanup_locks: crate::per_card_lock::new_per_card_locks(),
             gate_logs_dir,
             track_locks: DashMap::new(),
             track_dirty: DashMap::new(),

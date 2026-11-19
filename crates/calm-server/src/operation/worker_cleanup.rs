@@ -4,6 +4,51 @@ use crate::db::sqlite::card_with_terminal_rollback_tx;
 use crate::terminal_renderer::TerminalRendererRegistry;
 use crate::terminal_sweeper::{reap_terminal_pid_only, try_reap_terminal_artifacts_with_renderer};
 
+/// A cleanup marker owns the card's reusable terminal until confirmed Stop and
+/// exact retirement. A terminal session state alone cannot discharge that owner.
+pub(crate) async fn require_reuse_clear_tx(
+    tx: &mut super::Tx<'_>,
+    card_id: &str,
+) -> crate::error::Result<()> {
+    let pending: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM worker_sessions WHERE card_id=?1 \
+         AND json_extract(handle_state_json,'$.timeout_cleanup') IS NOT NULL)",
+    )
+    .bind(card_id)
+    .fetch_one(&mut **tx)
+    .await?;
+    if pending {
+        return Err(crate::error::CalmError::Conflict(
+            "worker cleanup still owns this resource".into(),
+        ));
+    }
+    Ok(())
+}
+
+impl super::SpawnCtx {
+    /// Runtime-producing phases hold drive. Cleanup freezes under that same
+    /// barrier, then its durable marker prevents reuse across the unlocked Stop.
+    pub(crate) async fn prepare_terminal_spawn(
+        &self,
+        terminal_id: &str,
+    ) -> crate::error::Result<()> {
+        let id = terminal_id.to_owned();
+        crate::db::write_in_tx_typed(self.repo.as_ref(), move |tx| {
+            Box::pin(async move {
+                let card: String = sqlx::query_scalar("SELECT card_id FROM terminals WHERE id=?1")
+                    .bind(&id)
+                    .fetch_optional(&mut **tx)
+                    .await?
+                    .ok_or_else(|| crate::error::CalmError::NotFound(format!("terminal {id}")))?;
+                require_reuse_clear_tx(tx, &card).await
+            })
+        })
+        .await?;
+        self.repo.terminal_clear_exit_for_spawn(terminal_id).await?;
+        Ok(())
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum WorkerCleanupOutcome {
     Deleted,

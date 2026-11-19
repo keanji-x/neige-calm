@@ -521,6 +521,100 @@ async fn release(harness: &ClaudeWorkerHarness, card_id: &str) {
     .unwrap();
 }
 
+#[cfg(feature = "fixtures")]
+async fn awaiting_original_cleanup() -> WorkerRestart {
+    let r = prepared_worker_restart(PreviousEnd::Exited).await;
+    let card = r.card_id.clone();
+    let task = format!("{}:again", r.harness.track_id);
+    let worker = r.restart_session.clone();
+    crate::db::write_in_tx_typed(r.harness.repo.as_ref(), move |tx| {
+        Box::pin(async move {
+            sqlx::query("UPDATE tasks SET status='canceled' WHERE id=?1")
+                .bind(&task)
+                .execute(&mut **tx)
+                .await?;
+            let marked = crate::scheduler::mark_running_timeout_cleanup_tx(
+                tx,
+                &card,
+                &task,
+                crate::model::now_ms(),
+                crate::scheduler::WorkerCleanupReason::PlannerCanceled,
+            )
+            .await?;
+            assert_eq!(marked.marked, 1);
+            // Leader exit does not retire a pending resource/group Stop obligation.
+            crate::db::sqlite::session_complete_tx(tx, &worker, WorkerSessionState::Exited).await?;
+            Ok::<_, CalmError>(())
+        })
+    })
+    .await
+    .unwrap();
+    r
+}
+
+#[cfg(feature = "fixtures")]
+#[tokio::test]
+async fn close_p1_legacy_restart_cannot_replace_a_session_awaiting_cleanup() {
+    let r = Arc::new(awaiting_original_cleanup().await);
+    let before: Option<String> = sqlx::query_scalar("SELECT session_id FROM cards WHERE id=?1")
+        .bind(&r.card_id)
+        .fetch_one(r.harness.repo.pool())
+        .await
+        .unwrap();
+    let preparing = r.clone();
+    let result = crate::db::write_in_tx_typed(r.harness.repo.as_ref(), move |tx| {
+        Box::pin(async move {
+            preparing
+                .restart
+                .prepare_tx(tx, &preparing.restart_op.payload, &preparing.restart_op)
+                .await
+        })
+    })
+    .await;
+    assert!(matches!(result, Err(CalmError::Conflict(_))));
+    let after: Option<String> = sqlx::query_scalar("SELECT session_id FROM cards WHERE id=?1")
+        .bind(&r.card_id)
+        .fetch_one(r.harness.repo.pool())
+        .await
+        .unwrap();
+    assert_eq!(after, before);
+    assert!(r.spawned.lock().await.is_empty());
+}
+
+#[cfg(feature = "fixtures")]
+#[tokio::test]
+async fn close_p1_prepared_legacy_restart_cannot_reset_a_cleanup_owned_terminal() {
+    let r = awaiting_original_cleanup().await;
+    let terminal = r
+        .restart_output
+        .output_string("terminal_id", "test")
+        .unwrap();
+    let before = r
+        .harness
+        .repo
+        .terminal_get(&terminal)
+        .await
+        .unwrap()
+        .unwrap();
+    let result = r
+        .restart
+        .spawn_side_effect(&r.restart_output, &r.restart_op, &spawn_ctx(&r.harness))
+        .await;
+    assert!(matches!(result, Err(CalmError::Conflict(_))));
+    assert!(r.spawned.lock().await.is_empty());
+    let after = r
+        .harness
+        .repo
+        .terminal_get(&terminal)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        serde_json::to_value(after).unwrap(),
+        serde_json::to_value(before).unwrap()
+    );
+}
+
 /// A task worker's card, its worker exited, is restarted (`--resume`) with the same MCP wiring
 /// under the restart's own session: the card token rotates to it, so the exited worker's no
 /// longer authenticates.

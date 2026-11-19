@@ -25,6 +25,9 @@ impl PlannerHarnessStartAdapter {
     }
 
     pub(super) async fn admit_historical(&self, card_id: &str) -> Result<()> {
+        if let Some(db) = self.repo.sqlite_db() {
+            crate::track_close::require_planner_start(db.read_pool(), card_id).await?;
+        }
         if let Some(source) = self.historical_human_source() {
             source.require_card(self.repo.as_ref(), card_id).await
         } else {
@@ -34,6 +37,7 @@ impl PlannerHarnessStartAdapter {
     }
 
     pub(super) async fn admit_historical_tx(&self, tx: &mut Tx<'_>, card_id: &str) -> Result<()> {
+        crate::track_close::require_planner_start(&mut **tx, card_id).await?;
         if let Some(source) = self.historical_human_source() {
             source.require_card_tx(tx, card_id).await
         } else {

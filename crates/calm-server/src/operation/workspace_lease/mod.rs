@@ -73,8 +73,8 @@ const RECOVERABLE_OPERATION_PHASES: &[PhaseTag] = &[
 ];
 
 /// Logical activity policy for track_close, including migrated forge operations.
-pub(crate) async fn track_has_active_forge_action(
-    pool: &SqlitePool,
+pub(crate) async fn track_has_active_forge_action<'e>(
+    pool: impl sqlx::SqliteExecutor<'e>,
     track_id: &str,
 ) -> Result<bool> {
     forge_action_blocks(pool, &[track_id], true).await
@@ -90,8 +90,8 @@ pub(crate) async fn any_track_has_unmigrated_forge_action(
     forge_action_blocks(pool, track_ids, false).await
 }
 
-async fn forge_action_blocks(
-    pool: &SqlitePool,
+async fn forge_action_blocks<'e>(
+    pool: impl sqlx::SqliteExecutor<'e>,
     track_ids: &[&str],
     include_execution_records: bool,
 ) -> Result<bool> {

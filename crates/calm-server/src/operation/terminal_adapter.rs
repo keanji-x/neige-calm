@@ -113,7 +113,7 @@ impl TerminalAdapter {
         env: Value,
         ctx: &SpawnCtx,
     ) -> Result<SpawnHandle> {
-        ctx.repo.terminal_clear_exit_for_spawn(&terminal_id).await?;
+        ctx.prepare_terminal_spawn(&terminal_id).await?;
         let term = ctx
             .repo
             .terminal_get(&terminal_id)

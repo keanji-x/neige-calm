@@ -3,6 +3,49 @@ use super::*;
 use calm_truth::db::RepoRead;
 
 #[tokio::test]
+async fn revoked_share_cannot_commit_an_already_admitted_close() {
+    let fx = Fixture::new().await;
+    let link = fx.create(true).await;
+    let id = link["link"]["delegation"]["id"].as_str().unwrap();
+    let cookie = super::tokens::unlock(&fx, &link).await;
+    let paused = calm_server::test_seams::PausePoint::default();
+    calm_server::test_seams::install_pause_for_test(
+        "share-scope-admitted",
+        cookie.split_once('=').unwrap().1,
+        paused.clone(),
+    );
+    let app = fx.app.clone();
+    let path = format!("/api/tracks/{}?share_link={id}", fx.track);
+    let guest = tokio::spawn(async move {
+        request(&app, "PATCH", &path, Some(&cookie), json!({"closed":true})).await
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(5), paused.entered.notified())
+        .await
+        .unwrap();
+    let (status, body) = fx
+        .request(
+            "DELETE",
+            &format!("/api/share-links/{id}"),
+            Some(&fx.cookie),
+            Value::Null,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    paused.release.notify_one();
+    assert_eq!(guest.await.unwrap().0, StatusCode::UNAUTHORIZED);
+    assert!(
+        fx.state
+            .raw_repo()
+            .track_get(&fx.track)
+            .await
+            .unwrap()
+            .unwrap()
+            .is_open(),
+        "a rejected share request must not close the Track"
+    );
+}
+
+#[tokio::test]
 async fn guest_cannot_manually_write_report_or_any_block_port() {
     let mut results = vec![];
     for port in 0..5 {

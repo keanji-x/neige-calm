@@ -286,6 +286,7 @@ async fn parent_identity(boot: &Boot, parent: &str) -> ToolCallIdentity {
     ToolCallIdentity {
         card_id: card.id.to_string(),
         session_id: "parent-session".into(),
+        thread_id: "thread-parent-session".into(),
         track_id: Some(parent.into()),
         ..planner_identity(boot)
     }

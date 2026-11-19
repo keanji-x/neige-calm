@@ -106,3 +106,43 @@ pub(super) async fn fail_terminal_outcome(repo: &crate::db::sqlite::SqlxRepo) {
         .await
         .unwrap();
 }
+
+/// Replace an owned fixture carrier through the existing lifecycle row owner.
+/// The successor is deliberately not installed in a harness: cleanup must never
+/// borrow its row or native identity to finish the predecessor.
+pub(crate) async fn supersede_planner(
+    repo: &SqlxRepo,
+    card: &str,
+    worker: &str,
+    provider: AgentProvider,
+) -> crate::session_projection_repo::WorkerSessionProjection {
+    let card = card.to_owned();
+    let worker = worker.to_owned();
+    crate::db::write_in_tx_typed(repo, move |tx| {
+        Box::pin(async move {
+            let session_id =
+                (provider.protocol() == calm_types::runtime::AgentProtocol::Acp).then(new_id);
+            Ok(crate::db::sqlite::session_supersede_and_start_tx(
+                tx,
+                &worker,
+                WorkerSessionInit {
+                    id: new_id(),
+                    card_id: card,
+                    kind: WorkerSessionKind::SharedPlanner,
+                    agent_provider: Some(provider),
+                    status: WorkerSessionState::Running,
+                    terminal_run_id: None,
+                    thread_id: Some(Uuid::new_v4().to_string()),
+                    session_id,
+                    active_turn_id: Some(Uuid::new_v4().to_string()),
+                    handle_state_json: None,
+                    spawn_op_id: None,
+                    now_ms: crate::model::now_ms(),
+                },
+            )
+            .await?)
+        })
+    })
+    .await
+    .unwrap()
+}

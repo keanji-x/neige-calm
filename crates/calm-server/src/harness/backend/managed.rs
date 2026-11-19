@@ -260,9 +260,9 @@ impl<'a> IssueTurnHandle<'a> {
         }
     }
 
-    /// Stop this harness's turns. `Err` is the last step that failed, for strict callers; every
-    /// failure is logged here. `last_turn_id` is sampled by the harness under its issuance boundary.
-    pub(in crate::harness) async fn shutdown(self) -> Result<()> {
+    /// Stop this harness's turns. Strict callers propagate `Err` when the provider cannot
+    /// confirm Stop. `last_turn_id` is sampled under the harness's issuance boundary.
+    pub(in crate::harness) async fn shutdown(self, strict: bool) -> Result<()> {
         let worker_session_id = &self.owner.worker_session_id;
         let thread_id = self.thread.as_deref();
         let mut interrupt_error = None;
@@ -285,28 +285,21 @@ impl<'a> IssueTurnHandle<'a> {
                 approvals.release();
                 if let Some(thread_id) = thread_id {
                     let last_turn_id = self.owner.shutdown_last_turn().await;
-                    interrupt_codex_thread(
-                        daemon,
-                        thread_id,
-                        last_turn_id.as_deref(),
-                        |step, e| {
-                            match step {
-                                CodexInterruptStep::ActiveTurn => tracing::warn!(
-                                    thread_id,
-                                    error = %e,
-                                    "planner harness shutdown thread interrupt failed"
-                                ),
-                                CodexInterruptStep::FallbackTurn(last_turn_id) => tracing::warn!(
-                                    thread_id,
-                                    turn_id = %last_turn_id,
-                                    error = %e,
-                                    "planner harness shutdown last-known turn interrupt failed"
-                                ),
-                            }
-                            interrupt_error = Some(e);
-                        },
-                    )
-                    .await;
+                    if strict {
+                        interrupt_error = factory::PlannerFactory::stop_bound_native_thread(
+                            daemon,
+                            thread_id,
+                            last_turn_id.as_deref(),
+                        )
+                        .await
+                        .err();
+                    } else {
+                        // Ordinary replacement retains its existing warning-only control
+                        // and recovery contract; it cannot retire a strict cleanup marker.
+                        interrupt_codex_thread(daemon, thread_id, last_turn_id.as_deref(), |_, error| {
+                            tracing::warn!(worker_session_id, thread_id, %error, "ordinary Codex shutdown interrupt unconfirmed");
+                        }).await;
+                    }
                 }
             }
         }

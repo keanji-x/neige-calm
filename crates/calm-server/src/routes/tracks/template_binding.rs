@@ -116,7 +116,9 @@ impl PreparedBinding {
                 let started: bool = sqlx::query_scalar(
                     "SELECT EXISTS(SELECT 1 FROM conversation_input_submissions WHERE card_id=?1) OR EXISTS(SELECT 1 FROM worker_sessions WHERE card_id=?1 AND json_extract(handle_state_json,'$.last_thread_id') IS NOT NULL)",
                 ).bind(id.as_str()).fetch_one(&mut **tx).await?;
-                if started {
+                if !started {
+                    creation_context::refresh(&mut card.payload, &updated)?;
+                } else if updated.closed_at.is_none() {
                     let mut text = String::from(
                         "Track configuration updated. Apply the selected working method and current plugin instructions to subsequent work.",
                     );
@@ -142,8 +144,6 @@ impl PreparedBinding {
                             text,
                         },
                     ));
-                } else {
-                    creation_context::refresh(&mut card.payload, &updated)?;
                 }
             }
             calm_truth::db::sqlite::planner_configuration_set_tx(tx, id.as_str(), &card.payload)

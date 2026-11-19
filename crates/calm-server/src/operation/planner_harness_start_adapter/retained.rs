@@ -75,6 +75,7 @@ impl PlannerHarnessStartAdapter {
             .is_some();
         let (binding, row) =
             crate::harness::profile::input_carrier_binding_tx(tx, &carrier).await?;
+        crate::track_close::require_planner_start(&mut **tx, &wire.card_id).await?;
         if !matches!(
             binding.profile,
             HarnessProfile::Planner | HarnessProfile::Assistant

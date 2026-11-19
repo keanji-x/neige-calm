@@ -128,19 +128,27 @@ async fn install_or_shutdown(
 }
 
 pub(crate) fn effective_runtime_thread_id(runtime: &WorkerSessionProjection) -> Option<String> {
-    runtime
-        .thread_id
-        .clone()
-        .filter(|thread_id| !thread_id.trim().is_empty())
+    effective_thread_id(
+        runtime.thread_id.as_deref(),
+        runtime.handle_state_json.as_ref(),
+    )
+}
+
+/// The same persisted Planner identity for projection readers and factual END
+/// readers. An inline foreign identity is never replaced by a snapshot fallback.
+pub(crate) fn effective_thread_id(
+    inline: Option<&str>,
+    snapshot: Option<&serde_json::Value>,
+) -> Option<String> {
+    inline
+        .filter(|id| !id.trim().is_empty())
         .or_else(|| {
-            runtime
-                .handle_state_json
-                .as_ref()
+            snapshot
                 .and_then(|snapshot| snapshot.get("last_thread_id"))
                 .and_then(serde_json::Value::as_str)
-                .filter(|thread_id| !thread_id.trim().is_empty())
-                .map(str::to_owned)
+                .filter(|id| !id.trim().is_empty())
         })
+        .map(str::to_owned)
 }
 
 // The explicit delete fence is load-bearing: a caller cannot recover a runtime without choosing
@@ -306,6 +314,13 @@ pub(crate) async fn spawn_recovered_harness_admitted(
         return Ok(RecoveryOutcome::Skipped);
     }
     if current_card.track_id != track_id {
+        return Ok(RecoveryOutcome::Skipped);
+    }
+    if let Some(db) = repo.sqlite_db()
+        && crate::track_close::require_planner_start(db.read_pool(), current_card.id.as_str())
+            .await
+            .is_err()
+    {
         return Ok(RecoveryOutcome::Skipped);
     }
     if current_track.closed_at.is_some() && !matches!(claim_mode, ClaimMode::Replace) {

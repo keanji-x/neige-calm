@@ -152,8 +152,9 @@ you. Read the requested decision and its evidence before responding. A worker
 finishing, verification passing, a PR being published and a PR being merged are
 different milestones; inspect the report's actual result.
 
-Close a Track when finished; the Planner may also close completed work. Reopen
-it before scheduling more work. If a closed
+Close a Track to stop it and its descendants; the Planner may also close completed
+work. Closing cancels pending work and safely cancelable running workers. Reopen
+before declaring new work; canceled tasks stay canceled. If a closed
 Track disappears from the desktop list, open its Area menu and choose **Show
 closed**. To resume after restarting the service, run the same printed start
 command and open the existing Track; you do not need to run setup again.

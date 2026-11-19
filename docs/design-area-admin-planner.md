@@ -101,7 +101,7 @@ Admin check, shared by both Admin writes:
 
 Each refusal travels a typed channel out of the transaction (as `OpenCap` does through the
 `refused` cell, `routes/tracks/add.rs:203-211`), so the tool returns -32403 `not_admin`, not a
-generic error; `close_tx` does the same for `unknown_track` and `active_work`.
+generic error; `close_authorized_tx` does the same for `unknown_track` and `active_work`.
 
 The registry gets no Admin step and `ToolDescriptor` no new field. Listing is discovery only:
 `filter_profile` drops the names in `area_admin::ADMIN_TOOLS` (v1: `neige_track_add`) for a
@@ -140,22 +140,16 @@ own Track, it is today's path for every Planner. Otherwise:
    check also runs **first**, before any target-specific pre-transaction read (forge check), so
    a probe of a foreign id learns nothing. Added Tracks are top level, never area chats, never Admin and never managed,
    and share the caller's Area, so those fences are structurally unnecessary.
-2. **No running work.** Refused (-32409 `active_work`, `data.active: [{key, status}]`) while the
-   target has a task in `dispatched`, `running` or `verifying`. The status set is lifted from
-   `planner_hibernation.rs:21-22` into one named const both use, and is read in the
-   transaction. The forge check `track_has_active_forge_action` runs before the transaction,
-   with its documented window (`workspace_lease/mod.rs:91-98`). The Admin mails the target's
-   Planner with `neige_mail_send` to settle its work.
-3. **Existing close path.** `track_close` is split into a shell and `close_tx(tx, target,
-   message)`, used by both cases. The **decision recorder always binds to the caller's own
-   Track** (`resolve_track_for_identity`, the id `require_admin_tx` reads): its containment
-   rule denies a session whose card is on another Track (`calm-truth/src/decision_gate.rs:426-432`,
-   `:500-503`), so one transaction proves "this session is the live Planner of an open Admin
-   Track". `close_tx` takes the target only for the row update and the event scope. The
-   already-closed idempotency (returns `closed_at`) stays. `kernel_controls_lifecycle` stays on
-   the own-close path; it is structurally false for an added Track and is skipped on
-   close-other. The event is `TrackUpdated`
-   scoped to the **target**, actor the Admin's Planner session, `agent_message` = `message`.
+2. **Atomic subtree close.** After direct-target authorization, the
+   [close owner](design/close-track-subtree.md) follows `parent_track_id`, closes
+   all descendants and cancels safely cancelable workers and child assignments.
+   Unsupported inflight work refuses the entire transaction with -32409. The
+   owner also rechecks forge actions inside that transaction.
+3. **Caller recorder, target scope.** The decision recorder remains bound to the
+   caller's own Track. Target and descendant `TrackUpdated` events carry that
+   caller's actor and message. The close owner persists cleanup before commit;
+   existing lifecycle owners stop exact sessions afterward. Idempotent close
+   returns the original `closed_at`, and direct cross-Track permission is unchanged.
 
 The open-added cap is unchanged and close frees slots. CLI: `neige track close` gains
 `--track-id` mechanically (§2). `neige_area_ls` rows gain `creator_track_id`, so an Admin can
@@ -202,7 +196,8 @@ red within its package filter; S2's prediction includes the retargeted eligibili
   layer owns only the column constraint. The registry and catalog do not authorize. `fe/` reads
   `can_admin`.
 - **Duplicate logic.** One `require_admin_tx` for both writes; `authorize_creator` is folded into
-  eligibility, not copied; one running-work const; one `close_tx` for own and other close.
+  eligibility, not copied; direct-target authorization for own and other close delegates
+  subtree cancellation to one server owner.
 - **Hardcoded application assumptions.** Nothing names invest, paper-trading or a template; the
   backfill keys on provenance and storage facts. `AskAction` is a closed set in its owning
   layer. `ADMIN_TOOLS` is a bounded discovery list, not a closed set and not authorization;
@@ -251,7 +246,8 @@ deferred; each needs its own design or test before it is built.
 - `neige_area_ls` admin and running-work fields, so an Admin need not find fences by trial.
 - Pre-existing: the `closed` (and automation) PATCH guards use `to_actor_id()` and admit `ai:*`
   headers as `User` (`routes/tracks.rs:2722-2741`); switch to `require_rest_user_actor_for`.
-- Forge-action check before close is a non-transactional read with a TOCTOU window.
+- Close rechecks forge-action activity for every selected subtree member in its
+  write transaction; the earlier read is a defensive preflight.
 - Keyed `neige_track_add` replay after revoke returns the recorded Track; confirm it starts no
   new work.
 - The add path proves Admin through `admit_tx` but runs no decision-recorder probe, so a
