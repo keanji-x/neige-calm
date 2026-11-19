@@ -1,4 +1,5 @@
 use super::*;
+use crate::db::RepoSyncDomainRaw;
 use std::process::Command;
 
 fn private_child(name: &str) -> bool {
