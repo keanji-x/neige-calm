@@ -17,6 +17,7 @@ mod abandonment;
 pub(crate) use abandonment::ProviderQuiescence;
 mod catalog_readiness;
 pub(crate) use catalog_readiness::CatalogReadiness;
+mod closed;
 mod codex;
 mod codex_worker;
 pub(crate) use codex_worker::TurnEnd;

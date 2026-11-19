@@ -4,7 +4,7 @@ use calm_truth::db::sqlite::{
     session_complete_tx, session_get_tx, session_projection_by_id_tx, terminal_get_by_card_tx,
     worker_op_targets_card_tx,
 };
-use calm_truth::worker_binding::{operation_idempotency_key, session_is_card_current_tx};
+use calm_truth::worker_binding::{session_is_card_current_tx, session_owns_attempt_tx};
 use calm_types::worker::{WorkerSessionId, WorkerSessionState};
 
 #[derive(Clone, sqlx::FromRow)]
@@ -65,15 +65,20 @@ impl Scheduler {
         let Some(runtime) = self.operation_runtime.upgrade() else {
             return;
         };
-        for cleanup in worker_rows {
-            if let Err(error) = self
-                .cleanup_timeout_worker(cleanup.clone(), runtime.clone())
-                .await
-            {
-                tracing::warn!(session_id = %cleanup.session_id, card_id = %cleanup.card_id,
-                    %error, "scheduler sweep: timed-out worker cleanup failed; marker retained");
+        futures_util::future::join_all(worker_rows.into_iter().map(|cleanup| {
+            let runtime = runtime.clone();
+            async move {
+                // Wait only for this card, before taking drive. A second pass rechecks
+                // the full marker after the first finishes; it cannot stop a successor.
+                let _card = crate::per_card_lock::lock_card(
+                    &self.timeout_cleanup_locks, &cleanup.card_id,
+                ).await;
+                if let Err(error) = self.cleanup_timeout_worker(cleanup.clone(), runtime).await {
+                    tracing::warn!(session_id = %cleanup.session_id, card_id = %cleanup.card_id,
+                        %error, "scheduler sweep: timed-out worker cleanup failed; marker retained");
+                }
             }
-        }
+        })).await;
     }
 
     async fn cleanup_timeout_worker(
@@ -81,15 +86,15 @@ impl Scheduler {
         cleanup: TimeoutCleanupSession,
         runtime: Arc<OperationRuntime>,
     ) -> Result<()> {
-        // All runtime-producing operation phases share this existing barrier. In particular a
-        // Legacy restart reuses its terminal row, so exact ids alone cannot fence replacement.
-        // Acquire drive before SQLite, and release the writer while shutdown awaits exit writes.
-        let _drive = runtime.lock_for_track_delete().await;
+        // Freeze before a producing phase can start. The durable marker then fences
+        // session/terminal reuse in the existing launch owners until this exact CAS.
+        let drive = runtime.lock_for_track_delete().await;
         let frozen = crate::db::write_in_tx_typed(self.repo.as_ref(), {
             let cleanup = cleanup.clone();
             move |tx| Box::pin(async move { timeout_cleanup_authority_tx(tx, &cleanup).await })
         })
         .await?;
+        drop(drive);
         let complete_session = match frozen {
             CleanupAuthority::Retain => return Ok(()),
             CleanupAuthority::Retire => false,
@@ -102,12 +107,9 @@ impl Scheduler {
             }
         };
         // BEGIN IMMEDIATE rechecks the discovered marker and binds its release to that attempt.
-        write_with_actor_events_typed(
-            self.repo.as_ref(),
-            None,
-            &self.events,
-            &self.write,
-            move |tx| {
+        let write = self.write.clone();
+        let (ids, events) =
+            crate::db::write_in_tx_typed(self.repo.as_ref(), move |tx| {
                 Box::pin(async move {
                     // A stale marker can be retired, but is never authority to release B's lease,
                     // even when B has itself ended and even for a lease without delivery policy.
@@ -148,11 +150,18 @@ impl Scheduler {
                     } else {
                         Vec::new()
                     };
-                    Ok(((), released))
+                    let ids = if released.is_empty() {
+                        Vec::new()
+                    } else {
+                        crate::db::sqlite::append_actor_events_in_tx(tx, None, &write, &released)
+                            .await?
+                            .0
+                    };
+                    Ok((ids, released))
                 })
-            },
-        )
-        .await?;
+            })
+            .await?;
+        crate::db::sqlite::broadcast_actor_events(&self.events, &ids, events);
         Ok(())
     }
 }
@@ -202,29 +211,10 @@ async fn timeout_cleanup_authority_tx(
     {
         return Ok(CleanupAuthority::Retire);
     }
-    let owns_attempt = match session.spawn_op_id.as_deref() {
-        Some(op) => {
-            let key = operation_idempotency_key(&mut **tx, op).await?;
-            let Some(key) = key else {
-                return Ok(CleanupAuthority::Retain);
-            };
-            key == cleanup.task_id
-        }
-        // A Legacy restart has no spawn op. Only the latest stamped attempt can
-        // authorize its stop; absent evidence retains both marker and lease.
-        None => {
-            let latest: Option<String> = sqlx::query_scalar(
-                "SELECT id FROM tasks WHERE worker_card_id = ?
-                 ORDER BY created_at_ms DESC, id DESC LIMIT 1",
-            )
-            .bind(&cleanup.card_id)
-            .fetch_optional(&mut **tx)
-            .await?;
-            let Some(latest) = latest else {
-                return Ok(CleanupAuthority::Retain);
-            };
-            latest == cleanup.task_id
-        }
+    let Some(owns_attempt) =
+        session_owns_attempt_tx(tx, &session, &cleanup.task_id, &cleanup.card_id).await?
+    else {
+        return Ok(CleanupAuthority::Retain);
     };
     if !owns_attempt {
         return Ok(CleanupAuthority::Retire);
@@ -235,5 +225,11 @@ async fn timeout_cleanup_authority_tx(
     let terminal = terminal_get_by_card_tx(tx, &cleanup.card_id)
         .await?
         .filter(|term| projection.terminal_run_id.as_deref() == Some(term.id.as_str()));
+    crate::harness::backend::factory::PlannerFactory::require_worker_stop_binding_tx(
+        tx,
+        &projection,
+        terminal.as_ref(),
+    )
+    .await?;
     Ok(CleanupAuthority::Stop(Box::new((projection, terminal))))
 }

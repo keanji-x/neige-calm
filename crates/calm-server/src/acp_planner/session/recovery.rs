@@ -308,7 +308,7 @@ async fn recover_shared_claim(
     })
     .await?;
     if let Some((receipt, association, track)) = completed {
-        recover_completed_stop(repo, card, worker, &track, receipt, association).await?;
+        recover_completed_stop(repo, card, worker, &track, receipt, association, None).await?;
     }
     Ok(())
 }
@@ -340,6 +340,7 @@ async fn recover_completed_stop(
     track: &str,
     receipt: AcpSubmission,
     association: AcpCanonicalInput,
+    admission: Option<Arc<dyn crate::harness::backend::factory::ActiveRecoveryAdmission>>,
 ) -> Result<()> {
     let outcome = completed_outcome(&receipt)?;
     if let Some(items) = outcome.get("items").and_then(Value::as_array) {
@@ -367,6 +368,9 @@ async fn recover_completed_stop(
     let (card, worker) = (card.to_owned(), worker.to_owned());
     write_in_tx_typed(repo, move |tx| {
         Box::pin(async move {
+            if let Some(admission) = admission {
+                admission.validate_tx(tx).await?;
+            }
             let carrier = current_input_fact_carrier_tx(tx, &card, &worker).await?;
             let Some(original) = original_input_execution_tx(tx, &carrier).await? else {
                 return Ok(());
@@ -387,6 +391,59 @@ async fn recover_completed_stop(
         })
     })
     .await
+}
+
+/// Close has already stopped the detached provider under its exact card/request
+/// fence. Reuse original receipt recovery without opening or installing a driver.
+pub(crate) async fn recover_closed_original(
+    repo: &dyn Repo,
+    card: &str,
+    worker: &str,
+    track: &str,
+    provider: &AgentProvider,
+    admission: Arc<dyn crate::harness::backend::factory::ActiveRecoveryAdmission>,
+) -> Result<()> {
+    let (sample_card, sample_worker, sample_provider) =
+        (card.to_owned(), worker.to_owned(), provider.clone());
+    let sample_admission = admission.clone();
+    let found = write_in_tx_typed(repo, move |tx| {
+        Box::pin(async move {
+            let (card, worker, provider) = (
+                sample_card.as_str(),
+                sample_worker.as_str(),
+                &sample_provider,
+            );
+            sample_admission.validate_tx(tx).await?;
+            if !crate::harness::input_dispatch::end_transition::closed_execution_needs_end(
+                &mut **tx, card, worker,
+            )
+            .await?
+            {
+                return Ok(None);
+            }
+            let Some((receipt, association)) =
+                canonical_receipt_tx(tx, card, worker, provider).await?
+            else {
+                return Ok(None);
+            };
+            Ok(matches!(receipt.state, AcpSubmissionState::Completed)
+                .then_some((receipt, association)))
+        })
+    })
+    .await?;
+    if let Some((receipt, association)) = found {
+        recover_completed_stop(
+            repo,
+            card,
+            worker,
+            track,
+            receipt,
+            association,
+            Some(admission),
+        )
+        .await?;
+    }
+    Ok(())
 }
 
 #[cfg(all(test, target_os = "linux"))]

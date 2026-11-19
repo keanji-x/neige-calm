@@ -1881,6 +1881,23 @@ async fn track_delete_shuts_down_active_planner_harness() {
     assert!(boot.state.harness.get(&runtime.id).is_some());
     assert_eq!(boot.state.harness.len_active(), 1);
 
+    // No input was submitted; give strict Stop the original peer's idle-thread fact.
+    let thread = boot
+        .state
+        .harness
+        .get(&runtime.id)
+        .unwrap()
+        .thread_id_for_test()
+        .await
+        .unwrap();
+    std::fs::write(
+        boot.state
+            .shared_codex_appserver
+            .sock_path()
+            .with_extension("thread-read"),
+        json!({"thread":{"id":thread,"status":{"type":"idle"},"turns":[]}}).to_string(),
+    )
+    .unwrap();
     let status = delete_empty(boot.app.clone(), &format!("/api/tracks/{track_id}")).await;
 
     assert_eq!(status, StatusCode::NO_CONTENT);

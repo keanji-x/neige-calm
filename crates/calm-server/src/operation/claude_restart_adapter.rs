@@ -224,6 +224,7 @@ impl ProviderAdapter for ClaudeRestartAdapter {
                 "card {card_id} is not a Claude card"
             )));
         }
+        super::worker_cleanup::require_reuse_clear_tx(tx, &card_id).await?;
 
         // #1933: a resumed reader is refused before anything is written while its checkout is not
         // at its declared head; the spawn checks again for a re-drive.
@@ -457,7 +458,7 @@ impl ProviderAdapter for ClaudeRestartAdapter {
         })
         .await?;
 
-        ctx.repo.terminal_clear_exit_for_spawn(&terminal_id).await?;
+        ctx.prepare_terminal_spawn(&terminal_id).await?;
         ctx.terminal_renderer.drop_entry(&terminal_id).await;
         let term = ctx
             .repo

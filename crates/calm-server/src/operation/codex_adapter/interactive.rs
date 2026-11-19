@@ -273,7 +273,7 @@ impl ProviderAdapter for CodexAdapter {
         let runtime_id = output.output_string("runtime_id", "codex")?;
         let cwd = output.output_string("cwd", "codex")?;
         let env = output.data.get("env").cloned().unwrap_or_else(|| json!({}));
-        ctx.repo.terminal_clear_exit_for_spawn(&terminal_id).await?;
+        ctx.prepare_terminal_spawn(&terminal_id).await?;
         let term = ctx
             .repo
             .terminal_get(&terminal_id)

@@ -173,6 +173,7 @@ pub(crate) async fn accept(
         crate::operation::planner_start_fence::finish_canonical_human_handoff(
             s.clone(),
             ack.card_id.clone(),
+            ack.worker_session_id.clone(),
             InputSource::Share(wake),
             handoff,
         )

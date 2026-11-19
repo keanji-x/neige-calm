@@ -8,6 +8,8 @@ use crate::state::AppState;
 use axum::extract::FromRef;
 use sqlx::Row;
 
+mod close_cleanup;
+
 pub(crate) use calm_truth::db::sqlite::RUNNING_WORK_STATUSES_SQL;
 
 /// Cheap lifecycle candidates. The harness input owner interprets the persisted
@@ -19,6 +21,7 @@ const ELIGIBLE_SQL_PREFIX: &str = "SELECT ws.id, ws.card_id, ws.track_id, ws.han
       AND ws.state='idle' AND ws.completed_at_ms IS NULL \
       AND ws.terminal_run_id IS NULL AND ws.active_turn_id IS NULL AND t.closed_at IS NOT NULL \
       AND json_extract(ws.handle_state_json,'$.mode')='harness' \
+      AND NOT EXISTS (SELECT 1 FROM track_close_cleanups cleanup WHERE cleanup.worker_session_id=ws.id) \
       AND NOT EXISTS (SELECT 1 FROM current_tasks ct WHERE ct.track_id=t.id \
                        AND ct.status IN ";
 
@@ -77,6 +80,9 @@ async fn hibernate_one(
     track: String,
 ) -> Result<()> {
     let s = crate::state::RouteState::from_ref(state);
+    let Ok(_reply_fence) = s.mcp_context.tool_calls.fence(&id) else {
+        return Ok(());
+    };
     // Already sleeping rows must not queue behind global operation activity.
     let Some(runtime) = s.repo.session_projection_by_id(&id).await? else {
         return Ok(());
@@ -142,6 +148,8 @@ pub(crate) async fn sleeping_thread(pool: &sqlx::SqlitePool, thread: &str) -> Re
 /// this context cannot retain their resources after the application is dropped.
 #[derive(Clone)]
 pub(crate) struct WakeContext {
+    tool_calls: crate::mcp_server::transport::carrier_quiescence::ToolCallAdmission,
+    backends: std::sync::Weak<crate::agent_backend_pool::codex::CodexBackends>,
     canonical_adapter: std::sync::Weak<
         crate::operation::planner_harness_start_adapter::PlannerHarnessStartAdapter,
     >,
@@ -166,6 +174,8 @@ impl WakeContext {
         shell: crate::state::CodexShellState,
     ) -> Self {
         Self {
+            tool_calls: route.mcp_context.tool_calls.clone(),
+            backends: std::sync::Arc::downgrade(&shell.codex_backends),
             canonical_adapter: std::sync::Arc::downgrade(&route.planner_start_adapter),
             workspace_root: route.workspace_root.clone(),
             historical_source: None,

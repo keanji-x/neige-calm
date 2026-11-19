@@ -3,132 +3,10 @@ use super::*;
 use futures_util::{SinkExt, StreamExt};
 use provider::codex::RequestCrossing;
 use serde_json::{Value, json};
-use std::collections::HashMap;
-use std::sync::Mutex as StdMutex;
-use std::sync::atomic::AtomicUsize;
-use tokio::net::UnixListener;
 
-type Seen = Arc<StdMutex<Vec<(usize, String, String)>>>;
-struct Fixture {
-    daemon: Arc<SharedCodexAppServer>,
-    repo: Arc<crate::db::sqlite::SqlxRepo>,
-    seen: Seen,
-    closed: Arc<StdMutex<HashSet<String>>>,
-    listener: JoinHandle<()>,
-    requests: Arc<StdMutex<Vec<Value>>>,
-    pause_resume: Arc<AtomicBool>,
-    answers: Arc<StdMutex<HashMap<String, Value>>>,
-    resume_release: Arc<tokio::sync::Notify>,
-    _root: tempfile::TempDir,
-}
-impl Drop for Fixture {
-    fn drop(&mut self) {
-        self.listener.abort();
-    }
-}
-async fn fixture() -> Fixture {
-    use clap::Parser;
-    let root = tempfile::tempdir().unwrap();
-    let repo = Arc::new(
-        crate::db::sqlite::SqlxRepo::open("sqlite::memory:")
-            .await
-            .unwrap(),
-    );
-    let cfg = Config::parse_from(["calm-server", "--data-dir", root.path().to_str().unwrap()]);
-    let home = Arc::new(SharedCodexHome::new(root.path().join("codex-home")));
-    let daemon = SharedCodexAppServer::new(&cfg, home, repo.clone());
-    std::fs::create_dir_all(daemon.paths.socket.parent().unwrap()).unwrap();
-    let socket = UnixListener::bind(&daemon.paths.socket).unwrap();
-    let seen = Seen::default();
-    let closed = Arc::new(StdMutex::new(HashSet::new()));
-    let count = Arc::new(AtomicUsize::new(0));
-    let requests = Arc::new(StdMutex::new(Vec::new()));
-    let answers = Arc::new(StdMutex::new(HashMap::<String, Value>::new()));
-    let pause_resume = Arc::new(AtomicBool::new(false));
-    let resume_release = Arc::new(tokio::sync::Notify::new());
-    let listener = tokio::spawn({
-        let answers = answers.clone();
-        let seen = seen.clone();
-        let closed = closed.clone();
-        let requests = requests.clone();
-        let pause_resume = pause_resume.clone();
-        let resume_release = resume_release.clone();
-        async move {
-            let mut tasks = tokio::task::JoinSet::new();
-            loop {
-                let (stream, _) = socket.accept().await.unwrap();
-                let connection = count.fetch_add(1, Ordering::SeqCst);
-                let answers = answers.clone();
-                let seen = seen.clone();
-                let closed = closed.clone();
-                let requests = requests.clone();
-                let pause_resume = pause_resume.clone();
-                let resume_release = resume_release.clone();
-                tasks.spawn(async move {
-                    let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
-                    while let Some(Ok(message)) = ws.next().await {
-                        let Ok(raw) = message.to_text() else { continue; };
-                        let Ok(request) = serde_json::from_str::<Value>(raw) else { continue; };
-                        let method = request["method"].as_str().unwrap_or_default().to_owned();
-                        let thread = request["params"]["threadId"].as_str().unwrap_or_default().to_owned();
-                        seen.lock().unwrap().push((connection, method.clone(), thread.clone()));
-                        requests.lock().unwrap().push(request.clone());
-                        if method == "thread/resume" && pause_resume.load(Ordering::SeqCst) {
-                            resume_release.notified().await;
-                        }
-                        if closed.lock().unwrap().contains(&method) || (method == "thread/resume" && closed.lock().unwrap().contains(&thread)) {
-                            let _ = ws.close(None).await; break;
-                        }
-                        let Some(id) = request.get("id") else { continue; };
-                        let answer = answers.lock().unwrap().get(&method).cloned();
-                        if let Some(mut answer) = answer {
-                            answer["id"] = id.clone();
-                            if ws.send(tokio_tungstenite::tungstenite::Message::Text(answer.to_string())).await.is_err() {break;}
-                            continue;
-                        }
-                        let result = match method.as_str() {
-                            "initialize" => json!({"userAgent":"fixture"}),
-                            "model/list" => json!({"data":[],"nextCursor":null}),
-                            "thread/loaded/list" => json!({"data":[]}),
-                            "thread/read" => json!({"thread":{"id":thread,"status":{"type":"idle"},"turns":[]}}),
-                            "thread/resume" | "thread/start" => json!({"thread":{"id":if thread.is_empty() {"worker"} else {&thread}}}),
-                            "thread/unsubscribe" => json!({"status":"unsubscribed"}),
-                            "turn/start" => json!({"turn":{"id":"fresh-turn"}}),
-                            _ => json!({}),
-                        };
-                        if ws.send(tokio_tungstenite::tungstenite::Message::Text(json!({"id":id,"result":result}).to_string())).await.is_err() {break;}
-                    }
-                });
-            }
-        }
-    });
-    let (client, notifications) = connect_initialized(
-        &daemon.verify_backend_isolation().await.unwrap(),
-        &daemon.approval_routes,
-    )
-    .await
-    .unwrap();
-    let client = Arc::new(client);
-    drop(
-        daemon
-            .install_client(client.clone(), notifications)
-            .await
-            .unwrap(),
-    );
-    native_owner_tests::publish(&daemon, client).await;
-    Fixture {
-        daemon,
-        repo,
-        seen,
-        closed,
-        listener,
-        requests,
-        pause_resume,
-        answers,
-        resume_release,
-        _root: root,
-    }
-}
+mod peer;
+use peer::fixture;
+pub(crate) use peer::{Fixture, peer_for};
 
 #[tokio::test]
 async fn next_request_reconnects_without_resending_unknown_turn() {
@@ -672,13 +550,18 @@ async fn timeout_interrupt_refusal_requires_native_stop_evidence() {
         ),
         ("idle", json!([{ "status":"unknown" }]), false),
         ("notLoaded", json!([]), true),
-        ("idle", json!([{"id":"last","status":"completed"}]), true),
+        ("idle", json!([{"id":"last","status":"completed"}]), false),
+        ("idle", json!([{"id":"cached","status":"completed"}]), true),
         (
             "systemError",
-            json!([{"id":"last","status":"failed"}]),
+            json!([{"id":"cached","status":"failed"}]),
             true,
         ),
-        ("idle", json!([{"id":"last","status":"interrupted"}]), true),
+        (
+            "idle",
+            json!([{"id":"cached","status":"interrupted"}]),
+            true,
+        ),
     ];
     for (status, turns, stopped) in reads {
         f.answers.lock().unwrap().insert(
@@ -732,3 +615,71 @@ async fn timeout_interrupt_transport_uncertainty_retries_until_daemon_down() {
 }
 
 mod worker_model_defaults;
+#[tokio::test]
+async fn close_p1_history_read_does_not_reconnect_or_replay_other_threads() {
+    let f = fixture().await;
+    let runtime = crate::session_projection_repo::WorkerSessionProjection {
+        id: "closed-worker".into(),
+        card_id: "closed-card".into(),
+        kind: crate::session_projection_repo::WorkerSessionKind::SharedPlanner,
+        agent_provider: Some(crate::session_projection_repo::AgentProvider::Codex),
+        status: crate::session_projection_repo::WorkerSessionState::Failed,
+        terminal_run_id: None,
+        thread_id: Some("closed-thread".into()),
+        session_id: None,
+        active_turn_id: None,
+        handle_state_json: None,
+        created_at_ms: 0,
+        updated_at_ms: 0,
+        completed_at_ms: None,
+        last_turn_completed_ms: None,
+    };
+    let target = crate::harness::backend::factory::RecoveryTarget::known_failed(&runtime).unwrap();
+    let admission = NativePromptAdmission::new(|| Ok(()), || Box::pin(async { Ok(()) }));
+    f.daemon
+        .with_ready_thread(&target, async |native| {
+            native.read(None, &admission).await.map(|_| ())
+        })
+        .await
+        .unwrap();
+    f.daemon
+        .thread_cache
+        .insert("other-thread".into(), "other-card".into());
+    let original = f.daemon.connected_client().await.unwrap();
+    f.closed.lock().unwrap().insert("model/list".into());
+    assert!(
+        original
+            .model_list(None, tokio::time::Instant::now() + Duration::from_secs(2))
+            .await
+            .is_err()
+    );
+    native_owner_tests::reader_finished(&original).await;
+    f.closed.lock().unwrap().clear();
+    let before = f.seen.lock().unwrap().clone();
+    let refused = f
+        .daemon
+        .with_ready_thread(&target, async |native| {
+            native.read(None, &admission).await.map(|_| ())
+        })
+        .await;
+    assert!(matches!(refused, Err(CalmError::ExecutionUnavailable)));
+    assert_eq!(
+        *f.seen.lock().unwrap(),
+        before,
+        "a Close history read must not reconnect, replay or issue another RPC"
+    );
+    // Explicit ordinary recovery retains its existing responsibility and behavior.
+    f.daemon
+        .with_exact_thread(&target, async |native| {
+            native.read(None, &admission).await.map(|_| ())
+        })
+        .await
+        .unwrap();
+    assert!(
+        f.seen
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(_, method, thread)| method == "thread/resume" && thread == "other-thread")
+    );
+}

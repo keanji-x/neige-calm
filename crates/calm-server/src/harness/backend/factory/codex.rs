@@ -8,6 +8,16 @@ use crate::model::CardRole;
 use crate::shared_codex_appserver::{SharedThreadStartParams, ThreadConfig};
 
 impl PlannerFactory<'_> {
+    /// Protocol Stop confirmation for an already-bound native identity. Planner
+    /// and Worker callers retain their distinct identity/admission contracts.
+    pub(in crate::harness::backend) async fn stop_bound_native_thread(
+        shared: &crate::shared_codex_appserver::SharedCodexAppServer,
+        thread_id: &str,
+        persisted_turn: Option<&str>,
+    ) -> Result<()> {
+        shared.stop_bound_thread(thread_id, persisted_turn).await
+    }
+
     /// Registry-miss stop uses only the persisted runtime's binding and fallback fact.
     pub(super) async fn shutdown_codex_replay(
         &self,

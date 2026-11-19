@@ -211,7 +211,9 @@ async fn preparation(kind: &str, boot: bool) {
         .execute(sqlx::query("UPDATE tasks SET status='dispatched' WHERE track_id=?").bind(&track))
         .await
         .unwrap();
-    if calm_server::model::TaskKind::from_worker_operation_kind(kind).is_some() {
+    if calm_server::model::TaskKind::from_worker_operation_kind(kind).is_some()
+        || kind == "planner-harness-start"
+    {
         // The closed snapshot was already checked under the fence. A worker
         // must re-admit against an open Track once that fence is released.
         b.repo

@@ -721,18 +721,18 @@ async fn seed_codex_worker_card_with_terminal(
     label: &str,
 ) -> (String, String, String) {
     let card_id = format!("card-timeout-{label}-{}", new_id());
-    let runtime_id = format!("runtime-timeout-{label}-{}", new_id());
+    let worker_session_id = format!("runtime-timeout-{label}-{}", new_id());
     let track_id = boot.track_id.clone();
     let card_role_cache = boot.card_role_cache.clone();
     let result = calm_server::db::write_in_tx_typed(boot.repo.as_ref(), {
         let card_id = card_id.clone();
-        let runtime_id = runtime_id.clone();
+        let worker_session_id = worker_session_id.clone();
         move |tx| {
             Box::pin(async move {
                 let (_card, term, _mcp_token) = card_with_codex_create_tx(
                     tx,
                     card_id,
-                    &runtime_id,
+                    &worker_session_id,
                     None,
                     track_id,
                     None,
@@ -754,11 +754,26 @@ async fn seed_codex_worker_card_with_terminal(
     })
     .await
     .expect("seed codex worker card");
+    // A running native worker needs the thread identity its Stop owner uses.
+    // Keep the real timeout/lease assertions; do not turn a missing binding into
+    // a successful cleanup in production.
+    let thread = format!("thread-{worker_session_id}");
+    boot.repo
+        .sqlite_db()
+        .unwrap()
+        .writer()
+        .execute(
+            sqlx::query("UPDATE worker_sessions SET thread_id=?1 WHERE id=?2")
+                .bind(&thread)
+                .bind(&worker_session_id),
+        )
+        .await
+        .unwrap();
     boot.repo
         .session_projection_set_status_for_card(&card_id, WorkerSessionState::Running)
         .await
         .expect("mark seeded worker runtime running");
-    (card_id, runtime_id, result)
+    (card_id, worker_session_id, result)
 }
 
 /// Seed a `held` workspace lease whose `path` exists on disk; the caller keeps the returned guard alive for the test.
@@ -4019,8 +4034,8 @@ async fn claim_fence_rejects_cross_track_edit_after_resolution_without_side_effe
 async fn deterministic_root_location_failures_do_not_freeze_or_index() {
     for case in ["duplicate", "tombstoned", "absent", "invalid-root-ref"] {
         let boot = boot().await;
-        // A closed track holds the root task pending while its declaration breaks.
-        set_closed(&boot, true).await;
+        // Keep the track open and break the declaration before its first scheduling pass.
+        // Closed projection terminalizes pending tasks instead of pausing them.
         let key = format!("root-{case}");
         let valid_root = json!({
             "key": key, "kind": "terminal", "command": "true",
@@ -4043,8 +4058,9 @@ async fn deterministic_root_location_failures_do_not_freeze_or_index() {
         let initial = vec![(root_id, "task", valid_root.clone())];
         edit_report_blocks(&boot, &initial).await;
         let task_id = format!("{}:{key}", boot.track_id);
-        assert!(
-            boot.repo.task_get(&task_id).await.unwrap().is_some(),
+        assert_eq!(
+            boot.repo.task_get(&task_id).await.unwrap().unwrap().status,
+            TaskStatus::Pending,
             "initial projection for case {case}"
         );
         let (_runtime, scheduler) = build_scheduler(
@@ -4054,8 +4070,6 @@ async fn deterministic_root_location_failures_do_not_freeze_or_index() {
                 card_id: boot.worker_card_id.to_string(),
             })],
         );
-        scheduler.schedule_track(boot.track_id.clone()).await;
-
         let broken = match case {
             "duplicate" => vec![
                 (root_id, "task", valid_root.clone()),
@@ -9991,3 +10005,6 @@ mod recovery_3192;
 mod terminal_hook_persistence;
 #[path = "scheduler/terminal_pipe.rs"]
 mod terminal_pipe;
+
+#[path = "scheduler/close_subtree.rs"]
+mod close_subtree;

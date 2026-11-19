@@ -1843,7 +1843,7 @@
   },
   {
     "name": "neige_track_close",
-    "description_sha256": "44d36de0f0acee7d93ce5aa1c1f07e535965de930dc2bb058b68660bd08b8eb4",
+    "description_sha256": "5910f80319bdb67802349cba06bc0c00b703f6e312f1d5ebb5b30f19038a65e6",
     "input_schema": {
       "additionalProperties": false,
       "properties": {

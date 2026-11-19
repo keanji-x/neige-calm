@@ -129,6 +129,7 @@ async fn refresh_and_wake(
     crate::operation::planner_start_fence::finish_canonical_human_handoff(
         state.clone(),
         card,
+        carrier.to_owned(),
         source,
         handoff,
     )

@@ -712,6 +712,7 @@ fn reference_lookup_request(reference: &str) -> Option<ReferenceLookupRequest> {
 
 /// Everything the schedulability verdict needs, read in ONE statement.
 struct TrackProjectionState {
+    closed: bool,
     continuable_children: BTreeSet<String>,
     policy: Option<String>,
     ceiling: i64,
@@ -726,6 +727,7 @@ struct TrackProjectionState {
 
 #[derive(sqlx::FromRow)]
 struct TrackProjectionStateRow {
+    closed: bool,
     continuable_children_json: String,
     automation_policy: Option<String>,
     planner_task_ceiling: Option<i64>,
@@ -758,7 +760,8 @@ async fn track_projection_state(
                       json_extract(value,'$.card_id')
                  FROM json_each(?2)
            )
-           SELECT w.automation_policy, w.planner_task_ceiling, w.require_task_gates, w.area_id,
+           SELECT w.closed_at IS NOT NULL AS closed,
+                  w.automation_policy, w.planner_task_ceiling, w.require_task_gates, w.area_id,
                   (SELECT json_group_array(child.id) FROM ({}) child
                    WHERE child.parent_track_id=w.id
                    AND NOT EXISTS(SELECT 1 FROM tasks active WHERE active.child_track_id=child.id
@@ -845,6 +848,7 @@ async fn track_projection_state(
             .map(|target| (target.reference.clone(), target))
             .collect();
     Ok(TrackProjectionState {
+        closed: row.closed,
         continuable_children: serde_json::from_str(&row.continuable_children_json)?,
         policy: row.automation_policy,
         ceiling: effective_limit(row.planner_task_ceiling, DEFAULT_PLANNER_TASK_CEILING),
@@ -1041,7 +1045,11 @@ async fn evaluate_schedulability_with_tree_term_after_snapshot(
     let tree_capacity = tree_share.as_ref().map_or(i64::MAX, |share| {
         share.share.saturating_sub(tree_occupied).max(0)
     });
-    let capacity = if tree_root_unresolved
+    let capacity = if state.closed && !tree_root_unresolved {
+        // Close records terminal declarations, not executable capacity. Retaining every
+        // valid key prevents a later policy refresh from reviving an old unmaterialized key.
+        declarations.len()
+    } else if tree_root_unresolved
         || tree_share
             .as_ref()
             .is_some_and(|share| share.admission_frozen)
@@ -1544,6 +1552,10 @@ async fn project_tasks_from_verdicts_tx(
     verdicts: Vec<BlockVerdict>,
     tree_cte_queries: u32,
 ) -> Result<TaskProjectionOutcome> {
+    let closed: bool = sqlx::query_scalar("SELECT closed_at IS NOT NULL FROM tracks WHERE id=?1")
+        .bind(track_id)
+        .fetch_one(&mut **tx)
+        .await?;
     // Row-level questions folded over every block carrying the key, so document
     // order cannot matter. `schedulable` folds with `any`: a tombstone beside a
     // live re-declaration must not delete the pending row.
@@ -1773,6 +1785,19 @@ async fn project_tasks_from_verdicts_tx(
         .await?;
         if result.rows_affected() != 0 {
             changed.insert(declaration.key.clone());
+        }
+    }
+    if closed {
+        // The same write owns materialization and terminalization. No pending row escapes
+        // the transaction; ordinary rebuilds, template writes and policy patches share it.
+        let pending: Vec<(String, String)> =
+            sqlx::query_as("SELECT id,key FROM tasks WHERE track_id=?1 AND status='pending'")
+                .bind(track_id)
+                .fetch_all(&mut **tx)
+                .await?;
+        for (id, key) in pending {
+            super::task_cancel_tx(tx, &id, now).await?;
+            changed.insert(key);
         }
     }
     Ok(TaskProjectionOutcome {

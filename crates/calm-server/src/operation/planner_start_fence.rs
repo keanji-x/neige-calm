@@ -242,20 +242,38 @@ pub(crate) async fn wake_canonical_input(
 pub(crate) async fn finish_canonical_human_handoff(
     state: crate::state::RouteState,
     card_id: CardId,
+    worker_session_id: String,
     source: impl Into<crate::conversation_inputs::InputSource>,
     handoff: crate::harness::registry::SourceHandoff,
 ) {
-    wake_human(state, card_id, source.into(), Some(handoff)).await;
+    wake_human(
+        state,
+        card_id,
+        source.into(),
+        Some(AcceptedHandoff {
+            worker_session_id,
+            _guard: handoff,
+        }),
+    )
+    .await;
+}
+
+struct AcceptedHandoff {
+    worker_session_id: String,
+    _guard: crate::harness::registry::SourceHandoff,
 }
 
 async fn wake_human(
     state: crate::state::RouteState,
     card_id: CardId,
     source: crate::conversation_inputs::InputSource,
-    mut handoff: Option<crate::harness::registry::SourceHandoff>,
+    mut handoff: Option<AcceptedHandoff>,
 ) {
     let (handed_off, observed) = tokio::sync::oneshot::channel();
     tokio::spawn(async move {
+        let accepted_worker = handoff
+            .as_ref()
+            .map(|handoff| handoff.worker_session_id.clone());
         #[cfg(feature = "fixtures")]
         crate::test_seams::pause_point("canonical-human-source-handoff", card_id.as_str()).await;
         use super::planner_harness_start_adapter::RetainedSourceObservation;
@@ -282,24 +300,69 @@ async fn wake_human(
             }
         }
         let _ = handed_off.send(());
-        let fence = CardStartFence::lock(
-            &state.planner_recovery_locks,
-            &state.repo,
-            &state.operation_runtime,
-            &card_id,
-        )
-        .await;
-        if let Err(error) = fence
-            .wake_retained(
-                state.planner_start_adapter.clone(),
-                source,
-                state.workspace_root.clone(),
-                state.events.clone(),
+        let mut deferred = false;
+        loop {
+            if let Err(error) = source.check_current() {
+                let reason = canonical_wake_reason(&error);
+                tracing::warn!(%card_id, reason, "accepted source no longer qualifies deferred activation");
+                break;
+            }
+            let fence = CardStartFence::lock(
+                &state.planner_recovery_locks,
+                &state.repo,
+                &state.operation_runtime,
+                &card_id,
             )
-            .await
-        {
+            .await;
+            if deferred {
+                let worker = accepted_worker.as_deref().expect("existing-worker handoff");
+                match crate::track_close::planner_cleanup_wait(
+                    state.operation_runtime.repo.sqlite_db().read_pool(),
+                    card_id.as_str(),
+                    worker,
+                )
+                .await
+                {
+                    Ok(crate::track_close::PlannerCleanupWait::Ready) => {}
+                    Ok(crate::track_close::PlannerCleanupWait::Pending) => {
+                        drop(fence);
+                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                        continue;
+                    }
+                    Ok(crate::track_close::PlannerCleanupWait::Changed) | Err(_) => break,
+                }
+            }
+            let result = fence
+                .wake_retained(
+                    state.planner_start_adapter.clone(),
+                    source.clone(),
+                    state.workspace_root.clone(),
+                    state.events.clone(),
+                )
+                .await;
+            let Err(error) = result else { break };
+            if matches!(error, CalmError::Conflict(_))
+                && let Some(worker) = accepted_worker.as_deref()
+                && matches!(
+                    crate::track_close::planner_cleanup_wait(
+                        state.operation_runtime.repo.sqlite_db().read_pool(),
+                        card_id.as_str(),
+                        worker
+                    )
+                    .await,
+                    Ok(crate::track_close::PlannerCleanupWait::Pending)
+                )
+            {
+                // This invocation retains the real source across the original Close.
+                // Nothing is reconstructed from the persisted message after cleanup.
+                // Release the card fence before waiting so that Close can make progress.
+                deferred = true;
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                continue;
+            }
             let reason = canonical_wake_reason(&error);
             tracing::warn!(%card_id, reason, "accepted canonical work remains held by its original lifecycle");
+            break;
         }
         drop(handoff);
         #[cfg(feature = "fixtures")]

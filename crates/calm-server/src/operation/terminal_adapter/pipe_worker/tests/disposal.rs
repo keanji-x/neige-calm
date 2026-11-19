@@ -472,6 +472,10 @@ async fn reclaim_recovery_other_track_runs_while_first_track_is_blocked() {
         .await
         .unwrap();
     let state = h.state().await;
+    // This test drives the replacement runtime's scheduler explicitly. The from_parts
+    // dispatcher still owns its original runtime without the fixture's executor.
+    // Retire it before PlanUpdated can race the claim through that stale owner.
+    state.dispatcher.retire();
     let follower = crate::operation::launch_cleanup_test_support::claimed_task(
         h.db.clone(), state.events.clone(), state.write().clone(),
         other.id.as_str(),
@@ -534,11 +538,13 @@ async fn reclaim_recovery_other_track_runs_while_first_track_is_blocked() {
             });
             eprintln!(
                 "reclaim timeout: B operation=present phase={:?} blocker={:?} \
-                 lease_owner_present={} lease_until_ms={:?}",
-                op.phase.tag(),
+                 lease_owner_present={} lease_until_ms={:?} last_error={:?} phase_detail={:?}",
+                op.phase,
                 blocker.map_err(|_| "decode_error"),
                 op.lease_owner.is_some(),
-                op.lease_until_ms
+                op.lease_until_ms,
+                op.last_error,
+                op.phase_detail
             );
             // Only existence is needed: this fixture writes `ran` after the go token.
             eprintln!(

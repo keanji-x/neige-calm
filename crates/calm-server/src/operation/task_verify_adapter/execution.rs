@@ -1,6 +1,7 @@
 //! Task verification consumes the gate-owned execution and its durable release/decision record.
 use super::*;
 use crate::operation::gate_execution::{self as execution, Decision, Release, StopReason};
+use crate::operation::{Phase, Tx};
 use workspace_runtime::execution::{ExecutionState, Settlement};
 
 impl TaskVerifyAdapter {
@@ -313,4 +314,68 @@ pub(super) async fn require_prior_settled(
         ));
     }
     Ok(())
+}
+
+/// The close owner has authorized this child assignment. Delegate its exact gate's Stop to
+/// the existing Pipe owner, in the same transaction as the task cancellation; never steal
+/// the live observer's lease or reconstruct process identity.
+pub(crate) async fn cancel_child_gate_tx(
+    tx: &mut Tx<'_>,
+    task_id: &str,
+    track_id: &str,
+) -> Result<Vec<workspace_runtime::execution::ExecutionId>> {
+    use crate::operation::gate_ops::{GateOpKind, gate_ops_of_attempt_tx};
+    let mut stop = Vec::new();
+    for gate in gate_ops_of_attempt_tx(tx, task_id).await? {
+        if gate.kind != GateOpKind::Verify {
+            return Err(CalmError::Conflict(
+                "close-subtree-unbound-child-gate".into(),
+            ));
+        }
+        let row = sqlx::query("SELECT * FROM operations WHERE kind=?1 AND idempotency_key=?2")
+            .bind(gate.op_kind())
+            .bind(&gate.key)
+            .fetch_one(&mut **tx)
+            .await?;
+        let op = crate::operation::repo_sqlite::operation_from_row(&row)?;
+        let payload: TaskVerifyOperationPayload = serde_json::from_value(op.payload.clone())?;
+        if payload.task_id != task_id
+            || payload.track_id != track_id
+            || payload.attempt != gate.number
+        {
+            return Err(CalmError::Conflict("close-subtree-unbound-gate".into()));
+        }
+        let has_record = op
+            .tx_output
+            .as_ref()
+            .is_some_and(|output| output.data.get(execution::KEY).is_some());
+        if !has_record {
+            if matches!(op.phase, Phase::SpawnStarted | Phase::Parked) {
+                return Err(CalmError::Conflict("close-subtree-unbound-gate".into()));
+            }
+            continue;
+        }
+        let record = execution::record(&op)?;
+        let metadata: workspace_runtime::execution::ExecutionMetadata = serde_json::from_str(
+            &calm_truth::db::sqlite::workspace_execution::intent_tx(
+                tx,
+                record.execution_id.as_str(),
+            )
+            .await?,
+        )?;
+        if metadata.owner.0 != op.id
+            || metadata.id != record.execution_id
+            || metadata.scope
+                != workspace_runtime::execution::ExecutionOwnership::Track(
+                    workspace_runtime::execution::TrackId(track_id.into()),
+                )
+        {
+            return Err(CalmError::Conflict("close-subtree-foreign-gate".into()));
+        }
+        execution::CONFIG
+            .stop_for_disposal_tx(tx, &metadata)
+            .await?;
+        stop.push(record.execution_id);
+    }
+    Ok(stop)
 }

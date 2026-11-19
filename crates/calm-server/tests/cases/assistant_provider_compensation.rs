@@ -322,6 +322,12 @@ async fn assistant_provider_failed_native_start_restores_only_predecessor_creden
                 .unwrap();
         assert_ne!(active_hash.as_deref(), Some(hash.as_str()));
         server.stop_listener_for_test().await;
+        // This peer must report the successor's idle thread for strict teardown.
+        let thread = state.harness.get(&active.id).unwrap().thread_id_for_test().await.unwrap();
+        std::fs::write(
+            state.shared_codex_appserver.sock_path().with_extension("thread-read"),
+            json!({"thread":{"id":thread,"status":{"type":"idle"},"turns":[]}}).to_string(),
+        ).unwrap();
         state
             .harness
             .shutdown_track(

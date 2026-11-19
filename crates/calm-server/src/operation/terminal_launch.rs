@@ -121,7 +121,10 @@ pub(crate) async fn resolve(
         if rows.len() > 1 { return Err(CalmError::Conflict("terminal has conflicting worker operation ownership".into())); }
         let Some((op_id, phase, owner, output)) = rows.into_iter().next() else {
             if launch.is_some() { return Err(CalmError::Conflict("task launch operation does not own this terminal".into())); }
-            return Ok(if card_launch_unbound_tx(tx, &card).await? { TerminalStart::Unbound } else { TerminalStart::AttachOnly(sock) });
+            return Ok(if card_launch_unbound_tx(tx, &card).await? {
+                super::worker_cleanup::require_reuse_clear_tx(tx, &card).await?;
+                TerminalStart::Unbound
+            } else { TerminalStart::AttachOnly(sock) });
         };
         let output: Value = serde_json::from_str(&output)?;
         match RequestState::read(&output["data"])? {
@@ -132,6 +135,7 @@ pub(crate) async fn resolve(
             Some(RequestState::Rejected {..}) => Err(CalmError::Conflict("terminal launch was rejected; compensate owned operation".into())),
             Some(RequestState::NotRequested {..}) => {
                 let Some(launch) = launch else { return Ok(TerminalStart::AttachOnly(sock)); };
+                super::worker_cleanup::require_reuse_clear_tx(tx, &card).await?;
                 if launch.operation().id != op_id || phase != "spawn_started" || owner.is_none() || owner != launch.operation().lease_owner {
                     return Err(CalmError::Conflict("terminal launch operation lease or phase changed".into()));
                 }

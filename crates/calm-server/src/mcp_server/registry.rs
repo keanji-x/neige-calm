@@ -200,6 +200,9 @@ pub trait SchedulerPokes: Send + Sync {
     /// Reap now the workers whose cleanup marker was just committed
     /// (`Scheduler::poke_worker_cleanups`).
     fn poke_worker_cleanups(&self);
+    fn poke_track_close_cleanups(&self) {
+        self.poke_worker_cleanups();
+    }
 }
 
 /// A handle to the scheduler's triggers (see [`AppContext::scheduler_poke`]).
@@ -208,6 +211,20 @@ pub type SchedulerPoke = Arc<dyn SchedulerPokes>;
 impl SchedulerPokes for Arc<crate::scheduler::Scheduler> {
     fn poke_worker_cleanups(&self) {
         crate::scheduler::Scheduler::poke_worker_cleanups(self);
+    }
+}
+
+impl SchedulerPokes for std::sync::Weak<crate::dispatcher::Dispatcher> {
+    fn poke_worker_cleanups(&self) {
+        if let Some(dispatcher) = self.upgrade() {
+            dispatcher.scheduler().poke_worker_cleanups();
+        }
+    }
+    fn poke_track_close_cleanups(&self) {
+        self.poke_worker_cleanups();
+        if let Some(dispatcher) = self.upgrade() {
+            dispatcher.poke_track_close_cleanups();
+        }
     }
 }
 

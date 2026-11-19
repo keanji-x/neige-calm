@@ -1,5 +1,6 @@
 //! Historical host diagnostics. Delivery facts travel separately in provider operation outcomes.
 use crate::error::CalmError;
+use serde_json::Value;
 
 /// C0 preserves these host decision categories independently of NotWritten/Unknown delivery.
 /// Consumers must never reclassify the opaque payload by inspecting `CalmError`.
@@ -104,6 +105,143 @@ impl From<StartError> for CalmError {
 use super::*;
 
 impl SharedCodexAppServer {
+    /// Confirm physical Stop on one bound thread. Local absence is not evidence;
+    /// a read uses the same source/activity fence as ordinary native settlement.
+    /// This never creates an execution END or accepts an input.
+    pub(crate) async fn stop_bound_thread(
+        &self,
+        thread: &str,
+        persisted_turn: Option<&str>,
+    ) -> Result<()> {
+        let result = self.stop_bound_source(thread, persisted_turn).await;
+        #[cfg(feature = "fixtures")]
+        if self.fake.is_some() {
+            return result;
+        }
+        if result.is_err()
+            && !self.is_running_per_readiness()
+            && self.process_confirmed_absent().await?
+        {
+            return Ok(());
+        }
+        if let Err(error) = &result {
+            tracing::warn!(thread_id=thread, %error, "Codex Stop unconfirmed; retain its cleanup");
+        }
+        result
+    }
+
+    async fn stop_bound_source(&self, thread: &str, persisted_turn: Option<&str>) -> Result<()> {
+        let mut snapshot = self.ready_interrupt_snapshot(thread).await?;
+        // The native owner's current turn supersedes a stale persisted fallback.
+        if snapshot.turns.is_empty()
+            && !snapshot.unresolved
+            && let Some(turn) = persisted_turn
+        {
+            snapshot.turns.push(turn.to_owned());
+        }
+        let mut failure = None;
+        let mut unconfirmed = Vec::new();
+        let mut acknowledged = false;
+        for turn in &snapshot.turns {
+            match self
+                .interrupt_native_source_outcome(snapshot.source.as_ref(), thread, turn)
+                .await
+            {
+                NativeInterruptOutcome::NativeAck => acknowledged = true,
+                NativeInterruptOutcome::NoTarget => unconfirmed.push(turn.as_str()),
+                NativeInterruptOutcome::Unconfirmed { error } => {
+                    unconfirmed.push(turn.as_str());
+                    failure.get_or_insert(error);
+                }
+            }
+        }
+        let remaining = self.interrupt_snapshot_from_original(snapshot.source.as_ref(), thread)?;
+        if acknowledged
+            && unconfirmed.is_empty()
+            && !remaining.unresolved
+            && remaining.turns.is_empty()
+        {
+            return Ok(());
+        }
+        #[cfg(feature = "fixtures")]
+        if self.fake.is_some()
+            && failure.is_none()
+            && !remaining.unresolved
+            && remaining.turns.is_empty()
+        {
+            // The fake models an idle in-process provider, not a lost real daemon.
+            return Ok(());
+        }
+        let error = failure
+            .unwrap_or_else(|| CalmError::Conflict("original Codex Stop is not confirmed".into()));
+        let Some(client) = snapshot.source.as_ref() else {
+            return Err(error);
+        };
+        let expected = self.native_turns.settlement_fence(client, thread)?;
+        let read = match client.thread_read_full(thread).await {
+            Ok(read) => read.thread,
+            Err(_) => return Err(error),
+        };
+        let state = exact_thread::RecoveryState::from_thread(&read);
+        let resting = matches!(state.status.as_deref(), Some("idle" | "systemError"));
+        let stopped = state.id.as_deref() == Some(thread)
+            && (state.status.as_deref() == Some("notLoaded")
+                || (resting
+                    && read
+                        .get("turns")
+                        .and_then(Value::as_array)
+                        .is_some_and(|turns| turns.iter().all(exact_thread::turn_is_terminal))
+                    && unconfirmed
+                        .iter()
+                        .all(|id| exact_thread::terminal_turn(&read, id).is_some())));
+        if stopped && self.native_turns.settle_unaddressed_start(&expected) {
+            return Ok(());
+        }
+        Err(error)
+    }
+
+    async fn ready_interrupt_snapshot(
+        &self,
+        thread: &str,
+    ) -> Result<native_turns::InterruptSnapshot> {
+        #[cfg(feature = "fixtures")]
+        if self.fake.is_some() {
+            return Ok(self.native_turns.interrupt_snapshot(thread));
+        }
+        let client = self
+            .ready_client()
+            .await
+            .ok_or(CalmError::ExecutionUnavailable)?;
+        self.native_turns.interrupt_snapshot_for(&client, thread)
+    }
+
+    /// Confirm process absence while the backend cannot be replaced. A live connection or an
+    /// unresolved process identity leaves the original session's cleanup pending.
+    pub(crate) async fn process_confirmed_absent(&self) -> Result<bool> {
+        let Ok(_transition) = self.transition_serial.try_lock() else {
+            return Ok(false);
+        };
+        let process_can_remain = match &self.core.lock().await.state {
+            SupervisorState::Running {
+                client, runtime, ..
+            } => {
+                !client.is_closed()
+                    || !observe_owned_pid(runtime.pid, runtime.process_start_time, &runtime.boot_id)
+                        .proven_gone()
+            }
+            SupervisorState::Starting | SupervisorState::Restarting { .. } => true,
+            SupervisorState::Idle | SupervisorState::Failed { .. } => false,
+        };
+        if process_can_remain {
+            return Ok(false);
+        }
+        let record = self
+            .repo
+            .shared_daemon_runtime_get(self.backend_id.as_str())
+            .await?;
+        Ok(persisted_process_proven_absent(&record))
+    }
+
     pub async fn interrupt_outcome(
         &self,
         thread_id: &str,

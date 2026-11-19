@@ -2761,12 +2761,6 @@ pub(crate) async fn update_track(
             "closed is user-only; a Planner closes with neige_track_close".into(),
         ));
     }
-    // Asking for the state the track is already in is an idempotent silent success.
-    let mut p = p;
-    if p.closed == Some(existing.closed_at.is_some()) {
-        p.closed = None;
-    }
-
     if let Some(Some(ceiling)) = p.planner_task_ceiling
         && ceiling < 0
     {
@@ -2805,7 +2799,7 @@ pub(crate) async fn update_track(
         return Ok(Json(calm_types::track_wire::TrackWire(existing)).into_response());
     }
 
-    let reopening = p.closed == Some(false);
+    let closing = p.closed == Some(true);
     let lifecycle_guard = if p.closed.is_some() {
         Some(crate::per_card_lock::lock_key(&s.track_delete_locks, &id).await)
     } else {
@@ -2816,17 +2810,22 @@ pub(crate) async fn update_track(
         || p.require_task_gates.is_some()
         || p.tree_task_budget.is_some();
     let tree_budget_changed = p.tree_task_budget.is_some();
-    let p_for_tx = p.clone();
-    let unchanged = std::sync::Arc::new(std::sync::OnceLock::<Track>::new());
-    let unchanged_tx = unchanged.clone();
-    let written =
-        write_with_actor_events_typed(s.repo.as_ref(), None, &s.events, &s.write, move |tx| {
+    let write_context = s.write.clone();
+    // Close can create cleanup work without a presentation event. Publish the
+    // authorized event batch only after the transaction has committed.
+    let ((track, executions, reopened), ids, pending) =
+        crate::db::write_in_tx_typed(s.repo.as_ref(), move |tx| {
             let scope = scope.clone();
             Box::pin(async move {
-                let mut patch = p_for_tx;
+                let mut patch = p;
                 let admin = patch.admin.take();
                 patch.template_id = None;
                 let live = calm_truth::db::sqlite::track_get_tx(tx, &id.clone().into()).await?;
+                if let Some(axum::Extension(access)) = &share {
+                    access
+                        .authorize_ingress_tx(tx, live.area_id.as_str(), Some(live.id.as_str()))
+                        .await?;
+                }
                 if admin == Some(true)
                     && live.admin_granted_at.is_none()
                     && !crate::area_admin::eligible_tx(&mut **tx, &live).await?
@@ -2837,28 +2836,33 @@ pub(crate) async fn update_track(
                 }
                 let admin_changed =
                     admin.is_some_and(|value| value != live.admin_granted_at.is_some());
-                let other_changes = template_binding.is_some()
-                    || patch.title.is_some()
+                // Only a real reopen wakes the Planner. Decide against the row
+                // protected by this write, including a concurrent close or reopen.
+                let reopened = patch.closed == Some(false) && live.closed_at.is_some();
+                patch.closed = reopened.then_some(false);
+                let (mut track, mut events, executions) = if closing {
+                    let closed =
+                        crate::track_close::close_subtree_tx(tx, &live.id, actor_id.clone(), None)
+                            .await?;
+                    (closed.track, closed.events, closed.executions)
+                } else {
+                    (live, Vec::new(), Vec::new())
+                };
+                let row_changed = patch.title.is_some()
                     || patch.sort.is_some()
                     || patch.pinned_at.is_some()
-                    || patch.closed.is_some()
-                    || patch.require_task_gates.is_some()
-                    || patch.planner_task_ceiling.is_some()
-                    || patch.automation_policy.is_some()
-                    || patch.tree_task_budget.is_some();
-                if !admin_changed && !other_changes {
-                    let _ = unchanged_tx.set(live);
-                    return Err(CalmError::Conflict(
-                        "admin already in requested state".into(),
-                    ));
+                    || reopened
+                    || projection_policy_changed;
+                if row_changed {
+                    track = track_update_tx(tx, &id, patch).await?;
                 }
-                let mut track = track_update_tx(tx, &id, patch).await?;
                 if admin_changed {
                     track = crate::area_admin::set_tx(tx, &track, admin.unwrap()).await?;
                 }
-                let mut binding_events = Vec::new();
                 if let Some(binding) = template_binding {
-                    (track, binding_events) = binding.apply_tx(tx, &track).await?;
+                    let (updated, binding_events) = binding.apply_tx(tx, &track).await?;
+                    track = updated;
+                    events.extend(binding_events);
                 }
                 let projections = if projection_policy_changed {
                     if tree_budget_changed {
@@ -2869,15 +2873,26 @@ pub(crate) async fn update_track(
                 } else {
                     Vec::new()
                 };
-                let mut events: Vec<(ActorId, EventScope, Event)> = binding_events;
-                events.push((
-                    actor_id.clone(),
-                    scope.clone(),
-                    Event::TrackUpdated(crate::event::TrackUpdatedPayload::new(
-                        track.clone(),
-                        None,
-                    )),
-                ));
+                if row_changed || admin_changed || template_changed {
+                    // A combined Close may already have queued this Track's update.
+                    // Keep its position and publish the row after all PATCH fields are applied.
+                    let previous = events.iter_mut().find_map(|(_, _, event)| match event {
+                        Event::TrackUpdated(update) if update.id == track.id => Some(update),
+                        _ => None,
+                    });
+                    if let Some(update) = previous {
+                        update.track.clone_from(&track);
+                    } else {
+                        events.push((
+                            actor_id.clone(),
+                            scope.clone(),
+                            Event::TrackUpdated(crate::event::TrackUpdatedPayload::new(
+                                track.clone(),
+                                None,
+                            )),
+                        ));
+                    }
+                }
                 for (projected_track, projection) in projections {
                     if !projection.changed_keys.is_empty() {
                         events.push((
@@ -2895,21 +2910,28 @@ pub(crate) async fn update_track(
                     }
                     events.extend(projection.kernel_events);
                 }
-                Ok((track, events))
+                let ids = if events.is_empty() {
+                    Vec::new()
+                } else {
+                    crate::db::sqlite::append_actor_events_in_tx(tx, None, &write_context, &events)
+                        .await?
+                        .0
+                };
+                Ok(((track, executions, reopened), ids, events))
             })
         })
-        .await;
-    let track = match written {
-        Err(_) if unchanged.get().is_some() => {
-            unchanged.get().expect("unchanged row was set").clone()
-        }
-        result => result?.0,
-    };
+        .await?;
+    crate::db::sqlite::broadcast_actor_events(&s.events, &ids, pending);
     drop(lifecycle_guard);
-    if template_changed {
+    if closing {
+        s.operation_runtime.execution().drive(executions);
+        w.dispatcher.poke_track_close_cleanups();
+        w.dispatcher.scheduler().poke_worker_cleanups();
+    }
+    if template_changed && track.closed_at.is_none() {
         restart_planner_harness_at(&s, &restart_actor, &track, track.workspace.agent_cwd()).await;
     }
-    if reopening && let Err(error) = w.dispatcher.wake_planner_on_reopen(&track.id).await {
+    if reopened && let Err(error) = w.dispatcher.wake_planner_on_reopen(&track.id).await {
         tracing::warn!(%error, track_id=%track.id, "Planner resume after reopen failed; next wake can retry");
     }
     Ok(Json(calm_types::track_wire::TrackWire(track)).into_response())

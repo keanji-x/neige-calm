@@ -1132,6 +1132,15 @@ impl PlannerHarness {
         self.shutdown_inner(false).await
     }
 
+    pub(crate) async fn shutdown_confirmed(&self) -> Result<()> {
+        self.shutdown_inner(true).await
+    }
+
+    /// The original provider observer remains usable after the run loop joins.
+    pub(crate) fn closed_execution_observer(&self) -> &PlannerBackend {
+        &self.inner.backend
+    }
+
     /// Quiesce an owner that is preparing for deletion and return its retained
     /// thread seal. An error/panic releases the seal through the local guard;
     /// the caller owns it only after strict interruption succeeds.
@@ -1165,7 +1174,7 @@ impl PlannerHarness {
         self.wait_for_run_loop().await?;
         let _issuance_guard = self.inner.issuance.lock().await;
         let invocation = IssueTurnHandle::from_reconciliation(&self.inner).await;
-        let interrupt_error = invocation.shutdown().await.err();
+        let interrupt_error = invocation.shutdown(strict_interrupt).await.err();
         held::release_all(&self.inner);
         if strict_interrupt && let Some(error) = interrupt_error {
             return Err(error);
