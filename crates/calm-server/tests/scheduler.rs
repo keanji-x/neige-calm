@@ -4034,8 +4034,8 @@ async fn claim_fence_rejects_cross_track_edit_after_resolution_without_side_effe
 async fn deterministic_root_location_failures_do_not_freeze_or_index() {
     for case in ["duplicate", "tombstoned", "absent", "invalid-root-ref"] {
         let boot = boot().await;
-        // A closed track holds the root task pending while its declaration breaks.
-        set_closed(&boot, true).await;
+        // Keep the track open and break the declaration before its first scheduling pass.
+        // Closed projection terminalizes pending tasks instead of pausing them.
         let key = format!("root-{case}");
         let valid_root = json!({
             "key": key, "kind": "terminal", "command": "true",
@@ -4058,8 +4058,9 @@ async fn deterministic_root_location_failures_do_not_freeze_or_index() {
         let initial = vec![(root_id, "task", valid_root.clone())];
         edit_report_blocks(&boot, &initial).await;
         let task_id = format!("{}:{key}", boot.track_id);
-        assert!(
-            boot.repo.task_get(&task_id).await.unwrap().is_some(),
+        assert_eq!(
+            boot.repo.task_get(&task_id).await.unwrap().unwrap().status,
+            TaskStatus::Pending,
             "initial projection for case {case}"
         );
         let (_runtime, scheduler) = build_scheduler(
@@ -4069,8 +4070,6 @@ async fn deterministic_root_location_failures_do_not_freeze_or_index() {
                 card_id: boot.worker_card_id.to_string(),
             })],
         );
-        scheduler.schedule_track(boot.track_id.clone()).await;
-
         let broken = match case {
             "duplicate" => vec![
                 (root_id, "task", valid_root.clone()),
