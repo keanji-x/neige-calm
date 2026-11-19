@@ -655,9 +655,7 @@ async fn close_p1_history_read_does_not_reconnect_or_replay_other_threads() {
         })
         .await
         .unwrap();
-    f.daemon
-        .thread_cache
-        .insert("other-thread".into(), "other-card".into());
+    seed_cached_thread(&f, "other-thread").await;
     let original = f.daemon.connected_client().await.unwrap();
     f.closed.lock().unwrap().insert("model/list".into());
     assert!(
