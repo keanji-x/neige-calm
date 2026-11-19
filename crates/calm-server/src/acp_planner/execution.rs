@@ -18,6 +18,8 @@ use std::{
     sync::{Arc, OnceLock},
 };
 pub const CONSUMER: &str = "acp-planner";
+#[cfg(test)]
+mod workspace_environment_tests;
 #[derive(Default)]
 pub(crate) struct Owner {
     repo: OnceLock<Arc<dyn crate::db::Repo>>,
@@ -207,6 +209,7 @@ pub(super) struct Process {
     pub io: Arc<crate::provider_execution::stdio::WriteProgress>,
     pub connection: Connection,
     pub capabilities: protocol::AgentCapabilities,
+    pub tool_environment: Option<super::environment::ShellEnvironment>,
 }
 /// Validate even registrations read by an earlier binary before minting authority.
 pub(super) fn validate_registration(registration: Registration<'_>) -> Result<()> {
@@ -223,13 +226,29 @@ pub(super) async fn intent(
     permission: crate::planner_permission_mode::PlannerPermissionMode,
     id: &workspace_runtime::execution::ExecutionId,
     dir: &Path,
-) -> Result<(workspace_runtime::execution::ExecutionIntent, Vec<u8>)> {
+    admission: &crate::harness::native_admission::NativePromptAdmission<'_>,
+) -> Result<(
+    workspace_runtime::execution::ExecutionIntent,
+    Vec<u8>,
+    Option<super::environment::ShellEnvironment>,
+)> {
+    let (environment, hook) = super::environment::track_values(
+        registration,
+        params.repo.as_ref(),
+        &params.track_id,
+        &params.cwd,
+        &params.host.agent_logs,
+        || admission.check_local(),
+    )
+    .await?;
     let (args, release) = process_launch(
         registration,
         registration.profile.launch(permission),
         crate::mcp_server::wiring::card_mcp_env(&params.host.mcp_socket, token),
+        environment,
+        hook.as_ref(),
     )?;
-    crate::provider_execution::launch::intent(
+    let (intent, payload) = crate::provider_execution::launch::intent(
         params.host.provider_execution.owner.as_ref(),
         &params.worker_session_id,
         &params.track_id,
@@ -243,13 +262,16 @@ pub(super) async fn intent(
         release.payload,
         calm_session::control::execution::AmbientEnvironment::None,
     )
-    .await
+    .await?;
+    Ok((intent, payload, hook))
 }
 
 pub(crate) fn process_launch(
     registration: Registration<'_>,
     launch: &super::profile::ModeLaunch,
     card_env: impl IntoIterator<Item = (&'static str, String)>,
+    workspace_env: std::collections::BTreeMap<std::ffi::OsString, std::ffi::OsString>,
+    hook: Option<&super::environment::ShellEnvironment>,
 ) -> Result<(
     Vec<std::ffi::OsString>,
     crate::provider_execution::launch::Release,
@@ -260,21 +282,25 @@ pub(crate) fn process_launch(
     validate_registration(registration)?;
     // Merge first, preserving each final value's source. Profile/kernel values
     // override registrations, exactly as the native Command::envs path did.
-    let mut env: BTreeMap<String, (OsString, bool)> = registration
-        .config
-        .env
-        .iter()
-        .map(|(k, v)| (k.clone(), (v.into(), true)))
-        .collect();
-    env.insert(
-        "PATH".into(),
-        (crate::kernel_bin_path::kernel_led_path()?.path, false),
+    let mut project = super::environment::project_values(registration, workspace_env)?;
+    super::environment::kernel_path(&mut project)?;
+    let mut env: BTreeMap<String, (OsString, bool)> =
+        project.into_iter().map(|(k, v)| (k, (v, true))).collect();
+    env.extend(
+        registration
+            .config
+            .env
+            .iter()
+            .map(|(k, v)| (k.clone(), (v.into(), true))),
     );
     for (key, value) in card_env {
         env.insert(key.into(), (value.into(), key == "NEIGE_MCP_TOKEN"));
     }
     for (key, value) in launch.env {
         env.insert((*key).into(), ((*value).into(), false));
+    }
+    if let Some(hook) = hook {
+        env.insert(hook.config.0.into(), (hook.config.1.clone(), false));
     }
     let mut secrets = BTreeMap::new();
     let mut public = Vec::new();
@@ -288,13 +314,12 @@ pub(crate) fn process_launch(
             public.push((key, value));
         }
     }
+    // stderr capture starts before the private release. Its POSIX utilities
+    // need only this fixed bootstrap path; the payload installs the project PATH.
+    public.push(("PATH".into(), OsString::from("/usr/bin:/bin")));
     let present = secrets.keys().map(String::as_str).collect::<Vec<_>>();
     let keys = PayloadKeys::new(&present, KeySource::Kernel)?;
-    let keys = if registration.profile.resident.is_some() {
-        keys.with_multiline()
-    } else {
-        keys
-    };
+    let keys = keys.with_multiline();
     let payload = keys
         .render(|key| secrets.get(key).cloned())
         .map_err(|_| CalmError::BadRequest("invalid ACP release payload".into()))?;

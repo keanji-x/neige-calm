@@ -2,26 +2,19 @@
 use super::*;
 use std::collections::HashMap;
 
+mod authority;
+use authority::cold_resume_authority_tx;
+
 pub(crate) enum ConnectionReplay {
     Pending(ReplayPlan),
     Complete,
 }
 
+#[derive(Default)]
 pub(crate) struct ReplayPlan {
-    mode: ResumeMode,
     configs: HashMap<(String, String), PreparedColdResume>,
     excluded: HashSet<String>,
 }
-impl ReplayPlan {
-    pub(super) fn new(mode: ResumeMode) -> Self {
-        Self {
-            mode,
-            configs: HashMap::new(),
-            excluded: HashSet::new(),
-        }
-    }
-}
-
 #[derive(Clone, PartialEq, Eq)]
 struct ColdRuntime {
     id: String,
@@ -75,7 +68,7 @@ impl SharedCodexAppServer {
             let Some(client) = self.reconnect_running_client_locked(transition).await? else {
                 return Ok(());
             };
-            let mode = {
+            {
                 let core = self.core.lock().await;
                 match &core.state {
                     SupervisorState::Running {
@@ -84,7 +77,7 @@ impl SharedCodexAppServer {
                         ..
                     } if Arc::ptr_eq(current, &client) => match replay {
                         ConnectionReplay::Complete => return Ok(()),
-                        ConnectionReplay::Pending(plan) => plan.mode,
+                        ConnectionReplay::Pending(_) => {}
                     },
                     _ => return Err(CalmError::Conflict("Codex replay source changed".into())),
                 }
@@ -110,28 +103,89 @@ impl SharedCodexAppServer {
                         continue;
                     }
                 }
-                let config = match mode {
-                    ResumeMode::HotTakeover => ThreadConfig::NoMcp,
-                    ResumeMode::ColdRespawn => {
-                        let key = (thread_id.clone(), card_id.clone());
-                        let previous = self
-                            .with_replay_plan(&client, |plan| plan.configs.get(&key).cloned())
-                            .await?;
-                        let Some(prepared) =
-                            self.cold_resume_config(thread_id, card_id, previous).await
-                        else {
-                            continue;
-                        };
-                        let config = prepared.config.clone();
-                        // Retain before the first native send, so cancellation cannot
-                        // remint a token for a thread the daemon already loaded.
-                        self.with_replay_plan(&client, |plan| plan.configs.insert(key, prepared))
-                            .await?;
-                        config
+                let key = (thread_id.clone(), card_id.clone());
+                let previous = self
+                    .with_replay_plan(&client, |plan| plan.configs.get(&key).cloned())
+                    .await?;
+                let authority = match self.replay_authority(thread_id, card_id).await {
+                    Ok(Some(authority)) => authority,
+                    Ok(None) => continue,
+                    Err(error) => {
+                        tracing::warn!(%thread_id, %card_id, %error, "shared codex replay owner unavailable");
+                        continue;
                     }
                 };
+                if previous
+                    .as_ref()
+                    .is_some_and(|prepared| prepared.authority != authority)
+                {
+                    continue;
+                }
+                let admission = NativePromptAdmission::new(
+                    || self.require_replay_locator(thread_id, card_id),
+                    || {
+                        Box::pin(
+                            self.revalidate_replay_owner(&client, thread_id, card_id, &authority),
+                        )
+                    },
+                );
+                // The provider reports whether this exact context is loaded. A
+                // process restart/reconnect reason is not a thread-state witness.
+                let native = match admission.finish(
+                    client
+                        .thread_read_gated(thread_id, false, admission.gate())
+                        .await,
+                ) {
+                    Ok(native) => native,
+                    Err(_) => {
+                        self.with_replay_plan(&client, |plan| {
+                            plan.excluded.insert(thread_id.clone())
+                        })
+                        .await?;
+                        tracing::warn!(%thread_id, "cached native state unavailable; explicit recovery required");
+                        if client.is_closed() {
+                            break;
+                        }
+                        continue;
+                    }
+                };
+                let cold = match native.thread.status {
+                    provider::codex::ThreadStatus::NotLoaded => true,
+                    provider::codex::ThreadStatus::Idle
+                    | provider::codex::ThreadStatus::Active { .. }
+                    | provider::codex::ThreadStatus::SystemError => false,
+                };
+                let config = if cold {
+                    let Some(prepared) = self
+                        .cold_resume_config(thread_id, card_id, previous, &authority)
+                        .await
+                    else {
+                        continue;
+                    };
+                    let config = prepared.config.clone();
+                    // Retain before the first native send, so cancellation cannot
+                    // remint a token for a thread the daemon already loaded.
+                    self.with_replay_plan(&client, |plan| plan.configs.insert(key, prepared))
+                        .await?;
+                    #[cfg(feature = "fixtures")]
+                    crate::test_seams::pause_point("codex-replay-cold-prepared", card_id).await;
+                    ResumeConfig::Reload(config)
+                } else {
+                    // An ambiguous earlier cold send retains its committed owner
+                    // check, without reminting credentials or re-evaluating direnv.
+                    if let Some(previous) = previous
+                        && self
+                            .cold_resume_config(thread_id, card_id, Some(previous), &authority)
+                            .await
+                            .is_none()
+                    {
+                        continue;
+                    }
+                    ResumeConfig::Retain
+                };
                 tracing::info!(%thread_id, %card_id, "resuming shared codex thread");
-                Self::resume_thread_typed(&client, thread_id, card_id, config).await;
+                self.resume_thread_typed(&client, thread_id, card_id, config, &admission)
+                    .await;
                 if client.is_closed() {
                     self.with_replay_plan(&client, |plan| plan.excluded.insert(thread_id.clone()))
                         .await?;
@@ -166,60 +220,74 @@ impl SharedCodexAppServer {
         thread_id: &str,
         card_id: &str,
         previous: Option<PreparedColdResume>,
+        expected: &ColdAuthority,
     ) -> Option<PreparedColdResume> {
         let socket_path = self.paths.kernel_mcp_socket.clone();
         let result = write_in_tx_typed(self.repo.as_ref(), {
             let thread_id = thread_id.to_owned();
             let card_id = card_id.to_owned();
-            move |tx| Box::pin(async move {
-                let shape = crate::db::sqlite::card_execution_shape_tx(tx, &card_id).await?;
-                let current = session_projection_active_for_card_tx(tx, &card_id).await?;
-                let authority = if let Some(runtime) = current {
-                    let stamp = ColdRuntime {id: runtime.id.clone(), thread: runtime.thread_id.clone()};
-                    let binding = crate::harness::profile::PlannerBinding::from_shape(&shape.kind, shape.role, &shape.payload);
-                    let no_mcp = match &binding {
-                        Some(binding) => binding.profile.mcp_role().is_none() || binding.provider != AgentProvider::Codex,
-                        None => shape.role == CardRole::Planner,
+            let expected = expected.clone();
+            move |tx| {
+                Box::pin(async move {
+                    let shape = crate::db::sqlite::card_execution_shape_tx(tx, &card_id).await?;
+                    let Some(authority) =
+                        cold_resume_authority_tx(tx, &thread_id, &card_id, &shape).await?
+                    else {
+                        return Ok(None);
                     };
-                    if runtime.thread_id.as_deref() != Some(thread_id.as_str()) || no_mcp {
-                        ColdAuthority::NoMcp(Some(stamp))
-                    } else {
-                        ColdAuthority::Mcp {runtime: stamp, role: shape.role}
+                    if authority != expected {
+                        return Ok(None);
                     }
-                } else {
-                    let failed: bool = sqlx::query_scalar(
-                        "SELECT EXISTS(SELECT 1 FROM cards c JOIN worker_sessions ws ON ws.id=c.session_id WHERE c.id=?1 \
-                         AND ws.state='failed' AND json_extract(ws.handle_state_json,'$.mode')=?2)"
-                    ).bind(&card_id).bind(calm_types::harness::HARNESS_MODE).fetch_one(&mut **tx).await?;
-                    if failed { return Ok(None); }
-                    ColdAuthority::NoMcp(None)
-                };
-                let selection = if matches!(&authority, ColdAuthority::Mcp {role: CardRole::Worker, ..}) {
-                    match crate::worker_model_defaults::from_payload(&shape.payload, calm_types::worker_model::WorkerModelProvider::Codex)? {
-                        Some(selection) => selection,
-                        None => {
-                            if crate::db::sqlite::card_is_worker_spawn_target_tx(tx, &card_id).await? {
-                                crate::worker_model_defaults::warn_legacy_selection(&card_id, calm_types::worker_model::WorkerModelProvider::Codex);
-                            }
-                            TurnModelSelection::inherit()
+                    let selection = if matches!(
+                        &authority,
+                        ColdAuthority::Mcp {
+                            role: CardRole::Worker,
+                            ..
                         }
+                    ) {
+                        match crate::worker_model_defaults::from_payload(
+                            &shape.payload,
+                            calm_types::worker_model::WorkerModelProvider::Codex,
+                        )? {
+                            Some(selection) => selection,
+                            None => {
+                                if crate::db::sqlite::card_is_worker_spawn_target_tx(tx, &card_id)
+                                    .await?
+                                {
+                                    crate::worker_model_defaults::warn_legacy_selection(
+                                        &card_id,
+                                        calm_types::worker_model::WorkerModelProvider::Codex,
+                                    );
+                                }
+                                TurnModelSelection::inherit()
+                            }
+                        }
+                    } else {
+                        TurnModelSelection::inherit()
+                    };
+                    // Re-run the owning authorization above on EVERY attempt, including
+                    // active/failed state. A changed owner stays unloaded for explicit recovery.
+                    if let Some(previous) = previous {
+                        return Ok((previous.authority == authority).then_some(previous));
                     }
-                } else { TurnModelSelection::inherit() };
-                // Re-run the owning authorization above on EVERY attempt, including
-                // active/failed state. A changed owner stays unloaded for explicit recovery.
-                if let Some(previous) = previous {
-                    return Ok((previous.authority == authority).then_some(previous));
-                }
-                let config = match &authority {
-                    ColdAuthority::NoMcp(_) => ThreadConfig::NoMcp,
-                    ColdAuthority::Mcp {runtime, role} => {
-                        let raw_token = mint_and_persist_card_token(tx, &card_id, &runtime.id).await?;
-                        ThreadConfig::McpShell {role: *role, socket_path, raw_token, selection}
-                    }
-                };
-                Ok(Some(PreparedColdResume {authority, config}))
-            })
-        }).await;
+                    let config = match &authority {
+                        ColdAuthority::NoMcp(_) => ThreadConfig::NoMcp,
+                        ColdAuthority::Mcp { runtime, role } => {
+                            let raw_token =
+                                mint_and_persist_card_token(tx, &card_id, &runtime.id).await?;
+                            ThreadConfig::McpShell {
+                                role: *role,
+                                socket_path,
+                                raw_token,
+                                selection,
+                            }
+                        }
+                    };
+                    Ok(Some(PreparedColdResume { authority, config }))
+                })
+            }
+        })
+        .await;
         match result {
             Ok(config) => config,
             Err(error) => {
@@ -230,12 +298,21 @@ impl SharedCodexAppServer {
     }
 
     async fn resume_thread_typed(
+        &self,
         client: &CodexAppServer,
         thread_id: &str,
         card_id: &str,
-        config: ThreadConfig,
+        config: ResumeConfig,
+        admission: &NativePromptAdmission<'_>,
     ) {
-        let lowered = match config.to_wire_config() {
+        let lowered = match config {
+            ResumeConfig::Retain => Ok(None),
+            ResumeConfig::Reload(config) => {
+                self.workspace_thread_config(client, card_id, None, &config, admission)
+                    .await
+            }
+        };
+        let lowered = match lowered {
             Ok(lowered) => lowered,
             Err(error) => {
                 tracing::warn!(%thread_id, %card_id, %error, "shared codex thread resume config unavailable");
@@ -244,10 +321,13 @@ impl SharedCodexAppServer {
         };
         // This scope holds the process boundary. Bound the entire RPC, including
         // a partial send; cancellation uses the provider's synchronous abort guard.
-        match tokio::time::timeout(
-            client.request_timeout(),
-            client.thread_resume_with_config(thread_id, lowered),
-        )
+        match tokio::time::timeout(client.request_timeout(), async {
+            admission.finish(
+                client
+                    .thread_resume_with_config_gated(thread_id, lowered, admission.gate())
+                    .await,
+            )
+        })
         .await
         {
             Ok(Ok(_)) => {}

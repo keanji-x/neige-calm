@@ -383,7 +383,10 @@ mod tests;
 
 mod worker_preparation;
 
+mod compensation_identity;
+use compensation_identity::compensation_worker_session_id;
 mod interactive;
+mod mint_admission;
 mod worker;
 mod worker_spawn;
 use worker_spawn::*;

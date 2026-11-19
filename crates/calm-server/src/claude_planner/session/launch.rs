@@ -26,26 +26,9 @@ impl ClaudePlannerSession {
             .repo
             .sqlite_db()
             .ok_or(CalmError::ExecutionUnavailable)?;
-        if shared.parked.is_parked() {
-            return Err(CalmError::Conflict("Claude carrier is parked".into()).into());
-        }
-        let Some(held) = shared.installed.get() else {
-            return Err(
-                CalmError::Conflict("claude planner harness is not installed yet".into()).into(),
-            );
-        };
+        let held = self.require_spawn_live(thread)?;
         let (start, row_bound, prior_total_tokens, settle_after_stop) = {
             let state = shared.state();
-            if state.shutting_down {
-                return Err(
-                    CalmError::Conflict("claude planner session is shutting down".into()).into(),
-                );
-            }
-            if state.active.is_some() {
-                return Err(
-                    CalmError::Conflict("a claude planner turn is still running".into()).into(),
-                );
-            }
             (
                 state.start,
                 state.row_bound,
@@ -95,27 +78,7 @@ impl ClaudePlannerSession {
         if params.seals.is_sealed(thread) {
             return Err(sealed(thread).into());
         }
-        let live = params
-            .repo
-            .session_get(&WorkerSessionId(params.worker_session_id.clone()))
-            .await
-            .map_err(CalmError::from)?
-            .ok_or_else(|| CalmError::Conflict("Claude owner is missing".into()))?;
-        let binding = crate::harness::profile::local_binding(
-            params.repo.as_ref(),
-            &live,
-            &calm_types::runtime::AgentProvider::Claude,
-            &params.card_id,
-            &params.track_id,
-            thread,
-        )
-        .await?
-        .ok_or_else(|| CalmError::Conflict("Claude live owner identity changed".into()))?;
-        if binding.profile == crate::harness::profile::HarnessProfile::Assistant
-            && mode != PlannerPermissionMode::Never
-        {
-            return Err(CalmError::Conflict("Claude live owner identity changed".into()).into());
-        }
+        self.require_spawn_owner(thread, mode).await?;
         let host = &params.host;
         let config = host
             .configured()
@@ -252,6 +215,11 @@ impl ClaudePlannerSession {
         use workspace_runtime::execution::ExecutionId;
         let id = ExecutionId::fresh().map_err(execution_owner::conflict)?;
         let dir = stderr::create(&host.instructions_dir, id.as_str())?;
+        let owner = crate::harness::native_admission::NativePromptAdmission::new(
+            || self.require_spawn_live(thread).map(drop),
+            || Box::pin(self.require_spawn_owner(thread, mode)),
+        );
+        let environment_admission = admission.combined(&owner);
         let prepared = super::super::execution::intent(
             params,
             &id,
@@ -260,6 +228,7 @@ impl ClaudePlannerSession {
             argv,
             env,
             Some(token),
+            &environment_admission,
         )
         .await;
         let (intent, payload) = match prepared {
@@ -279,7 +248,7 @@ impl ClaudePlannerSession {
             },
         };
         // Admission can commit before its caller observes the result. Only this
-        // boundary discards prior evidence; the intent preparation above is process-free.
+        // boundary discards prior evidence; workspace evaluation above creates no provider execution.
         let previous = driver_slot.take();
         let (claim, guard) = match owner
             .admit(
@@ -457,5 +426,59 @@ impl ClaudePlannerSession {
         #[cfg(feature = "fixtures")]
         fixtures::after_install(shared).await;
         Ok(local_turn)
+    }
+
+    /// Pre-launch state only: this turn has no ActiveTurn until its user line is written.
+    fn require_spawn_live(&self, thread: &str) -> Result<&HeldRequestSender> {
+        let shared = &self.shared;
+        if shared.parked.is_parked() {
+            return Err(CalmError::Conflict("Claude carrier is parked".into()));
+        }
+        let held = shared.installed.get().ok_or_else(|| {
+            CalmError::Conflict("claude planner harness is not installed yet".into())
+        })?;
+        let state = shared.state();
+        if state.shutting_down {
+            return Err(CalmError::Conflict(
+                "claude planner session is shutting down".into(),
+            ));
+        }
+        if state.active.is_some() {
+            return Err(CalmError::Conflict(
+                "a claude planner turn is still running".into(),
+            ));
+        }
+        if shared.params.seals.is_sealed(thread) {
+            return Err(sealed(thread));
+        }
+        Ok(held)
+    }
+
+    async fn require_spawn_owner(&self, thread: &str, mode: PlannerPermissionMode) -> Result<()> {
+        let params = &self.shared.params;
+        let live = params
+            .repo
+            .session_get(&WorkerSessionId(params.worker_session_id.clone()))
+            .await
+            .map_err(CalmError::from)?
+            .ok_or_else(|| CalmError::Conflict("Claude owner is missing".into()))?;
+        let binding = crate::harness::profile::local_binding(
+            params.repo.as_ref(),
+            &live,
+            &calm_types::runtime::AgentProvider::Claude,
+            &params.card_id,
+            &params.track_id,
+            thread,
+        )
+        .await?
+        .ok_or_else(|| CalmError::Conflict("Claude live owner identity changed".into()))?;
+        if binding.profile == crate::harness::profile::HarnessProfile::Assistant
+            && mode != PlannerPermissionMode::Never
+        {
+            return Err(CalmError::Conflict(
+                "Claude live owner identity changed".into(),
+            ));
+        }
+        Ok(())
     }
 }

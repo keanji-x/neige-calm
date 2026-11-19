@@ -15,7 +15,7 @@ use std::{
     path::Path,
     sync::{Arc, atomic::AtomicBool},
 };
-use tokio::sync::MutexGuard;
+use tokio::sync::OwnedMutexGuard;
 
 /// Role policy only: durable admission, credential issuance and role-owned publication.
 /// The transport owns ordering, identity collision checks and all rollback writes.
@@ -40,11 +40,10 @@ pub(crate) struct Request<'a> {
 }
 
 /// Retains the setup lock through the caller's native turn handoff.
-pub(crate) struct Attached<'a> {
-    pub owned: MutexGuard<'a, Option<Server>>,
+pub(crate) struct Attached {
+    pub owned: OwnedMutexGuard<Option<Server>>,
     pub native: String,
     pub usage: UsageTracker,
-    #[allow(dead_code)]
     pub cleanup: CleanupWitness,
 }
 
@@ -64,19 +63,24 @@ fn gate<'a>(role: &'a dyn Role, native: Option<&'a str>) -> PreSendGate<'a> {
     })
 }
 
-pub(crate) async fn attach<'a>(
-    host: &'a Arc<AcpHost>,
+pub(crate) async fn attach(
+    host: &Arc<AcpHost>,
     registration: Registration<'_>,
     request: Request<'_>,
     role: &mut dyn Role,
-) -> std::result::Result<Attached<'a>, SetupFailure> {
-    let mut owned = host
-        .shared_servers
-        .get(registration.config.provider.wire_name())
-        .ok_or_else(|| conflict("Shared ACP server is not configured"))?
-        .lock()
-        .await;
-    server::ensure(host, registration, &mut owned).await?;
+) -> std::result::Result<Attached, SetupFailure> {
+    let slot = host.resident_slot(&registration.config.provider, request.track_id, request.cwd)?;
+    let mut owned = slot.clone().lock_owned().await;
+    server::ensure(
+        host,
+        registration,
+        &slot,
+        request.track_id,
+        request.cwd,
+        &mut owned,
+        || role.check(request.original_native),
+    )
+    .await?;
     let server = owned.as_mut().expect("shared ACP installed");
     if server.provider != registration.config.provider {
         return Err(conflict(
@@ -117,6 +121,7 @@ pub(crate) async fn attach<'a>(
     }
     let mut usage = UsageTracker::new(registration.profile.usage);
     let cleanup = CleanupWitness {
+        slot,
         generation: server.generation.clone(),
         closed: existing
             .map(|binding| binding.closed.clone())
@@ -178,6 +183,7 @@ pub(crate) async fn attach<'a>(
                 &gate(role, request.original_native),
             )
             .await?;
+            server.process.check_tool_environment()?;
             let native = match request.original_native {
                 Some(native) => native.to_owned(),
                 None => {
@@ -237,6 +243,7 @@ pub(crate) async fn attach<'a>(
             |configuration| role.observe(configuration),
         )
         .await?;
+        server.process.check_tool_environment()?;
         role.publish(&native, &configuration).await?;
         let binding = server
             .bindings

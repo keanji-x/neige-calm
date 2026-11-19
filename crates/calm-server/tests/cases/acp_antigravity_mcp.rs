@@ -81,7 +81,7 @@ async fn antigravity_mcp_rebind_and_rebuild_preserve_card_identity_and_rotate_cr
     )
     .await
     .unwrap();
-    assert!(!stack.token_authenticates(&sibling_token).await);
+    assert!(stack.token_authenticates(&sibling_token).await);
     compact_completed(&stack, &root, &first).await;
     let compact_token = rotated(&stack, &root, &native, &rebound).await;
     let setups: Vec<_> = requests(&root, "session/new")
@@ -95,7 +95,7 @@ async fn antigravity_mcp_rebind_and_rebuild_preserve_card_identity_and_rotate_cr
         .collect();
     assert_eq!(setups.len(), 2);
     let first_pid = setups[0]["_pid"].clone();
-    assert!(setups.iter().all(|r| r["_pid"] == first_pid));
+    assert_ne!(setups[1]["_pid"], first_pid);
     let resumes = requests(&root, "session/resume");
     assert_eq!(resumes.len(), 2);
     assert_eq!(

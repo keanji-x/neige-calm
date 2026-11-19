@@ -433,6 +433,12 @@ pub trait RepoRead: Send + Sync + 'static {
     /// The newest workspace lease held by a card; `releasing` leases are excluded because they may already be mid-teardown.
     async fn workspace_lease_for_card(&self, card_id: &str) -> Result<Option<WorkspaceLease>>;
 
+    /// Latest recorded lease, including released ones. Provenance only: this grants no execution authority.
+    async fn latest_workspace_lease_for_card(
+        &self,
+        card_id: &str,
+    ) -> Result<Option<WorkspaceLease>>;
+
     /// Look up the active worker session bound to a presented MCP token's hash; the caller then runs `verify_token`.
     /// Terminal or stale rows (`failed`, `exited`, `superseded`) deliberately collapse to `None`.
     async fn session_get_by_active_token_hash(

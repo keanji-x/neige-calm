@@ -316,13 +316,43 @@ fn present_or_null<'de, D: serde::Deserializer<'de>>(
     Ok(Option::<serde::de::IgnoredAny>::deserialize(deserializer)?.is_some())
 }
 
-/// The layer-merged effective config, narrowed to the two keys the model picker needs; field names are snake_case verbatim. Both are genuinely optional on codex's side.
+/// Effective model settings and shell environment names; field names are snake_case verbatim.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
 pub struct CodexConfig {
     #[serde(default)]
     pub model: Option<String>,
     #[serde(default)]
     pub model_reasoning_effort: Option<String>,
+    /// Names only: inherited shell settings must not retain credential values here.
+    pub shell_environment_policy: Option<ShellEnvironmentNames>,
+}
+
+/// Non-secret projection used to prevent inherited Codex settings from leaking
+/// names outside a workspace's final command environment.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShellEnvironmentNames {
+    pub set: Vec<String>,
+}
+
+impl<'de> Deserialize<'de> for ShellEnvironmentNames {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        struct Names {
+            // config/read reports an absent optional TOML map as null.
+            set: Option<std::collections::BTreeMap<String, serde::de::IgnoredAny>>,
+        }
+        let names = Names::deserialize(deserializer)
+            .map_err(|_| serde::de::Error::custom("invalid shell environment name map"))?;
+        Ok(Self {
+            set: names
+                .set
+                .into_iter()
+                .flat_map(|set| set.into_keys())
+                .collect(),
+        })
+    }
 }
 
 /// A server→client notification; anything not modeled lands in [`Notification::Other`] so codex version drift never breaks the consumer.

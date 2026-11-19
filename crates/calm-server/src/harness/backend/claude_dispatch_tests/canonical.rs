@@ -10,6 +10,7 @@ mod recovery;
 mod recovery_progress;
 mod retry;
 mod settled;
+mod workspace_environment;
 use super::super::dispatch_fixture::fail_terminal_outcome;
 use super::*;
 use crate::auth::{AuthConfig, AuthState, SessionAuthority, SessionIdentity};

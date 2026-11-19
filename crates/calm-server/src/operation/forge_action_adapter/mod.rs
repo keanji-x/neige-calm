@@ -166,6 +166,13 @@ enum ForgeEventBuildError {
 
 #[doc(hidden)]
 pub fn render_forge_wrapper(argv: &[String]) -> Result<String> {
+    render_forge_wrapper_with_release(argv, &credentials::payload_keys()?.read_prefix())
+}
+
+pub(crate) fn render_forge_wrapper_with_release(
+    argv: &[String],
+    read_prefix: &str,
+) -> Result<String> {
     if argv.is_empty() {
         return Err(CalmError::BadRequest(
             "forge-action argv must not be empty".into(),
@@ -177,7 +184,7 @@ pub fn render_forge_wrapper(argv: &[String]) -> Result<String> {
         .collect::<Vec<_>>()
         .join(" ");
     let mut script = String::from("exec >/dev/null 2>&1\n");
-    script.push_str(&credentials::payload_keys()?.read_prefix());
+    script.push_str(read_prefix);
     script.push_str("neige_forge_result_path=$NEIGE_FORGE_RESULT_PATH\n");
     script.push_str("unset NEIGE_FORGE_RESULT_PATH\n");
     script.push_str("neige_forge_code_path=\"${neige_forge_result_path}.code\"\n");

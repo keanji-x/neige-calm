@@ -135,4 +135,37 @@ async fn workspace_lease_for_card_returns_only_held_leases() {
     assert_eq!(lease.lease_id, "lease-held-older");
     assert_eq!(lease.state, "held");
     assert_eq!(lease.path, "/tmp/lease-held-older");
+
+    let latest = repo
+        .latest_workspace_lease_for_card("card-held-with-newer-releasing")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(latest.lease_id, "lease-releasing-newer");
+    assert_eq!(latest.state, "releasing");
+    insert_workspace_lease(
+        &repo,
+        "lease-released-newest",
+        "card-held-with-newer-releasing",
+        &track_id,
+        "/tmp/lease-released-newest",
+        "released",
+        400,
+    )
+    .await;
+    let latest = repo
+        .latest_workspace_lease_for_card("card-held-with-newer-releasing")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(latest.lease_id, "lease-released-newest");
+    assert_eq!(latest.state, "released");
+    assert_eq!(
+        repo.workspace_lease_for_card("card-held-with-newer-releasing")
+            .await
+            .unwrap()
+            .unwrap()
+            .lease_id,
+        "lease-held-older"
+    );
 }

@@ -231,8 +231,10 @@ pub struct AcpHost {
     /// What Neige's MCP server lists each session, for agents whose requests for its tools are
     /// approved by name; without it no tool is approved by name, so a request is the mode's.
     tool_names: Option<crate::mcp_server::transport::SessionToolNames>,
-    pub(crate) shared_servers:
-        BTreeMap<&'static str, tokio::sync::Mutex<Option<super::server::Server>>>,
+    /// Independent resident lifecycle slots for each provider and bound Track/cwd.
+    pub(crate) shared_servers: std::sync::Mutex<
+        BTreeMap<crate::acp_planner::resident_execution::ResidentKey, super::server::ServerSlot>,
+    >,
     pub(crate) context_queries: tokio::sync::Semaphore,
     pub(crate) agent_logs: PathBuf,
     readiness: tokio::sync::Mutex<()>,
@@ -255,15 +257,6 @@ impl AcpHost {
         if let Some(config) = &config {
             config.validate()?;
         }
-        let shared_servers = config
-            .iter()
-            .flat_map(|config| &config.agents)
-            .filter(|agent| {
-                AcpAgentProfile::of(&agent.provider)
-                    .is_some_and(|profile| profile.resident.is_some())
-            })
-            .map(|agent| (agent.provider.wire_name(), Default::default()))
-            .collect();
         std::fs::create_dir_all(data_dir.join("acp-agent-logs"))?;
         Ok(Self {
             provider_execution,
@@ -276,7 +269,7 @@ impl AcpHost {
             mcp_socket,
             managed_tokens,
             tool_names: None,
-            shared_servers,
+            shared_servers: Default::default(),
             context_queries: tokio::sync::Semaphore::new(1),
             agent_logs: data_dir.join("acp-agent-logs"),
             readiness: tokio::sync::Mutex::new(()),
@@ -318,6 +311,32 @@ impl AcpHost {
                     provider.wire_name()
                 ))
             })
+    }
+
+    pub(crate) fn resident_slot(
+        &self,
+        provider: &AgentProvider,
+        track: &str,
+        cwd: &Path,
+    ) -> Result<super::server::ServerSlot> {
+        let key =
+            crate::acp_planner::resident_execution::ResidentKey::resolve(provider, track, cwd)?;
+        Ok(self
+            .shared_servers
+            .lock()
+            .expect("ACP resident slots")
+            .entry(key)
+            .or_default()
+            .clone())
+    }
+
+    pub(crate) fn resident_slots(&self) -> Vec<super::server::ServerSlot> {
+        self.shared_servers
+            .lock()
+            .expect("ACP resident slots")
+            .values()
+            .cloned()
+            .collect()
     }
 
     /// The registration of `provider` with its profile.

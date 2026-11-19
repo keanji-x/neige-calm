@@ -61,7 +61,7 @@ use calm_types::worker::WorkerSessionId;
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use support::event_queries::{EventRow, event_rows, wait_for_event_count};
-use support::forge_env::{EnvGuard, FORGE_ENV_LOCK, ForgeTestEnv};
+use support::forge_env::{EnvGuard, FORGE_ENV_LOCK, ForgeTestEnv, ProjectEnvironment};
 use support::gh_shim::write_gh_shim;
 use support::git_helpers::{
     clone_for_track, configure_repo_identity, git_ref_exists, init_bare_origin, run_git,
@@ -117,6 +117,7 @@ struct Fixture {
     delivery: Option<support::done_delivery::Started>,
     planner_token: String,
     _socket_tmp: TempDir,
+    _project_environment: ProjectEnvironment,
     _tmp: TempDir,
 }
 
@@ -867,7 +868,7 @@ async fn git_forge_never_ran_parked_merge_recovers_not_landed_via_probe() {
     let result_path = results_dir.path().join("merge-never-ran.result");
     let payload = ForgeActionPayload {
         track_id: fx.track_id.clone(),
-        card_id: "card-1".into(),
+        card_id: fx.worker_card_id.clone(),
         subject: Some(
             serde_json::from_value(json!({
                 "pr_number": pr_number
@@ -1343,6 +1344,8 @@ async fn boot_delivery_fixture() -> Fixture {
 
 async fn boot_fixture_with_delivery(delivery: bool) -> Fixture {
     let tmp = short_tempdir("w").expect("tempdir");
+    let project_environment = ProjectEnvironment::new();
+    project_environment.declare_forge_identity(tmp.path());
     let socket_tmp = socket_tempdir().expect("MCP socket tempdir");
     let socket_path = socket_tmp.path().join("mcp").join("kernel.sock");
     let plugins_dir = tmp.path().join("plugins");
@@ -1554,6 +1557,7 @@ async fn boot_fixture_with_delivery(delivery: bool) -> Fixture {
                 configure_repo_identity(&caller.lease_abs);
 
                 Fixture {
+                    _project_environment: project_environment,
                     _execution: execution,
                     _server: server,
                     plugin_host,

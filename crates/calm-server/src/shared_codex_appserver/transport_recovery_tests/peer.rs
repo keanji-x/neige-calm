@@ -201,7 +201,7 @@ pub(crate) async fn peer_for(
                             "initialize" => json!({"userAgent":"fixture"}),
                             "model/list" => json!({"data":[],"nextCursor":null}),
                             "thread/loaded/list" => json!({"data":[]}),
-                            "config/read" => json!({"config":{}}),
+                            "config/read" => json!({"config":{},"origins":{}}),
                             "thread/read" => json!({"thread":{"id":thread,"status":{"type":"idle"},"turns":[]}}),
                             "thread/resume" | "thread/start" => json!({"thread":{"id":if thread.is_empty() {"worker"} else {&thread}}}),
                             "thread/unsubscribe" => json!({"status":"unsubscribed"}),

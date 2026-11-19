@@ -13,9 +13,10 @@
 /// `core.fsmonitor` and clean filters, `log` runs `gpg.program` under `log.showSignature`), the
 /// delivery action and the publish scripts. The delivery probes and the provenance function run
 /// only `rev-parse`, `merge-base --is-ancestor` and `worktree list`, which run no repository
-/// code, and stay bare.
-pub const FORGE_SHELL_PRELUDE: &str = "neige_git() { env -u GH_TOKEN -u GITHUB_TOKEN -u GH_ENTERPRISE_TOKEN -u GITHUB_ENTERPRISE_TOKEN git \"$@\"; }\n\
-    neige_gh() { (cd / && env -u SSH_AUTH_SOCK -u GIT_SSH_COMMAND gh \"$@\"); }";
+/// code, and stay bare. Git also drops the explicit gh configuration locator;
+/// gh requires a project token or an explicit project configuration directory.
+pub const FORGE_SHELL_PRELUDE: &str = "neige_git() { env -u GH_TOKEN -u GITHUB_TOKEN -u GH_ENTERPRISE_TOKEN -u GITHUB_ENTERPRISE_TOKEN -u GH_CONFIG_DIR git \"$@\"; }\n\
+    neige_gh() { if [ -z \"${GH_TOKEN:-}${GITHUB_TOKEN:-}${GH_ENTERPRISE_TOKEN:-}${GITHUB_ENTERPRISE_TOKEN:-}${GH_CONFIG_DIR:-}\" ]; then printf '%s\\n' 'workspace GitHub credentials are not configured' >&2; return 78; fi; (cd / && env -u SSH_AUTH_SOCK -u GIT_SSH_COMMAND gh \"$@\"); }";
 
 /// The Planner commit's probe; runs after [`FORGE_SHELL_PRELUDE`] (its `status` runs repository
 /// code).

@@ -316,7 +316,10 @@ use super::session::ClaudePlannerSessionParams;
 use crate::provider_execution as execution;
 use std::{ffi::OsString, path::Path};
 use workspace_runtime::execution::*;
+#[cfg(test)]
+mod environment_tests;
 /// Shared per-execution intent: credentials only enter the Held release payload. Per-execution aliases survive old tombstones.
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn intent(
     params: &ClaudePlannerSessionParams,
     id: &ExecutionId,
@@ -325,8 +328,40 @@ pub(super) async fn intent(
     args: Vec<OsString>,
     env: Vec<(String, OsString)>,
     token: Option<String>,
+    admission: &crate::harness::native_admission::NativePromptAdmission<'_>,
 ) -> Result<(ExecutionIntent, Vec<u8>)> {
-    let release = execution::launch::Release::split(env, token, "Planner")?;
+    let mut project = crate::workspace_service::environment::resolve_for_track(
+        params.repo.as_ref(),
+        &params.track_id,
+        &params.cwd,
+        || admission.check_local(),
+    )
+    .await?
+    .map_err(crate::workspace_service::environment::map_environment_error)?
+    .into_values();
+    let original = env
+        .iter()
+        .map(|(key, value)| (key.clone().into(), value.clone()))
+        .collect();
+    crate::workspace_exec::restore_preserved(
+        &mut project,
+        &original,
+        super::spawn::WORKSPACE_KEEP_KEYS,
+        super::spawn::WORKSPACE_KEEP_PREFIXES,
+    );
+    // Claude shares its proxy with model requests: preserve the owner's settings
+    // and inherited fallback, even when the project overrides or unsets them.
+    for (upper, lower, value) in &params.proxy {
+        project.insert(upper.as_str().into(), value.as_str().into());
+        project.insert(lower.as_str().into(), value.as_str().into());
+    }
+    let path = crate::kernel_bin_path::kernel_led_path_from(
+        project
+            .get(std::ffi::OsStr::new("PATH"))
+            .map(OsString::as_os_str),
+    )?;
+    project.insert("PATH".into(), path.path);
+    let release = execution::launch::Release::with_private(env, project, token, "Planner")?;
     execution::launch::intent(
         params.host.provider_execution.owner.as_ref(),
         &params.worker_session_id,

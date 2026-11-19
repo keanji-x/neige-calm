@@ -66,6 +66,7 @@ use repo_sqlite::{fetch_claimed_parked, operation_from_row};
 pub use tx_only::TxOnlyAdapter;
 
 use std::future::Future;
+use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
 
@@ -314,6 +315,7 @@ impl TxOutput {
 
 #[derive(Clone)]
 pub struct SpawnCtx {
+    pub(crate) kernel_executable: PathBuf,
     held_track: Option<crate::workspace_service::HeldTrack>,
     pub(crate) planner_clean_proof: Option<crate::provider_execution::clean::PlannerCleanProof>,
     pub(crate) reclaim_admission: Arc<tokio::sync::RwLock<()>>,
@@ -350,6 +352,8 @@ impl SpawnCtx {
         completion: OperationCompletionBus,
     ) -> Self {
         Self {
+            kernel_executable: std::env::current_exe()
+                .expect("resolve kernel executable for operation launch"),
             repo,
             operation_repo,
             daemon,
@@ -364,6 +368,12 @@ impl SpawnCtx {
             planner_clean_proof: None,
             held_track: None,
         }
+    }
+
+    /// Bind the kernel image used by an embedded host's admitted execution helpers.
+    pub fn with_kernel_executable(mut self, executable: PathBuf) -> Self {
+        self.kernel_executable = executable;
+        self
     }
 
     /// Production composition supplies the complete pool at construction.

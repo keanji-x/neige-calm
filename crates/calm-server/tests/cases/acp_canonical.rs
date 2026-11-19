@@ -29,7 +29,7 @@ async fn assert_canonical(stack: &Stack, card: &str) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn canonical_antigravity_cards_share_server_cancel_independently_and_revoke_archive() {
+async fn canonical_antigravity_workspace_servers_cancel_independently_and_revoke_archive() {
     let root = Root::new("unused");
     let stack = boot_as(&root, "antigravity", json!({
         "ACP_FIXTURE_AGENT_NAME":"Antigravity ACP Server", "ACP_FIXTURE_VERSION":"1.5.0", "ACP_FIXTURE_CAPTURE_SHARED_TOKEN":"1"
@@ -67,10 +67,35 @@ async fn canonical_antigravity_cards_share_server_cancel_independently_and_revok
         stack.wait_outcomes(&first, 1).await[0]["status"],
         "interrupted"
     );
+    assert!(stack.outcomes(&second).await.is_empty());
+    let (status, run) = stack
+        .send(
+            "GET",
+            &format!("/api/cards/{second}/planner/run?contract=conversation_v1"),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{run}");
+    assert_eq!(run["phase"], "turn_running", "{run}");
+    let cancels = requests(&root, "session/cancel");
+    assert_eq!(cancels.len(), 1);
+    assert_eq!(cancels[0]["params"]["sessionId"], first_native);
+    let (status, body) = stack
+        .send(
+            "POST",
+            &format!("/api/cards/{second}/planner/interrupt"),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(
         stack.wait_outcomes(&second, 1).await[0]["status"],
-        "completed"
+        "interrupted"
     );
+    let cancels = requests(&root, "session/cancel");
+    assert_eq!(cancels.len(), 2);
+    assert_eq!(cancels[1]["params"]["sessionId"], second_native);
+    assert_ne!(cancels[0]["_pid"], cancels[1]["_pid"]);
     for card in [&first, &second] {
         wait_phase(&stack, &stack.runtime(card).await.id, "turn_completed").await;
         assert_canonical(&stack, card).await;
@@ -136,11 +161,8 @@ async fn canonical_antigravity_cards_share_server_cancel_independently_and_revok
     );
     let prompts = requests(&root, "session/prompt");
     assert_eq!(prompts.len(), 3);
-    assert!(
-        prompts
-            .iter()
-            .all(|prompt| prompt["_pid"] == prompts[0]["_pid"])
-    );
+    assert_ne!(prompts[0]["_pid"], prompts[1]["_pid"]);
+    assert_eq!(prompts[0]["_pid"], prompts[2]["_pid"]);
     stack.shutdown().await;
 }
 
@@ -176,7 +198,7 @@ async fn canonical_antigravity_full_approves_permission_in_its_own_turn() {
     stack.shutdown().await;
 }
 
-/// One resident agent serves cards with different modes. A Full response must not approve a
+/// Workspace residents serve cards with different modes. A Full response must not approve a
 /// concurrent Ask card, nor turn a Never denial into a silent successful completion.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn canonical_antigravity_permission_modes_are_isolated_and_denials_explain_early_stop() {
@@ -246,7 +268,7 @@ async fn canonical_antigravity_permission_modes_are_isolated_and_denials_explain
             .contains("`never`"),
         "{outcome}"
     );
-    // The Ask is still pending even though Full already completed on the same process.
+    // The Ask is still pending even though Full already completed in another workspace.
     let (status, body) = stack
         .send(
             "POST",
@@ -270,7 +292,14 @@ async fn canonical_antigravity_permission_modes_are_isolated_and_denials_explain
     }
     let prompts = requests(&root, "session/prompt");
     assert_eq!(prompts.len(), 3);
-    assert!(prompts.iter().all(|p| p["_pid"] == prompts[0]["_pid"]));
+    assert_eq!(
+        prompts
+            .iter()
+            .map(|p| p["_pid"].as_u64().unwrap())
+            .collect::<std::collections::HashSet<_>>()
+            .len(),
+        3
+    );
     let launches = std::fs::read_to_string(root.path().join("argv.jsonl")).unwrap();
     let launches: Vec<Value> = launches
         .lines()

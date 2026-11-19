@@ -64,12 +64,18 @@ async fn worker_model_defaults_cold_resume_and_reconnect_replay_published_pair()
     assert_eq!(resume["params"]["config"]["model"], "private-a");
     assert_eq!(resume["params"]["config"]["model_reasoning_effort"], "high");
     // Hot takeover only restores the subscription: it must not replace loaded choices.
+    f.answers.lock().unwrap().insert(
+        "thread/read".into(),
+        json!({
+            "result":{"thread":{"id":"cold-thread","status":{"type":"idle"},"turns":[]}}
+        }),
+    );
     {
         let mut core = f.daemon.core.lock().await;
         let SupervisorState::Running { replay, .. } = &mut core.state else {
             panic!("running fixture")
         };
-        *replay = ConnectionReplay::Pending(ReplayPlan::new(ResumeMode::HotTakeover));
+        *replay = ConnectionReplay::Pending(ReplayPlan::default());
     }
     f.daemon.resume_cached_threads().await;
     let requests = f.requests.lock().unwrap();

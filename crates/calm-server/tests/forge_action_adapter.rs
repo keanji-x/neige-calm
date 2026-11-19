@@ -17,7 +17,7 @@ use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::error::{CalmError, Result as CalmResult};
 use calm_server::event::{EventBus, FieldSource, ForgeEventSpec, ForgeMergeSubject};
-use calm_server::model::{NewArea, NewTrack, new_id, now_ms};
+use calm_server::model::{NewArea, NewCard, NewTrack, new_id, now_ms};
 use calm_server::operation::ProviderAdapter;
 use calm_server::operation::forge_action_adapter::{
     FORGE_ACTION_KIND, ForgeActionAdapter, ForgeActionPayload, ProbeSpec,
@@ -76,6 +76,7 @@ struct TestBoot {
     runtime: OperationRuntime,
     spawn_ctx: SpawnCtx,
     track_id: String,
+    card_id: String,
 }
 
 impl TestBoot {
@@ -111,6 +112,17 @@ impl TestBoot {
             })
             .await
             .expect("create track");
+
+        let card = repo
+            .card_create(NewCard {
+                track_id: track.id.clone(),
+                title: None,
+                kind: "codex".into(),
+                sort: None,
+                payload: json!({}),
+            })
+            .await
+            .expect("create forge action owner");
 
         let execution = support::execution::Fixture::new(repo.db().clone()).await;
         let operation_repo = Arc::new(SqlxOperationRepo::new(repo.db().clone()));
@@ -161,6 +173,7 @@ impl TestBoot {
             runtime,
             spawn_ctx,
             track_id: track.id.to_string(),
+            card_id: card.id.to_string(),
         }
     }
 
@@ -217,7 +230,7 @@ fn payload_with_probe(
 ) -> Value {
     serde_json::to_value(ForgeActionPayload {
         track_id: boot.track_id.clone(),
-        card_id: new_id(),
+        card_id: boot.card_id.clone(),
         subject: Some(subject()),
         argv,
         idem_key: idem_key.into(),
@@ -2010,10 +2023,11 @@ async fn forge_action_settings_proxy_reaches_subprocess_env() -> CalmResult<()> 
 #[tokio::test]
 async fn forge_action_subprocess_env_passes_auth_and_strips_forbidden() -> CalmResult<()> {
     let _lock = FORGE_ENV_TEST_LOCK.lock().await;
-    let _auth = EnvVarGuard::set("GH_TOKEN", "action-auth-token-e2e");
     let _forbidden = EnvVarGuard::set("FORGE_ACTION_FORBIDDEN_ENV_E2E", "must-not-pass");
 
     let boot = TestBoot::new().await;
+    let project_environment = support::forge_env::ProjectEnvironment::new();
+    project_environment.declare_values(boot._tmp.path(), &[("GH_TOKEN", "action-auth-token-e2e")]);
     let action = boot.temp_path("action-env-auth.sh");
     write_env_json_script(&action, "GH_TOKEN", "FORGE_ACTION_FORBIDDEN_ENV_E2E");
 
@@ -2046,10 +2060,11 @@ async fn forge_action_subprocess_env_passes_auth_and_strips_forbidden() -> CalmR
 #[tokio::test]
 async fn forge_action_recovery_probe_env_passes_auth_and_strips_forbidden() -> CalmResult<()> {
     let _lock = FORGE_ENV_TEST_LOCK.lock().await;
-    let _auth = EnvVarGuard::set("GH_TOKEN", "probe-auth-token-e2e");
     let _forbidden = EnvVarGuard::set("FORGE_PROBE_FORBIDDEN_ENV_E2E", "must-not-pass");
 
     let boot = TestBoot::new().await;
+    let project_environment = support::forge_env::ProjectEnvironment::new();
+    project_environment.declare_values(boot._tmp.path(), &[("GH_TOKEN", "probe-auth-token-e2e")]);
     // The held wrapper receives no credential environment; sample credentials only at release.
     let payload_action = boot.temp_path("payload-auth.sh");
     fs::write(
@@ -2105,12 +2120,14 @@ printf '{"oid":"payload-delivered","headRefOid":"clean"}'
     }
     assert!(!serde_json::to_string(&output)?.contains("probe-auth-token-e2e"));
     {
-        let _release_auth = EnvVarGuard::set("GH_TOKEN", "release-auth-token-e2e");
+        project_environment
+            .declare_values(boot._tmp.path(), &[("GH_TOKEN", "release-auth-token-e2e")]);
         spawn_observer_after_parking(&boot, &action_op, deadline_ms, observer)
             .await?
             .await
             .expect("payload action joins");
     }
+    project_environment.declare_values(boot._tmp.path(), &[("GH_TOKEN", "probe-auth-token-e2e")]);
     let result = wait_for_operation_result(&boot, &action_id).await;
     assert!(matches!(result.outcome, OperationOutcome::Succeeded { .. }));
     assert_eq!(

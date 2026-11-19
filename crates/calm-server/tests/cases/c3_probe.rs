@@ -4,8 +4,9 @@ use super::*;
 #[tokio::test]
 async fn c3_credentials_never_enter_intent() {
     let _lock = FORGE_ENV_TEST_LOCK.lock().await;
-    let _auth = EnvVarGuard::set("GH_TOKEN", "c3-private-credential");
     let boot = TestBoot::new().await;
+    let project_environment = support::forge_env::ProjectEnvironment::new();
+    project_environment.declare_values(boot._tmp.path(), &[("GH_TOKEN", "c3-private-credential")]);
     let completion = calm_server::test_seams::PausePoint::default();
     calm_server::test_seams::install_pause_for_test(
         "forge-before-completion",

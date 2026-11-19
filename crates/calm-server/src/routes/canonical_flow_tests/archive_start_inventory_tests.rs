@@ -88,6 +88,16 @@ async fn finished_assistant(
     .await;
     assert!(!started, "an empty historical Planner has no first input");
     let track = track["id"].as_str().unwrap().to_owned();
+    // Empty canonical allocation remains dormant. The historical Assistant below
+    // represents an already runnable workspace, prepared by its actual owner.
+    let stored_track = fixture.repo.track_get(&track).await.unwrap().unwrap();
+    let route = crate::state::RouteState::from_ref(state);
+    workspace_runtime::selection::materialize_workspace(
+        &stored_track.workspace,
+        &route.workspace_root,
+        &track,
+    )
+    .unwrap();
     // This inventory fixture deliberately retains the supported historical entry.
     let create = async {
         let mut headers = axum::http::HeaderMap::new();

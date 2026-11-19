@@ -55,6 +55,8 @@ pub(super) const PROFILE: AcpAgentProfile = AcpAgentProfile {
         refusal: "OpenCode requires >=2.1.3,<3.0.0; install @opencode/cli (tested floor 2.1.3)",
     }),
     owned_env: &["OPENCODE_CONFIG_CONTENT"],
+    workspace_blocked_env: &[],
+    workspace_shell: Some(workspace::prepare),
     never: NOTHING,
     authentication: &[],
     ask: NOTHING,
@@ -63,6 +65,8 @@ pub(super) const PROFILE: AcpAgentProfile = AcpAgentProfile {
     mcp_tool_request: None,
     decline_ends_turn: false,
 };
+
+mod workspace;
 
 #[cfg(test)]
 mod tests {

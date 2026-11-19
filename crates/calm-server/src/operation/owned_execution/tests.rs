@@ -265,7 +265,7 @@ async fn pipe_admission(config: super::pipe::PipeConfig, gate_facade: bool) {
         assert_eq!(intent["program"]["replay_bytes"], 8192);
         assert_eq!(
             std::fs::read_to_string(&paths.script).unwrap(),
-            crate::operation::gate_process::render_gate_wrapper(&[])
+            crate::operation::gate_process::WrapperSteps::Logged(&[]).render()
         );
     } else {
         assert!(data.get("gate_execution").is_none());

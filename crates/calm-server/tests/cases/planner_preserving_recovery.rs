@@ -658,6 +658,7 @@ async fn cold_daemon_replacement_leaves_failed_threads_for_credentialed_human_re
             .contains(&(thread.clone(), card.id.to_string()))
     );
     let sock = boot._tmp.path().join("run/codex-appserver.sock");
+    script_unloaded_thread(&boot, &thread);
     boot.state
         .shared_codex_appserver
         .transition_replace_for_test("test cold failed harness", ReplacePrecondition::Always)

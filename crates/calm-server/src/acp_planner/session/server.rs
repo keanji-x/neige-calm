@@ -1,4 +1,4 @@
-//! One ACP process per shared backend. Native sessions and turn receipts remain card-owned.
+//! One ACP process per backend and bound workspace. Native sessions and receipts remain card-owned.
 use super::super::{config::Registration, process};
 use super::dispatch::{self, Carrier, Driver, PreparedTurn, TurnInput};
 use super::*;
@@ -39,7 +39,7 @@ pub(super) async fn issue(
         mut owned,
         native,
         usage,
-        ..
+        cleanup,
     } = prepare::prepare(
         shared,
         registration,
@@ -60,11 +60,11 @@ pub(super) async fn issue(
         .get(&params.worker_session_id)
         .expect("attached ACP session");
     let asks = registration.profile.asks(&binding.mcp_key, tools);
-    let cleanup = CleanupWitness {
-        generation: server.generation.clone(),
-        closed: binding.closed.clone(),
-    };
     let client = server.process.connection.client.clone();
+    server
+        .process
+        .check_tool_environment()
+        .map_err(|error| refused(&error.to_string()))?;
     if client.shared_retiring() {
         return Err(refused(
             "Shared ACP server is waiting for active sessions before retirement",
@@ -309,7 +309,7 @@ async fn cleanup_unknown(
     match detach_worker_with_witness(
         &params.host,
         &params.worker_session_id,
-        params.provider.wire_name(),
+        witness.slot.clone(),
         Some((&receipt.native_session_id, witness)),
     )
     .await

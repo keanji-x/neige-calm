@@ -52,6 +52,10 @@ pub(super) async fn run() {
         let request_source = source.clone();
         let owning = async { wake(&fx, request_source).await };
         let native = async {
+            let metadata = request(&mut peer).await;
+            assert_eq!(metadata["method"], "config/read");
+            assert_eq!(metadata["params"]["includeLayers"], false);
+            send(&mut peer, json!({"id":metadata["id"],"result":{"config":{}}})).await;
             let call = request(&mut peer).await;
             assert_eq!(call["method"], "thread/start");
             let operation = fx.repo.session_get(&calm_types::worker::WorkerSessionId(fx.worker.clone())).await.unwrap().unwrap().spawn_op_id.unwrap();

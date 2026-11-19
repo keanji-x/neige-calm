@@ -2,6 +2,7 @@
 //! supervisor. The child is a stand-in for the Claude CLI that logs each start and each SIGTERM.
 
 use calm_truth::db::RepoRead;
+use calm_truth::session_projection_repo::WorkerSessionProjectionRepo;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::sync::Arc;
@@ -115,7 +116,7 @@ async fn live_card_exiting_after(term_delay: Duration) -> LiveCard {
         claude_bin: write_fake_claude(dir.path(), &log, term_delay),
     })
     .await;
-    let mut create = body(None);
+    let mut create = body(&boot, None);
     create["cwd"] = json!(dir.path());
     let (status, created) = post(boot.app.clone(), &boot.track_id, create, None, None).await;
     assert_eq!(status, StatusCode::CREATED, "body={created:?}");
@@ -239,6 +240,14 @@ async fn two_concurrent_updates_leave_exactly_one_live_child() {
     let _guard = ENV_LOCK.lock().await;
     let live = live_card().await;
     let (boot, log) = (&live.boot, &live.log);
+    let old_pid = starts(log)[0].0;
+    let initial = boot
+        .repo
+        .session_projection_active_for_card(&live.card_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let session_id = initial.session_id.as_ref().unwrap();
     boot.state
         .terminal_renderer
         .forget_entry_for_test(&live.terminal_id);
@@ -250,8 +259,90 @@ async fn two_concurrent_updates_leave_exactly_one_live_child() {
     assert_eq!(first.0, StatusCode::OK, "body={:?}", first.1);
     assert_eq!(second.0, StatusCode::OK, "body={:?}", second.1);
 
-    eventually("both replacements start", || starts(log).len() == 3).await;
+    // A successful PTY spawn can still be executing its workspace environment helper when the
+    // next Update stops it. Only the final generation must reach the Claude CLI.
+    let term = boot
+        .repo
+        .terminal_get(&live.terminal_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let final_pid = i32::try_from(term.pid.expect("the final child has a PID")).unwrap();
+    assert_ne!(final_pid, old_pid);
+    eventually("the final replacement reaches Claude", || {
+        starts(log).iter().any(|(pid, _)| *pid == final_pid)
+    })
+    .await;
     let started = starts(log);
+    let runtimes = sqlx::query_as::<_, (String, String, Option<String>, Option<String>)>(
+        "SELECT id, state, terminal_run_id, agent_session_id FROM worker_sessions \
+         WHERE card_id = ?1 ORDER BY created_at_ms ASC, id ASC",
+    )
+    .bind(&live.card_id)
+    .fetch_all(boot.repo.pool())
+    .await
+    .unwrap();
+    assert_eq!(runtimes.len(), 3, "{runtimes:?}");
+    assert_eq!(runtimes[0].0, initial.id);
+    assert_eq!(runtimes[2].1, "running", "{runtimes:?}");
+    assert!(
+        runtimes[..2]
+            .iter()
+            .all(|(_, state, _, _)| state == "exited" || state == "failed"),
+        "{runtimes:?}"
+    );
+    for (_, _, terminal, session) in &runtimes {
+        assert_eq!(terminal.as_ref(), Some(&live.terminal_id));
+        assert_eq!(session.as_ref(), Some(session_id));
+    }
+    // The HTTP runtime projection can already show a later Update. Each operation's admitted
+    // runtime identity, rather than that current projection, proves two distinct replacements.
+    let mut replacement_ids = sqlx::query_scalar::<_, String>(
+        "SELECT json_extract(tx_output_json, '$.data.runtime_id') FROM operations \
+         WHERE kind = 'claude-restart' AND json_extract(payload_json, '$.card_id') = ?1",
+    )
+    .bind(&live.card_id)
+    .fetch_all(boot.repo.pool())
+    .await
+    .unwrap();
+    replacement_ids.sort();
+    let mut admitted_ids: Vec<_> = runtimes[1..].iter().map(|row| row.0.clone()).collect();
+    admitted_ids.sort();
+    assert_eq!(replacement_ids.len(), 2);
+    assert_ne!(replacement_ids[0], replacement_ids[1]);
+    assert_eq!(replacement_ids, admitted_ids);
+    let active = boot
+        .repo
+        .session_projection_active_for_card(&live.card_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(active.id, runtimes[2].0);
+    let owner: String = sqlx::query_scalar("SELECT session_id FROM cards WHERE id = ?1")
+        .bind(&live.card_id)
+        .fetch_one(boot.repo.pool())
+        .await
+        .unwrap();
+    assert_eq!(owner, active.id);
+    assert_eq!(term.card_id.as_str(), live.card_id.as_str());
+    assert_eq!(active.terminal_run_id.as_ref(), Some(&term.id));
+    assert_eq!(active.session_id.as_ref(), Some(session_id));
+
+    assert!(
+        (2..=runtimes.len()).contains(&started.len()),
+        "each admitted generation executes Claude at most once: {started:?}"
+    );
+    let unique_pids: std::collections::BTreeSet<_> = started.iter().map(|row| row.0).collect();
+    assert_eq!(unique_pids.len(), started.len(), "{started:?}");
+    assert_eq!(started.last().unwrap().0, final_pid);
+    let final_argv = &started.last().unwrap().1;
+    let resume_argument = format!("--resume={session_id}");
+    assert!(
+        final_argv
+            .split_whitespace()
+            .any(|arg| arg == resume_argument),
+        "{final_argv}"
+    );
     let live_pids: Vec<i32> = started
         .iter()
         .map(|(pid, _)| *pid)
@@ -259,27 +350,25 @@ async fn two_concurrent_updates_leave_exactly_one_live_child() {
         .collect();
     assert_eq!(
         live_pids,
-        [started[2].0],
+        [final_pid],
         "exactly one child runs: {started:?}"
     );
-    for (pid, _) in &started[..2] {
+    assert!(got_sigterm(log, old_pid) && !alive(old_pid));
+    for (pid, _) in started.iter().filter(|(pid, _)| *pid != final_pid) {
         assert!(got_sigterm(log, *pid), "a replaced child gets SIGTERM");
+        assert!(!alive(*pid), "a replaced child exits: {pid}");
     }
-    let states = runtime_states(boot, &live.card_id).await;
-    assert_eq!(states.len(), 3, "{states:?}");
-    assert_eq!(states[2], "running", "{states:?}");
-    assert!(
-        states[..2]
-            .iter()
-            .all(|state| state == "exited" || state == "failed"),
-        "{states:?}"
-    );
     assert_eq!(terminal_exit(boot, &live.terminal_id).await, (None, false));
 
     boot.state
         .terminal_renderer
         .drop_entry(&live.terminal_id)
         .await;
+    eventually("all observed children exit after teardown", || {
+        started.iter().all(|(pid, _)| !alive(*pid))
+    })
+    .await;
+    assert_eq!(starts(log), started, "teardown starts no additional child");
 }
 
 /// A viewer's reattach that saw a live child, and reaches the supervisor only once that child is

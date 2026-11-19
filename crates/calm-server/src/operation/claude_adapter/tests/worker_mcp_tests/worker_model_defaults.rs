@@ -212,11 +212,11 @@ async fn worker_model_defaults_claude_explicit_and_inherit_keep_frozen_command_w
             .unwrap();
         let spawned = l.spawned.lock().await;
         assert_eq!(spawned.len(), 1);
-        assert_eq!(
-            spawned[0].0,
-            l.output.data["command_line"].as_str().unwrap()
-        );
         let argv = shell_argv(&spawned[0].0);
+        assert_eq!(
+            argv,
+            shell_argv(l.output.data["command_line"].as_str().unwrap())
+        );
         if explicit {
             assert!(argv.contains(&"--model=model-a".into()), "{argv:?}");
             assert!(argv.contains(&"--effort=high".into()), "{argv:?}");
@@ -272,8 +272,11 @@ async fn worker_model_defaults_claude_legacy_unstarted_operation_warns_without_n
     let spawned = l.spawned.lock().await;
     assert_eq!(spawned.len(), 2);
     for (command, _) in spawned.iter() {
-        assert_eq!(command, l.output.data["command_line"].as_str().unwrap());
         let argv = shell_argv(command);
+        assert_eq!(
+            argv,
+            shell_argv(l.output.data["command_line"].as_str().unwrap())
+        );
         assert!(
             !argv
                 .iter()

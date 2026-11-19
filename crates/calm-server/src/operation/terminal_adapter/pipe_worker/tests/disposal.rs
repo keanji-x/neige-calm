@@ -9,7 +9,7 @@ use http_body_util::BodyExt;
 use tower::ServiceExt;
 
 impl Harness {
-    async fn state(&self) -> crate::state::AppState {
+    pub(super) async fn state(&self) -> crate::state::AppState {
         use crate::{
             plugin_host::{PluginHost, PluginRegistry},
             state::{AppState, CodexClient},
@@ -52,8 +52,22 @@ impl Harness {
         .with_operation_runtime(runtime)
         .with_workspace_root(self.root.path().join("workspaces"))
     }
+    pub(super) fn app(state: crate::state::AppState) -> axum::Router {
+        crate::routes::router()
+            .layer(axum::middleware::from_fn_with_state(
+                crate::auth::AuthState::new(crate::auth::AuthConfig {
+                    username: None,
+                    password: None,
+                    dev_autologin: true,
+                    display_name: "Owner".into(),
+                }),
+                crate::auth::require_session,
+            ))
+            .layer(axum::middleware::from_fn(crate::actor::actor_middleware))
+            .with_state(state)
+    }
     async fn delete(&self, scope: &str) -> StatusCode {
-        let state = self.state().await;
+        let app = Self::app(self.state().await);
         let track = self
             .db
             .track_get(&self.task.track_id)
@@ -66,18 +80,6 @@ impl Harness {
             "areas" => track.area_id.to_string(),
             _ => unreachable!(),
         };
-        let app = crate::routes::router()
-            .layer(axum::middleware::from_fn_with_state(
-                crate::auth::AuthState::new(crate::auth::AuthConfig {
-                    username: None,
-                    password: None,
-                    dev_autologin: true,
-                    display_name: "Owner".into(),
-                }),
-                crate::auth::require_session,
-            ))
-            .layer(axum::middleware::from_fn(crate::actor::actor_middleware))
-            .with_state(state);
         let response = app
             .oneshot(
                 Request::builder()
@@ -97,7 +99,7 @@ impl Harness {
         );
         status
     }
-    async fn execution_row(&self) -> (String, Option<String>, Option<String>) {
+    pub(super) async fn execution_row(&self) -> (String, Option<String>, Option<String>) {
         let record = pipe::record(CONFIG, &self.op().await).unwrap();
         sqlx::query_as(
             "SELECT desired,settlement_json,secrets_json FROM workspace_executions WHERE execution_id=?1",

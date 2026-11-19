@@ -59,7 +59,7 @@ pub(crate) async fn connect_for_cold_replay(
     publish_replay(
         daemon,
         client.clone(),
-        ConnectionReplay::Pending(ReplayPlan::new(ResumeMode::ColdRespawn)),
+        ConnectionReplay::Pending(ReplayPlan::default()),
     )
     .await;
     (client, peer, forwarder)

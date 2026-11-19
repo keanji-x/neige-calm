@@ -9,7 +9,7 @@ use crate::error::{CalmError, Result};
 use crate::harness::profile::HarnessProfileExt;
 use crate::mcp_server::wiring::mint_and_persist_card_token;
 use crate::session_projection_repo::WorkerSessionProjection;
-use crate::shared_codex_appserver::ThreadConfig;
+use crate::shared_codex_appserver::{ResumeConfig, ThreadConfig};
 use serde_json::Value;
 use std::sync::Arc;
 /// A recovery caller owns its current-source/snapshot rule. The transport owner
@@ -406,6 +406,11 @@ impl PlannerFactory<'_> {
         } else {
             ThreadConfig::NoMcp
         };
+        let config = if cold {
+            ResumeConfig::Reload(config)
+        } else {
+            ResumeConfig::Retain
+        };
         let resumed = native.resume(config, &admit).await?;
         if resumed.id.as_deref() != Some(thread_id)
             || !matches!(
@@ -513,6 +518,11 @@ impl PlannerFactory<'_> {
             }
         } else {
             ThreadConfig::NoMcp
+        };
+        let config = if cold {
+            ResumeConfig::Reload(config)
+        } else {
+            ResumeConfig::Retain
         };
         let resumed = native.resume(config, &admit).await?;
         if resumed.id.as_deref() != Some(thread_id)

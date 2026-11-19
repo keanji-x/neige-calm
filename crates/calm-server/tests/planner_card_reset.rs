@@ -183,7 +183,7 @@ async fn boot() -> Boot {
             area_id: area.id,
             title: "reset route auth".into(),
             sort: None,
-            cwd: "/tmp/planner-card-reset".into(),
+            cwd: tmp.path().to_string_lossy().into_owned(),
             template_id: None,
             plugin_scope: None,
             attach_folder: false,
@@ -255,7 +255,7 @@ async fn boot_shared() -> Boot {
             area_id: area.id,
             title: "shared reset goal".into(),
             sort: None,
-            cwd: "/tmp/planner-card-reset-shared".into(),
+            cwd: tmp.path().to_string_lossy().into_owned(),
             template_id: None,
             plugin_scope: None,
             attach_folder: false,
@@ -525,6 +525,15 @@ async fn seed_shared_worker_card(boot: &Boot, label: &str, thread_id: &str) -> C
         })
         .await
         .expect("independent write operation")
+}
+
+fn script_unloaded_thread(boot: &Boot, thread: &str) {
+    let socket = boot._tmp.path().join("run/codex-appserver.sock");
+    std::fs::write(
+        socket.with_extension("thread-read"),
+        json!({"thread":{"id":thread,"status":{"type":"notLoaded"},"turns":[]}}).to_string(),
+    )
+    .unwrap();
 }
 
 async fn request_lines_containing(path: &PathBuf, method: &str, count: usize) -> Vec<Value> {

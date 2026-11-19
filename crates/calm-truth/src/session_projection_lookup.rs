@@ -234,6 +234,10 @@ pub(crate) fn runtime_view_from_runtime(runtime: &WorkerSessionProjection) -> Ca
 /// worker's), which the version write keeps.
 pub const CLAUDE_VERSION_STATE_KEY: &str = "claude_version";
 
+/// An empty Codex card's native identity exists, but its initial viewer failed
+/// to start. This presentation fact never clears or replaces the native thread.
+pub const CODEX_VIEWER_START_FAILED_STATE_KEY: &str = "codex_viewer_start_failed";
+
 /// The Claude version a Claude card runtime's child was started on, when one was recorded.
 pub fn claude_running_version(runtime: &WorkerSessionProjection) -> Option<&str> {
     if runtime.kind != WorkerSessionKind::ClaudeCard {
@@ -271,7 +275,15 @@ fn projected_thread_status(runtime: &WorkerSessionProjection) -> Option<&'static
         WorkerSessionState::TurnPending if non_empty(runtime.thread_id.as_deref()).is_none() => {
             Some("pending_thread_start")
         }
-        WorkerSessionState::Failed if non_empty(runtime.thread_id.as_deref()).is_none() => {
+        WorkerSessionState::Failed
+            if non_empty(runtime.thread_id.as_deref()).is_none()
+                || (runtime.kind == WorkerSessionKind::CodexCard
+                    && runtime
+                        .handle_state_json
+                        .as_ref()
+                        .and_then(|state| state.get(CODEX_VIEWER_START_FAILED_STATE_KEY))
+                        == Some(&Value::Bool(true))) =>
+        {
             Some("failed_to_spawn")
         }
         WorkerSessionState::Running if non_empty(runtime.thread_id.as_deref()).is_some() => {
@@ -435,6 +447,28 @@ mod shared_codex_identity_tests {
                 !card_uses_shared_codex(&legacy, Some(&active)),
                 "an active runtime must override a stale legacy stamp: {active:?}"
             );
+        }
+    }
+
+    #[test]
+    fn failed_native_identity_requires_explicit_codex_viewer_start_failure() {
+        for kind in [
+            WorkerSessionKind::CodexCard,
+            WorkerSessionKind::SharedPlanner,
+        ] {
+            for failed in [false, true] {
+                let mut runtime = runtime(kind.clone(), Some(AgentProvider::Codex), Some("native"));
+                runtime.status = WorkerSessionState::Failed;
+                runtime.handle_state_json =
+                    Some(json!({CODEX_VIEWER_START_FAILED_STATE_KEY:failed}));
+                let mut card = card(json!({}));
+                project_runtime_fields(&mut card, &runtime);
+                assert_eq!(card.payload["codex_thread_id"], "native");
+                assert_eq!(
+                    card.runtime.as_ref().unwrap().thread_status.as_deref(),
+                    (failed && kind == WorkerSessionKind::CodexCard).then_some("failed_to_spawn"),
+                );
+            }
         }
     }
 }

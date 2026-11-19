@@ -56,6 +56,11 @@ async fn cold_resume_selects_terminal_policy_from_current_card_role() {
                     targets.push((card, thread, role));
                 }
                 let daemon = server(&root, repo.clone()).await;
+                let threads = targets
+                    .iter()
+                    .map(|(_, thread, _)| thread.as_str())
+                    .collect::<Vec<_>>();
+                script_unloaded_threads(&daemon, &threads);
                 daemon.start_or_takeover().await.unwrap();
                 let rows = wait_for_requests(&capture, 4).await;
                 for (_, thread, role) in &targets {

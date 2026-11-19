@@ -847,6 +847,7 @@ async fn a_catalog_outage_is_not_reported_as_a_selection_the_reader_must_fix() {
     boot.daemon.set_config_read_for_test(CodexConfig {
         model: Some("gpt-5".into()),
         model_reasoning_effort: None,
+        shell_environment_policy: None,
     });
     put_model(
         &boot,
@@ -889,6 +890,7 @@ async fn a_track_deleted_between_the_card_read_and_the_workspace_read_refuses() 
     boot.daemon.set_config_read_for_test(CodexConfig {
         model: Some("gpt-5-from-the-wrong-scope".into()),
         model_reasoning_effort: None,
+        shell_environment_policy: None,
     });
     put_model(
         &boot,
@@ -1034,6 +1036,7 @@ async fn a_refused_model_list_is_not_sold_as_a_wait() {
     boot.daemon.set_config_read_for_test(CodexConfig {
         model: Some("gpt-5".into()),
         model_reasoning_effort: None,
+        shell_environment_policy: None,
     });
     put_model(
         &boot,

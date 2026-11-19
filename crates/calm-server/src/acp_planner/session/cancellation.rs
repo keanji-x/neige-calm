@@ -23,6 +23,7 @@ impl IssueGuard {
             reason: crate::provider_execution::StopReason::SetupFailed,
         }
     }
+    #[allow(clippy::too_many_arguments)]
     pub(super) async fn launch(
         &mut self,
         engine: &crate::execution_boot::ExecutionEngine,
@@ -31,6 +32,7 @@ impl IssueGuard {
         permission: PlannerPermissionMode,
         purpose: crate::provider_execution::Purpose,
         track_fence: &crate::provider_execution::TrackFenceHandoff,
+        admission: &crate::harness::native_admission::NativePromptAdmission<'_>,
     ) -> Result<()> {
         use crate::provider_execution::{self as execution, stdio::EngineStdio};
         let params = &self.shared.params;
@@ -50,9 +52,16 @@ impl IssueGuard {
             std::fs::remove_dir_all(&dir)?;
         }
         std::fs::DirBuilder::new().mode(0o700).create(&dir)?;
-        let (intent, payload) =
-            super::super::execution::intent(params, registration, token, permission, &id, &dir)
-                .await?;
+        let (intent, payload, tool_environment) = super::super::execution::intent(
+            params,
+            registration,
+            token,
+            permission,
+            &id,
+            &dir,
+            admission,
+        )
+        .await?;
         let (claim, guard) = params
             .host
             .provider_execution
@@ -87,6 +96,7 @@ impl IssueGuard {
             capabilities: Default::default(),
             commands: super::super::process::Commands::default(),
             io,
+            tool_environment,
         });
         Ok(())
     }

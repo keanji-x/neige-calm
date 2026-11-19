@@ -1,5 +1,24 @@
 use super::*;
 
+/// Adapt the released prepared-output field to the worker session identity.
+pub(super) fn prepared_worker_session_id(output: &TxOutput) -> Result<String> {
+    output.output_string("runtime_id", "codex")
+}
+
+fn kernel_mints_thread(output: &TxOutput) -> Result<bool> {
+    let workspace_thread = match output.data.get("workspace_environment_thread") {
+        Some(Value::Bool(true)) => true,
+        None => false, // Released pending preparations predate kernel-owned idle threads.
+        Some(_) => {
+            return Err(CalmError::Internal(
+                "invalid Codex workspace thread contract".into(),
+            ));
+        }
+    };
+    let prompted = output_prompt(output)?.is_some();
+    Ok(workspace_thread || prompted)
+}
+
 #[async_trait]
 impl ProviderAdapter for CodexAdapter {
     async fn preparation_track(
@@ -27,7 +46,7 @@ impl ProviderAdapter for CodexAdapter {
         output: &TxOutput,
         _op: &Operation,
     ) -> Result<AppServerInteractKind> {
-        if output_prompt(output)?.is_some() {
+        if kernel_mints_thread(output)? {
             Ok(AppServerInteractKind::MintAndAwait { thread_id: None })
         } else {
             Ok(AppServerInteractKind::RegisterPending { entry_id: None })
@@ -131,6 +150,7 @@ impl ProviderAdapter for CodexAdapter {
             "cwd": payload.request.cwd,
             "env": env,
             "prompt": payload.request.prompt,
+            "workspace_environment_thread": true,
         });
         output.post_commit_events.push(BroadcastEnvelope {
             id: event_id,
@@ -160,7 +180,8 @@ impl ProviderAdapter for CodexAdapter {
         let card_id = output.output_string("card_id", "codex")?;
         let cwd = output.output_string("cwd", "codex")?;
 
-        if let Some(prompt_text) = output_prompt(output)? {
+        let prompt = output_prompt(output)?;
+        if kernel_mints_thread(output)? {
             let mut notifs = self.shared_codex_appserver.subscribe_notifications();
             let thread_id = match output
                 .output_optional_string("codex_thread_id", "codex")?
@@ -177,10 +198,18 @@ impl ProviderAdapter for CodexAdapter {
                     {
                         thread_id
                     } else {
-                        // `ThreadConfig::NoMcp` is correct here: the interactive card injects no NEIGE_MCP_SOCKET/NEIGE_MCP_TOKEN and has no worker prompt,
-                        // so there is nothing to put in `shell_environment_policy.set`; only the worker path needs it.
+                        let worker_session = prepared_worker_session_id(output)?;
+                        let admission = super::mint_admission::admission(
+                            ctx,
+                            op,
+                            &card_id,
+                            &worker_session,
+                            None,
+                        );
+                        // Interactive cards have no Neige MCP grant. The shared runtime
+                        // independently installs the owning workspace's command environment.
                         self.shared_codex_appserver
-                            .thread_start_mint_for_card(
+                            .thread_start_mint_admitted_for_card(
                                 &card_id,
                                 SharedThreadStartParams {
                                     cwd: cwd.clone(),
@@ -189,6 +218,7 @@ impl ProviderAdapter for CodexAdapter {
                                     developer_instructions: None,
                                     config: ThreadConfig::NoMcp,
                                 },
+                                &admission,
                             )
                             .await?
                     }
@@ -208,32 +238,34 @@ impl ProviderAdapter for CodexAdapter {
             )
             .await?;
             output.result = serde_json::to_value(&updated)?;
-            let turn_started_at_ms = output_optional_i64(output, "turn_started_at_ms")?;
-            if turn_started_at_ms.is_none() {
-                let expected_output = output.clone();
-                self.shared_codex_appserver
-                    // Worker/dedicated threads carry no per-card model selection (the picker addresses planner cards only).
-                    .turn_start(
-                        &thread_id,
-                        vec![InputItem::text(prompt_text)],
-                        &TurnModelSelection::inherit(),
-                        TurnApprovals::Unchanged,
-                        None,
-                    )
-                    .await?;
-                output.set_output_data("turn_started_at_ms", json!(now_ms()), "codex")?;
-                checkpoint_prompt_turn_started(ctx, op, &expected_output, output, &thread_id)
-                    .await?;
-            }
-            match await_shared_initial_turn_lifecycle(
-                &mut notifs,
-                &thread_id,
-                self.initial_turn_lifecycle_timeout,
-            )
-            .await
-            {
-                Ok(()) => {}
-                Err(err) => return Err(err),
+            if let Some(prompt_text) = prompt {
+                let turn_started_at_ms = output_optional_i64(output, "turn_started_at_ms")?;
+                if turn_started_at_ms.is_none() {
+                    let expected_output = output.clone();
+                    self.shared_codex_appserver
+                        // Worker/dedicated threads carry no per-card model selection (the picker addresses planner cards only).
+                        .turn_start(
+                            &thread_id,
+                            vec![InputItem::text(prompt_text)],
+                            &TurnModelSelection::inherit(),
+                            TurnApprovals::Unchanged,
+                            None,
+                        )
+                        .await?;
+                    output.set_output_data("turn_started_at_ms", json!(now_ms()), "codex")?;
+                    checkpoint_prompt_turn_started(ctx, op, &expected_output, output, &thread_id)
+                        .await?;
+                }
+                match await_shared_initial_turn_lifecycle(
+                    &mut notifs,
+                    &thread_id,
+                    self.initial_turn_lifecycle_timeout,
+                )
+                .await
+                {
+                    Ok(()) => {}
+                    Err(err) => return Err(err),
+                }
             }
             Ok(AppServerInteractOutcome::MintedAndAwaited { thread_id })
         } else {
@@ -273,18 +305,22 @@ impl ProviderAdapter for CodexAdapter {
         let runtime_id = output.output_string("runtime_id", "codex")?;
         let cwd = output.output_string("cwd", "codex")?;
         let env = output.data.get("env").cloned().unwrap_or_else(|| json!({}));
+        let thread_id = output.output_optional_string("codex_thread_id", "codex")?;
+        if kernel_mints_thread(output)? && thread_id.is_none() {
+            return Err(CalmError::Internal(
+                "Codex viewer has no persisted workspace thread".into(),
+            ));
+        }
         ctx.prepare_terminal_spawn(&terminal_id).await?;
         let term = ctx
             .repo
             .terminal_get(&terminal_id)
             .await?
             .ok_or_else(|| CalmError::Internal(format!("terminal {terminal_id} vanished")))?;
-        let is_prompted = output_prompt(output)?.is_some();
-        let command_line = if is_prompted {
-            let thread_id = output.output_string("codex_thread_id", "codex")?;
+        let command_line = if let Some(thread_id) = thread_id.as_deref() {
             format!(
                 "codex resume {} --remote {}",
-                sh_single_quote(&thread_id),
+                sh_single_quote(thread_id),
                 sh_single_quote(&self.shared_codex_appserver.remote_uri()),
             )
         } else {
@@ -294,7 +330,7 @@ impl ProviderAdapter for CodexAdapter {
             )
         };
 
-        if !is_prompted {
+        if thread_id.is_none() {
             let _pending_spawn_serial_guard = self.pending_codex_threads_spawn_serial.lock().await;
             self.pending_codex_threads
                 .register(PendingEntry::new(
@@ -343,7 +379,12 @@ impl ProviderAdapter for CodexAdapter {
             "reap_terminal_pty",
             json!({ "terminal_id": terminal_id }),
         )];
-        if output_prompt(output)?.is_some() {
+        let owns_thread = kernel_mints_thread(output)?;
+        if output
+            .output_optional_string("codex_thread_id", "codex")?
+            .is_some()
+            || owns_thread
+        {
             steps.push(CompensationStep::new(
                 "interrupt_shared_codex_turn",
                 json!({
@@ -351,12 +392,20 @@ impl ProviderAdapter for CodexAdapter {
                     "thread_id": output.output_optional_string("codex_thread_id", "codex")?,
                 }),
             ));
+            let worker_session_id =
+                compensation_worker_session_id(output, &card_id, self.repo.as_ref()).await?;
             steps.push(CompensationStep::new(
                 "session_projection_set_status_failed_for_card",
-                json!({ "card_id": card_id }),
+                json!({
+                    "card_id": card_id,
+                    "worker_session_id": worker_session_id,
+                    "viewer_start_failed": from_phase == PhaseTag::SpawnStarted
+                        && output.data.get("workspace_environment_thread") == Some(&Value::Bool(true))
+                        && output_prompt(output)?.is_none(),
+                }),
             ));
         } else {
-            let runtime_id = output.output_string("runtime_id", "codex")?;
+            let runtime_id = prepared_worker_session_id(output)?;
             steps.push(CompensationStep::new(
                 "pending_codex_threads_remove_by_card",
                 json!({ "card_id": card_id.clone(), "runtime_id": runtime_id }),
@@ -399,17 +448,21 @@ impl ProviderAdapter for CodexAdapter {
             }
             "interrupt_shared_codex_turn" => {
                 let card_id = step.arg_string("card_id", "codex")?;
-                let thread_id =
-                    if let Some(thread_id) = step.args.get("thread_id").and_then(Value::as_str) {
-                        Some(thread_id.to_string())
-                    } else {
-                        ctx.repo
-                            .session_projection_active_for_card(&card_id)
-                            .await?
-                            .and_then(|runtime| {
-                                TxOutput::non_empty_string(runtime.thread_id.as_deref())
-                            })
-                    };
+                let thread_id = if let Some(thread_id) =
+                    step.args.get("thread_id").and_then(Value::as_str)
+                {
+                    Some(thread_id.to_string())
+                } else {
+                    let worker_session_id =
+                        compensation_worker_session_id(output, &card_id, ctx.repo.as_ref()).await?;
+                    ctx.repo
+                        .session_projection_by_id(&worker_session_id)
+                        .await?
+                        .filter(|runtime| runtime.card_id == card_id)
+                        .and_then(|runtime| {
+                            TxOutput::non_empty_string(runtime.thread_id.as_deref())
+                        })
+                };
                 if let Some(thread_id) = thread_id {
                     match self
                         .shared_codex_appserver
@@ -433,10 +486,33 @@ impl ProviderAdapter for CodexAdapter {
             "session_projection_set_status_failed_for_card"
             | "runtime_set_status_failed_for_card" => {
                 let card_id = step.arg_string("card_id", "codex")?;
-                ctx.repo
-                    .session_projection_complete_for_card(&card_id, WorkerSessionState::Failed)
-                    .await?;
-                Ok(())
+                let worker_session_id = if step.args.get("worker_session_id").is_some() {
+                    step.arg_string("worker_session_id", "codex")?
+                } else {
+                    compensation_worker_session_id(output, &card_id, ctx.repo.as_ref()).await?
+                };
+                // Released compensation steps predate native empty-card viewers.
+                let viewer_start_failed = match step.args.get("viewer_start_failed") {
+                    Some(Value::Bool(value)) => *value,
+                    None => false,
+                    Some(_) => {
+                        return Err(CalmError::Internal(
+                            "invalid Codex viewer failure marker".into(),
+                        ));
+                    }
+                };
+                match crate::pending_codex_threads::card_payload_clear_pending_status(
+                    ctx.repo.as_ref(),
+                    &ctx.events,
+                    &card_id,
+                    &worker_session_id,
+                    viewer_start_failed,
+                )
+                .await
+                {
+                    Ok(()) | Err(CalmError::NotFound(_)) => Ok(()),
+                    Err(error) => Err(error),
+                }
             }
             "pending_codex_threads_remove_by_card" => {
                 let runtime_id = output.output_string("runtime_id", "codex")?;
@@ -453,6 +529,7 @@ impl ProviderAdapter for CodexAdapter {
                     &ctx.events,
                     &card_id,
                     &runtime_id,
+                    false,
                 )
                 .await
                 {

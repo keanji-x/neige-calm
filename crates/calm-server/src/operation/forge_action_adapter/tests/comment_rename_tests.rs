@@ -72,7 +72,7 @@ async fn submit(
 
 #[tokio::test]
 async fn a_comment_from_before_the_rename_replays_after_migration_0148() {
-    let fx = forge_runtime_fixture().await;
+    let fx = forge_runtime_fixture_for_card(CARD).await;
     let op_id = submit(
         &fx,
         OLD_PLUGIN_ID,
@@ -80,7 +80,8 @@ async fn a_comment_from_before_the_rename_replays_after_migration_0148() {
     )
     .await
     .expect("pre-rename submit");
-    fx.runtime.wait(&op_id).await.unwrap();
+    let result = fx.runtime.wait(&op_id).await.unwrap();
+    assert!(matches!(result.outcome, OperationOutcome::Succeeded { .. }));
     let migration = calm_truth::MIGRATOR
         .iter()
         .find(|m| m.description == "plugin names")

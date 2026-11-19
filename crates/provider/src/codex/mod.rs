@@ -13,6 +13,8 @@ pub use approvals::{ApprovalRoute, ApprovalRoutes, TurnApprovals};
 pub use authentication::is_sign_in_failure;
 mod types;
 pub use types::*;
+mod shell_environment;
+pub use shell_environment::shell_environment_filter_overrides;
 mod client_transport;
 pub mod delivery;
 mod gated_requests;
@@ -506,9 +508,10 @@ impl CodexAppServer {
         thread_id: &str,
         include_turns: bool,
     ) -> Result<ThreadReadResponse> {
-        self.request(
-            "thread/read",
-            json!({ "threadId": thread_id, "includeTurns": include_turns }),
+        self.thread_read_gated(
+            thread_id,
+            include_turns,
+            &PreSendGate::new(gated_requests::allow_send),
         )
         .await
     }

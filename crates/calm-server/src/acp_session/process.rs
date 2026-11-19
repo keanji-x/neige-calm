@@ -5,7 +5,7 @@ use crate::error::{CalmError, Result};
 use plugin::child_process::{GroupChild, set_process_group_leader, spawn_within};
 use provider::acp::{Connection, Incoming, approvals::refuse, protocol};
 use serde_json::Value;
-use std::time::Duration;
+use std::{future::Future, time::Duration};
 use tokio::process::Command;
 
 use super::failure::SetupFailure as StartFailure;
@@ -25,6 +25,7 @@ pub(crate) struct Process {
     pub capabilities: protocol::AgentCapabilities,
     pub commands: Commands,
     pub version: Option<semver::Version>,
+    tool_environment: Option<super::environment::ShellEnvironment>,
     #[cfg(all(test, feature = "fixtures"))]
     stop_scope: String,
 }
@@ -40,12 +41,18 @@ impl Process {
             .map_err(Into::into)
     }
 
-    pub async fn spawn_shared(
+    pub async fn spawn_shared<F>(
         host: &AcpHost,
         registration: Registration<'_>,
+        track_id: &str,
         cwd: &std::path::Path,
-    ) -> std::result::Result<Self, StartFailure> {
-        let (execution, io) = ResidentExecution::start(host, registration, cwd).await?;
+        revalidate: impl FnOnce() -> F + Send,
+    ) -> std::result::Result<Self, StartFailure>
+    where
+        F: Future<Output = Result<()>> + Send,
+    {
+        let (execution, io, tool_environment) =
+            ResidentExecution::start(host, registration, track_id, cwd, revalidate).await?;
         let restart_owner = AcpSharedRestartOwner::Execution {
             execution_id: execution.id().clone(),
         };
@@ -57,6 +64,7 @@ impl Process {
             ProcessOwner::Supervised(execution),
             Some(restart_owner),
             true,
+            tool_environment,
         )
         .await
     }
@@ -71,6 +79,8 @@ impl Process {
         cwd: &std::path::Path,
     ) -> std::result::Result<Self, StartFailure> {
         let Registration { config, profile } = registration;
+        let tool_environment =
+            super::environment::directory_hook(registration, &host.agent_logs, cwd)?;
         let mut command = Command::new(&config.command);
         command
             .args(&config.args)
@@ -88,6 +98,9 @@ impl Process {
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .kill_on_drop(true);
+        if let Some(hook) = &tool_environment {
+            command.env(hook.config.0, &hook.config.1);
+        }
         set_process_group_leader(&mut command);
         let mut child = spawn_within(
             command,
@@ -114,10 +127,12 @@ impl Process {
             ProcessOwner::Native(child),
             None,
             false,
+            tool_environment,
         )
         .await
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn initialize(
         host: &AcpHost,
         registration: Registration<'_>,
@@ -125,6 +140,7 @@ impl Process {
         mut owner: ProcessOwner,
         restart_owner: Option<AcpSharedRestartOwner>,
         resident: bool,
+        tool_environment: Option<super::environment::ShellEnvironment>,
     ) -> std::result::Result<Self, StartFailure> {
         let profile = registration.profile;
         let compaction = resident
@@ -138,6 +154,7 @@ impl Process {
                 connection,
                 capabilities: negotiated.capabilities,
                 version: negotiated.version,
+                tool_environment,
                 commands: Commands::default(),
                 #[cfg(all(test, feature = "fixtures"))]
                 stop_scope: host.agent_logs.to_string_lossy().into_owned(),
@@ -158,6 +175,12 @@ impl Process {
             ProcessOwner::Native(_) => None,
             ProcessOwner::Supervised(execution) => Some(execution.id()),
         }
+    }
+
+    pub(crate) fn check_tool_environment(&self) -> Result<()> {
+        self.tool_environment
+            .as_ref()
+            .map_or(Ok(()), |hook| hook.check_ready())
     }
 
     pub async fn stop(&mut self) -> Result<()> {

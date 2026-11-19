@@ -381,6 +381,36 @@ pub async fn build_claude_env(
     Ok(Value::Object(env_map))
 }
 
+pub(super) async fn workspace_command(
+    ctx: &SpawnCtx,
+    card: &str,
+    cwd: &str,
+    command: &str,
+    env: &Value,
+) -> Result<String> {
+    let source = crate::workspace_service::environment::source_for_card(
+        ctx.repo.as_ref(),
+        card,
+        Path::new(cwd),
+    )
+    .await?;
+    let explicit = env
+        .as_object()
+        .ok_or_else(|| CalmError::BadRequest("invalid Claude environment".into()))?;
+    let keys = crate::claude_planner::spawn::WORKSPACE_KEEP_KEYS
+        .iter()
+        .map(|key| (*key).to_owned())
+        .chain(explicit.keys().cloned());
+    crate::workspace_exec::wrap_shell_command(
+        &ctx.kernel_executable,
+        &source,
+        keys,
+        crate::claude_planner::spawn::WORKSPACE_KEEP_PREFIXES,
+        true,
+        command,
+    )
+}
+
 fn build_claude_worker_command_line(
     claude_bin: &str,
     settings_path: &Path,
@@ -633,6 +663,7 @@ impl ProviderAdapter for ClaudeAdapter {
         )
         .await;
 
+        let command_line = workspace_command(ctx, &card_id, &cwd, &command_line, &env).await?;
         #[cfg(feature = "fixtures")]
         let handle = if let Some(hook) = &self.spawn_hook {
             hook(terminal_id.clone(), command_line, cwd, env).await
@@ -1050,6 +1081,7 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
             _op,
             super::task_launch::TerminalLaunchRole::BusinessProcess,
         );
+        let command_line = workspace_command(ctx, &card_id, &cwd, &command_line, &env).await?;
         #[cfg(feature = "fixtures")]
         let handle = if let Some(hook) = &self.spawn_hook {
             launch

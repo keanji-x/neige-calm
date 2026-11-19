@@ -170,38 +170,29 @@ async fn exit_path_records_the_outcome_before_turn_completed() {
 
 async fn assert_env_is_the_allowlist(rig: &Rig) {
     let env = rig.read_bin("env").expect("env");
-    let allowed = [
-        "HOME",
-        "USER",
-        "LOGNAME",
-        "SHELL",
-        "LANG",
-        "LANGUAGE",
-        "LC_ALL",
-        "LC_CTYPE",
-        "TERM",
-        "TZ",
-        "TMPDIR",
-        "TEMP",
-        "TMP",
-        "NO_PROXY",
-        "no_proxy",
-        "ALL_PROXY",
-        "all_proxy",
-        "SSL_CERT_FILE",
-        "PATH",
-        "CLAUDE_CONFIG_DIR",
-        "NEIGE_MCP_SOCKET",
-        "NEIGE_MCP_TOKEN",
-        "NEIGE_CLAUDE_PLANNER",
-        "DISABLE_AUTOUPDATER",
-        "CLAUDE_CODE_DISABLE_AUTO_MEMORY",
-        // bash's own
-        "PWD",
-        "SHLVL",
-        "_",
-        "OLDPWD",
-    ];
+    let policy = calm_session::control::execution::AmbientProxyPolicy::RejectSecret;
+    let allowed: Vec<_> = calm_proc_supervisor::ambient_keys(&policy)
+        .filter(|key| !calm_types::forge_env::FORGE_CREDENTIAL_ENV_KEYS.contains(key))
+        .chain([
+            "DIRENV_CONFIG",
+            // Even an empty trusted .envrc adds direnv's reported bookkeeping.
+            "DIRENV_DIFF",
+            "DIRENV_DIR",
+            "DIRENV_FILE",
+            "DIRENV_WATCHES",
+            "CLAUDE_CONFIG_DIR",
+            "NEIGE_MCP_SOCKET",
+            "NEIGE_MCP_TOKEN",
+            "NEIGE_CLAUDE_PLANNER",
+            "DISABLE_AUTOUPDATER",
+            "CLAUDE_CODE_DISABLE_AUTO_MEMORY",
+            // bash's own
+            "PWD",
+            "SHLVL",
+            "_",
+            "OLDPWD",
+        ])
+        .collect();
     let pairs: Vec<(&str, &str)> = env.lines().filter_map(|l| l.split_once('=')).collect();
     for (key, _) in &pairs {
         assert!(allowed.contains(key), "{key} is not on the allowlist");

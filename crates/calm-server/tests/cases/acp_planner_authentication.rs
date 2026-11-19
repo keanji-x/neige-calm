@@ -128,3 +128,106 @@ async fn acp_opencode_profile_refuses_unsupported_versions_even_with_old_operato
         stack.shutdown().await;
     }
 }
+
+fn workspace_ready_path(root: &Root, method: &str) -> std::path::PathBuf {
+    let frames = requests(root, method);
+    let pid = &frames.last().expect("native attachment or prompt")["_pid"];
+    std::fs::read_to_string(root.path().join("environment.jsonl"))
+        .unwrap()
+        .lines()
+        .find_map(|line| {
+            let launch: Value = serde_json::from_str(line).unwrap();
+            if &launch["_pid"] != pid {
+                return None;
+            }
+            let config: Value =
+                serde_json::from_str(launch["opencode_config_content"].as_str()?).unwrap();
+            config["plugins"][0]["options"]["ready"]
+                .as_str()
+                .map(Into::into)
+        })
+        .expect("the invoking native process owns its plugin readiness path")
+}
+
+async fn wait_workspace_hook_refusal(stack: &Stack, card: &str) {
+    let worker = stack.runtime(card).await.id;
+    let handle = stack.harness(&worker);
+    tokio::time::timeout(Duration::from_secs(20), async {
+        while handle.refused_issuances_for_test() == 0 {
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("missing workspace hook must explicitly refuse issuance");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn opencode_workspace_hook_missing_at_attachment_refuses_before_prompt() {
+    let root = Root::new("unused");
+    let stack = boot(&root).await;
+    let (_, card) = create(&stack).await;
+    std::fs::write(root.path().join("workspace-hook-not-ready"), "").unwrap();
+    let (status, body) = stack.post_input(&card, "requires workspace tools").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    wait_workspace_hook_refusal(&stack, &card).await;
+    assert_eq!(requests(&root, "session/new").len(), 1);
+    assert!(requests(&root, "session/prompt").is_empty());
+    stack.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn opencode_workspace_hook_teardown_refuses_a_warm_process() {
+    let root = Root::new("unused");
+    let stack = boot(&root).await;
+    let (_, card) = create(&stack).await;
+    assert_eq!(turn(&stack, &card, "first", 1).await["status"], "completed");
+    let ready = workspace_ready_path(&root, "session/prompt");
+    assert!(ready.exists());
+    std::fs::remove_file(&ready).unwrap();
+    let (status, body) = stack.post_input(&card, "after hook teardown").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    wait_workspace_hook_refusal(&stack, &card).await;
+    assert_eq!(requests(&root, "session/prompt").len(), 1);
+    stack.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn opencode_workspace_hook_restart_never_reuses_a_previous_activation() {
+    let root = Root::new("unused");
+    let stack = boot(&root).await;
+    let (_, card) = create(&stack).await;
+    assert_eq!(
+        turn(&stack, &card, "before restart", 1).await["status"],
+        "completed"
+    );
+    let old = workspace_ready_path(&root, "session/prompt");
+    assert!(old.exists());
+    stack.shutdown().await;
+    assert!(!old.parent().unwrap().exists());
+    let stack = boot(&root).await;
+    std::fs::write(root.path().join("workspace-hook-not-ready"), "").unwrap();
+    let (status, body) = stack.post_input(&card, "after restart").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    wait_workspace_hook_refusal(&stack, &card).await;
+    let new = workspace_ready_path(&root, "session/resume");
+    assert_ne!(old, new);
+    assert!(!new.exists());
+    assert_eq!(requests(&root, "session/resume").len(), 1);
+    assert_eq!(requests(&root, "session/prompt").len(), 1);
+    stack.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn opencode_workspace_hook_missing_makes_discovery_unavailable() {
+    let root = Root::new("unused");
+    let stack = boot(&root).await;
+    std::fs::write(root.path().join("workspace-hook-not-ready"), "").unwrap();
+    let (status, catalog) = stack
+        .send("GET", "/api/models?provider=opencode", None)
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(catalog["source"], "unavailable");
+    assert_eq!(requests(&root, "session/new").len(), 1);
+    assert!(requests(&root, "session/prompt").is_empty());
+    stack.shutdown().await;
+}

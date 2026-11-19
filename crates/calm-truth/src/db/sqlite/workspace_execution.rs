@@ -200,21 +200,31 @@ pub async fn settlement_history(
 
 /// Resident owners use their consumer key as the prefix of every durable alias.
 /// Either ownership projection selects the row so damage cannot hide a live Run.
+/// A workspace owner selection retains legacy host-wide owners for that backend,
+/// but excludes sibling workspace generations (including those on the same Track).
 pub async fn resident_inventory_tx(
     tx: &mut Transaction<'_, Sqlite>,
     consumer: &str,
     backend: Option<&str>,
+    owner: Option<&str>,
 ) -> Result<Vec<String>, sqlx::Error> {
     sqlx::query_scalar(
         "SELECT execution_id FROM workspace_executions
          WHERE (desired <> 'retire' OR secrets_json IS NOT NULL)
            AND ((alias >= ?1 || ':' AND alias < ?1 || ';')
                  OR json_extract(intent_json, '$.consumer') = ?1)
-           AND (?2 IS NULL OR json_extract(intent_json, '$.track.backend') = ?2)
+           AND (?2 IS NULL OR json_extract(intent_json, '$.track.backend') = ?2
+                OR alias >= ?1 || ':' || ?2 || ':' AND alias < ?1 || ':' || ?2 || ';'
+                OR json_extract(intent_json, '$.owner') >= ?1 || ':' || ?2 || ':'
+                   AND json_extract(intent_json, '$.owner') < ?1 || ':' || ?2 || ';')
+           AND (?3 IS NULL OR json_extract(intent_json, '$.owner') = ?3
+                OR alias >= ?3 || ':' AND alias < ?3 || ';'
+                OR json_extract(intent_json, '$.track.backend') = ?2)
          ORDER BY execution_id",
     )
     .bind(consumer)
     .bind(backend)
+    .bind(owner)
     .fetch_all(&mut **tx)
     .await
 }

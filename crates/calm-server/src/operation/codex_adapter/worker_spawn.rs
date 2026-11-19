@@ -66,14 +66,22 @@ pub(crate) async fn spawn_codex_worker_via_shared_daemon(
                     ));
                 }
             };
+            let admission = super::mint_admission::admission(
+                ctx.spawn_ctx,
+                ctx.launch.operation(),
+                card_id,
+                ctx.worker_session_id,
+                Some(&ctx.launch),
+            );
             let minted = ctx
                 .shared_codex_appserver
-                .thread_start_mint_mcp_shell(
+                .thread_start_mint_mcp_shell_admitted(
                     card_id,
                     ctx.cwd.to_string(),
                     Some(worker_instructions),
                     server.shim_config.socket_path.clone(),
                     token.to_string(),
+                    &admission,
                 )
                 .await?;
             tracing::info!(

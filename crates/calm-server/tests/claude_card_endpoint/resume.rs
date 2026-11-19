@@ -15,7 +15,7 @@ use tower::ServiceExt;
 
 use super::{
     Boot, ENV_LOCK, SpawnCall, body, boot_with_spawn_hook_factory, post, post_restart,
-    recording_spawn_hook, response_json, runtime_status,
+    recording_spawn_hook, response_json, runtime_status, shell_argv,
 };
 
 async fn post_hook(boot: &Boot, card_id: &str, payload: Value) -> StatusCode {
@@ -65,7 +65,14 @@ async fn restart_after_clear_resumes_the_session_the_card_last_started() {
     let calls_for_factory = calls.clone();
     let boot =
         boot_with_spawn_hook_factory(move |_, _| recording_spawn_hook(calls_for_factory)).await;
-    let (status, created) = post(boot.app.clone(), &boot.track_id, body(None), None, None).await;
+    let (status, created) = post(
+        boot.app.clone(),
+        &boot.track_id,
+        body(&boot, None),
+        None,
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::CREATED, "body={created:?}");
     let card_id = created["id"].as_str().unwrap();
     let minted = created["payload"]["claude_session_id"].as_str().unwrap();
@@ -84,8 +91,9 @@ async fn restart_after_clear_resumes_the_session_the_card_last_started() {
     let (status, restarted) = post_restart(boot.app.clone(), card_id).await;
     assert_eq!(status, StatusCode::OK, "body={restarted:?}");
     let program = calls.lock().await.last().unwrap().program.clone();
+    let argv = shell_argv(&program);
     assert!(
-        program.contains(&format!("--resume='{cleared}'")),
+        argv.contains(&format!("--resume={cleared}")),
         "a restart must resume the session the card last started: {program}"
     );
     assert!(!program.contains(minted), "{program}");
@@ -93,7 +101,14 @@ async fn restart_after_clear_resumes_the_session_the_card_last_started() {
     assert_eq!(agent_session_ids(&boot, card_id).await, [cleared, cleared]);
 
     // An id another card's live runtime holds stays rejected, and that card keeps its own id.
-    let (status, other) = post(boot.app.clone(), &boot.track_id, body(None), None, None).await;
+    let (status, other) = post(
+        boot.app.clone(),
+        &boot.track_id,
+        body(&boot, None),
+        None,
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::CREATED, "body={other:?}");
     let other_id = other["id"].as_str().unwrap();
     let other_session = other["payload"]["claude_session_id"].as_str().unwrap();
@@ -138,7 +153,7 @@ async fn seed_task_worker_card(boot: &Boot) -> String {
                                 None,
                                 None,
                                 "'/bin/true' --session-id 'worker-session'".into(),
-                                "/workspace".into(),
+                                boot.workspace.display().to_string(),
                                 json!({}),
                                 Some("task prompt".into()),
                                 None,
@@ -173,7 +188,14 @@ async fn c1_fence_legacy_auto_resume_waits_then_resumes_owner_only() {
     let calls_for_factory = calls.clone();
     let boot =
         boot_with_spawn_hook_factory(move |_, _| recording_spawn_hook(calls_for_factory)).await;
-    let (status, owner) = post(boot.app.clone(), &boot.track_id, body(None), None, None).await;
+    let (status, owner) = post(
+        boot.app.clone(),
+        &boot.track_id,
+        body(&boot, None),
+        None,
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::CREATED, "body={owner:?}");
     let owner_id = owner["id"].as_str().unwrap();
     let owner_terminal = owner["payload"]["terminal_id"].as_str().unwrap();
@@ -241,11 +263,7 @@ async fn c1_fence_legacy_auto_resume_waits_then_resumes_owner_only() {
     assert_eq!(calls.len(), spawns_before + 1);
     assert_eq!(calls.last().unwrap().terminal_id, owner_terminal);
     assert!(
-        calls
-            .last()
-            .unwrap()
-            .program
-            .contains(&format!("--resume='{owner_session}'")),
+        shell_argv(&calls.last().unwrap().program).contains(&format!("--resume={owner_session}")),
         "{}",
         calls.last().unwrap().program
     );
@@ -278,21 +296,6 @@ async fn c1_fence_legacy_auto_resume_waits_then_resumes_owner_only() {
     assert_eq!(runtime_status(&boot.repo, &worker_id).await, "exited");
 }
 
-/// The argv `/bin/sh -c` hands the CLI for `program`, as the terminal runs it.
-fn shell_argv(program: &str) -> Vec<String> {
-    let output = std::process::Command::new("/bin/sh")
-        .arg("-c")
-        .arg(format!("set -- {program}; printf '%s\\0' \"$@\""))
-        .output()
-        .unwrap();
-    assert!(output.status.success(), "{output:?}");
-    String::from_utf8(output.stdout)
-        .unwrap()
-        .split_terminator('\0')
-        .map(ToOwned::to_owned)
-        .collect()
-}
-
 /// The hook payload is unauthenticated, and Claude's `--session-id` takes a UUID: an id that is not
 /// one (here one that reads like an option) is not followed, and the restart resumes the card's own
 /// id as one `--resume=<id>` token.
@@ -303,7 +306,14 @@ async fn a_session_start_id_that_is_not_a_uuid_is_not_followed() {
     let calls_for_factory = calls.clone();
     let boot =
         boot_with_spawn_hook_factory(move |_, _| recording_spawn_hook(calls_for_factory)).await;
-    let (status, created) = post(boot.app.clone(), &boot.track_id, body(None), None, None).await;
+    let (status, created) = post(
+        boot.app.clone(),
+        &boot.track_id,
+        body(&boot, None),
+        None,
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::CREATED, "body={created:?}");
     let card_id = created["id"].as_str().unwrap();
     let minted = created["payload"]["claude_session_id"].as_str().unwrap();
@@ -349,7 +359,14 @@ async fn boot_auto_resume_skips_a_card_already_running_again() {
     let calls_for_factory = calls.clone();
     let boot =
         boot_with_spawn_hook_factory(move |_, _| recording_spawn_hook(calls_for_factory)).await;
-    let (status, owner) = post(boot.app.clone(), &boot.track_id, body(None), None, None).await;
+    let (status, owner) = post(
+        boot.app.clone(),
+        &boot.track_id,
+        body(&boot, None),
+        None,
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::CREATED, "body={owner:?}");
     let owner_id = owner["id"].as_str().unwrap();
     let stale = calm_server::reconcile_supervisor_on_boot(&boot.state).await;

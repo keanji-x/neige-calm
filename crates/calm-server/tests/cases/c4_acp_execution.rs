@@ -110,15 +110,33 @@ async fn c4_acp_registration_env_only_in_payload() {
     use sha2::{Digest, Sha256};
     let root = Root::new("unused");
     let secret = "c43-operator-secret-credential";
+    let project_secret = "c43-workspace-private-value";
     let proxy = "http://c43-user:c43-password@proxy.invalid:8080";
     let stack = boot_with(
         &root,
         json!({"OPERATOR_SECRET": secret,"HTTP_PROXY":proxy,
-        "ACP_FIXTURE_PROBE_KEYS":"OPERATOR_SECRET,HTTP_PROXY,NEIGE_MCP_TOKEN"}),
+        "ACP_FIXTURE_PROBE_KEYS":"OPERATOR_SECRET,HTTP_PROXY,NEIGE_MCP_TOKEN,WORKSPACE_ONLY_SECRET"}),
         None,
     )
     .await;
-    let (_, card) = create(&stack).await;
+    let (track, card) = create(&stack).await;
+    let workspace = stack
+        .repo()
+        .track_get(&track)
+        .await
+        .unwrap()
+        .unwrap()
+        .workspace;
+    std::fs::write(
+        std::path::Path::new(&workspace.path).join(".envrc"),
+        format!("export WORKSPACE_ONLY_SECRET={project_secret}\n"),
+    )
+    .unwrap();
+    let authorized = std::process::Command::new("direnv")
+        .args(["allow", &workspace.path])
+        .output()
+        .unwrap();
+    assert!(authorized.status.success());
     std::fs::write(root.path().join("scenario"), "hold").unwrap();
     let (status, body) = stack.post_input(&card, "payload").await;
     assert_eq!(status, StatusCode::OK, "{body}");
@@ -132,16 +150,25 @@ async fn c4_acp_registration_env_only_in_payload() {
     let digest = |value: &str| format!("{:x}", Sha256::digest(value.as_bytes()));
     assert_eq!(env["probe"]["OPERATOR_SECRET"], digest(secret));
     assert_eq!(env["probe"]["HTTP_PROXY"], digest(proxy));
+    assert_eq!(
+        env["probe"]["WORKSPACE_ONLY_SECRET"],
+        digest(project_secret)
+    );
     let rows: Vec<String> = sqlx::query_scalar("SELECT intent_json FROM workspace_executions WHERE json_extract(intent_json,'$.consumer')='acp-planner'")
         .fetch_all(stack.repo().sqlite_db().unwrap().read_pool()).await.unwrap();
     assert_eq!(rows.len(), 1);
-    for needle in [secret, proxy] {
+    for needle in [secret, proxy, project_secret] {
         assert!(!rows[0].contains(needle));
         root.assert_execution_journal_excludes(needle);
     }
     let metadata: workspace_runtime::execution::ExecutionMetadata =
         serde_json::from_str(&rows[0]).unwrap();
-    for key in ["OPERATOR_SECRET", "HTTP_PROXY", "NEIGE_MCP_TOKEN"] {
+    for key in [
+        "OPERATOR_SECRET",
+        "HTTP_PROXY",
+        "NEIGE_MCP_TOKEN",
+        "WORKSPACE_ONLY_SECRET",
+    ] {
         assert!(
             !metadata
                 .program

@@ -42,8 +42,13 @@ pub(crate) fn kernel_bin_dir() -> io::Result<PathBuf> {
 
 /// Build the Planner/Worker PATH from this process's executable and PATH.
 pub fn kernel_led_path() -> io::Result<KernelLedPath> {
+    kernel_led_path_from(std::env::var_os("PATH").as_deref())
+}
+
+/// Lead with Neige's binaries while preserving a project's resolved tool search path.
+pub(crate) fn kernel_led_path_from(project_path: Option<&OsStr>) -> io::Result<KernelLedPath> {
     let bin_dir = kernel_bin_dir()?;
-    let path = path_leading_with(&bin_dir, std::env::var_os("PATH").as_deref())?;
+    let path = path_leading_with(&bin_dir, project_path)?;
     Ok(KernelLedPath { bin_dir, path })
 }
 
@@ -65,7 +70,7 @@ fn shell_path_prepend_for(bin_dir: &Path) -> io::Result<String> {
 }
 
 /// An absent or empty `inherited` PATH adds no empty (current-directory) entry.
-fn path_leading_with(bin_dir: &Path, inherited: Option<&OsStr>) -> io::Result<OsString> {
+pub(crate) fn path_leading_with(bin_dir: &Path, inherited: Option<&OsStr>) -> io::Result<OsString> {
     let rest = inherited
         .filter(|path| !path.is_empty())
         .map(|path| std::env::split_paths(path).collect::<Vec<_>>())

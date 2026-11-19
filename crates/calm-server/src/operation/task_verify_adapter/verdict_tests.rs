@@ -34,7 +34,7 @@ fn step_path(evidence: &GateEvidence) -> &Path {
 /// evidence paths in the environment, released by the go-token. Returns its exit code.
 async fn run_wrapper(dir: &Path, evidence: &GateEvidence) -> i32 {
     let script_path = dir.join("wrapper.sh");
-    std::fs::write(&script_path, render_gate_wrapper(&evidence.steps)).unwrap();
+    std::fs::write(&script_path, WrapperSteps::Logged(&evidence.steps).render()).unwrap();
     let log_file = std::fs::File::create(&evidence.log_path).unwrap();
     let mut child = tokio::process::Command::new("/bin/sh")
         .arg(&script_path)
@@ -241,7 +241,7 @@ async fn wrapper_handshake_eof_exits_75_having_run_nothing() {
     let script_path = dir.join("wrapper.sh");
     let exit_path = dir.join("wrapper.exit");
     let evidence = evidence(&dir, &[("touch", &format!("touch {}", marker.display()))]);
-    std::fs::write(&script_path, render_gate_wrapper(&evidence.steps)).unwrap();
+    std::fs::write(&script_path, WrapperSteps::Logged(&evidence.steps).render()).unwrap();
     std::fs::write(&evidence.log_path, "").unwrap();
 
     let mut child = tokio::process::Command::new("/bin/sh")

@@ -537,7 +537,7 @@ async fn boot_codex_with_counted_spawn_and_lifecycle_timeout(
             area_id: area.id,
             title: "codex-operations-test".into(),
             sort: None,
-            cwd: "/workspace".into(),
+            cwd: tmp.path().to_string_lossy().into_owned(),
             template_id: None,
             plugin_scope: None,
             attach_folder: false,
@@ -676,7 +676,7 @@ async fn boot_claude_with_counted_spawn() -> Boot {
             area_id: area.id,
             title: "claude-operations-test".into(),
             sort: None,
-            cwd: "/workspace".into(),
+            cwd: tmp.path().to_string_lossy().into_owned(),
             template_id: None,
             plugin_scope: None,
             attach_folder: false,
@@ -772,22 +772,20 @@ async fn boot_claude_with_counted_spawn() -> Boot {
     }
 }
 
-async fn boot_codex_with_reversed_spawn_claims_and_thread_notifications() -> Boot {
+async fn boot_codex_with_reversed_spawn_claims() -> Boot {
     let mut boot = boot_codex_with_counted_spawn().await;
     let repo_dyn: Arc<dyn Repo> = boot.repo.clone();
     let route_repo: Arc<dyn calm_server::db::RouteRepo> = repo_dyn.clone();
     let count_for_hook = boot.spawn_count.clone();
     let repo_for_hook = route_repo.clone();
-    let shared_for_hook = boot.state.shared_codex_appserver.clone();
     let hook = Arc::new(
         move |terminal_id: String,
-              _program: String,
+              program: String,
               _cwd: String,
               _env: Value|
               -> BoxFuture<'static, calm_server::error::Result<SpawnHandle>> {
             let count = count_for_hook.clone();
             let repo = repo_for_hook.clone();
-            let shared = shared_for_hook.clone();
             Box::pin(async move {
                 let spawn_index = count.fetch_add(1, Ordering::SeqCst);
                 repo.terminal_set_pid(&terminal_id, Some(68_100 + spawn_index as u32))
@@ -795,15 +793,12 @@ async fn boot_codex_with_reversed_spawn_claims_and_thread_notifications() -> Boo
                 let term = repo.terminal_get(&terminal_id).await?.ok_or_else(|| {
                     CalmError::Internal(format!("terminal {terminal_id} vanished"))
                 })?;
-                let thread_id = format!("thread-for-{}", term.card_id);
-                if !shared
-                    .handle_thread_started_notification_for_test(&thread_id)
+                let runtime = repo
+                    .session_projection_active_for_card(&term.card_id.to_string())
                     .await?
-                {
-                    return Err(CalmError::Internal(format!(
-                        "thread/started {thread_id} was not consumed by pending FIFO"
-                    )));
-                }
+                    .expect("native identity is committed before viewer spawn");
+                let thread = runtime.thread_id.expect("viewer has its native thread");
+                assert!(program.contains(&format!("codex resume '{thread}' --remote")));
                 Ok(SpawnHandle::Terminal {
                     terminal_id: terminal_id.clone(),
                     renderer_id: terminal_id,
@@ -894,7 +889,7 @@ async fn test_terminal_create_no_double_spawn() {
 #[tokio::test]
 async fn test_codex_create_no_double_spawn() {
     let boot = boot_codex_with_counted_spawn().await;
-    let payload = codex_payload(&boot.track_id, None);
+    let payload = codex_payload(&boot.track_id, boot._tmp.path(), None);
     let key = OperationKey {
         operation_key: "op-codex-create".into(),
         idempotency_key: Some("codex-create-same-key".into()),
@@ -923,7 +918,18 @@ async fn test_codex_create_no_double_spawn() {
 
     assert_eq!(card_a, card_b);
     assert_eq!(boot.spawn_count.load(Ordering::SeqCst), 1);
-    assert_eq!(boot.state.pending_codex_threads.pending_count().await, 1);
+    let minted = boot
+        .state
+        .shared_codex_appserver
+        .minted_thread_cwds_for_test();
+    assert_eq!(minted.len(), 1, "idempotent create mints one native thread");
+    assert_active_codex_runtime_thread(&boot, &card_a, &minted[0].0).await;
+    assert_eq!(minted[0].1, boot._tmp.path().to_string_lossy());
+    assert_eq!(
+        boot.state.pending_codex_threads.pending_count().await,
+        0,
+        "the kernel-bound native thread needs no later viewer attribution"
+    );
     let row = sqlx::query("SELECT COUNT(*) AS n FROM operations WHERE kind = 'codex-create'")
         .fetch_one(boot.repo.pool())
         .await
@@ -979,10 +985,10 @@ async fn test_claude_create_no_double_spawn() {
 }
 
 #[tokio::test]
-async fn codex_empty_concurrent_creates_bind_fifo_to_spawn_order() {
-    let boot = boot_codex_with_reversed_spawn_claims_and_thread_notifications().await;
-    let payload_a = codex_payload(&boot.track_id, None);
-    let payload_b = codex_payload(&boot.track_id, None);
+async fn codex_empty_concurrent_creates_keep_native_identity_across_spawn_order() {
+    let boot = boot_codex_with_reversed_spawn_claims().await;
+    let payload_a = codex_payload(&boot.track_id, boot._tmp.path(), None);
+    let payload_b = codex_payload(&boot.track_id, boot._tmp.path(), None);
     let key_a = OperationKey {
         operation_key: "op-codex-empty-fifo-a".into(),
         idempotency_key: Some("codex-empty-fifo-a".into()),
@@ -1012,8 +1018,29 @@ async fn codex_empty_concurrent_creates_bind_fifo_to_spawn_order() {
     assert_eq!(boot.spawn_count.load(Ordering::SeqCst), 2);
     assert_eq!(boot.state.pending_codex_threads.pending_count().await, 0);
 
+    let minted = boot
+        .state
+        .shared_codex_appserver
+        .minted_thread_cwds_for_test();
+    assert_eq!(minted.len(), 2);
+    let mut threads = std::collections::HashSet::new();
     for card_id in [&card_a, &card_b] {
-        let expected_thread_id = format!("thread-for-{card_id}");
+        let runtime = boot
+            .repo
+            .session_projection_active_for_card(card_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let expected_thread_id = runtime.thread_id.unwrap();
+        assert!(
+            minted
+                .iter()
+                .any(|(thread, _)| thread == &expected_thread_id)
+        );
+        assert!(
+            threads.insert(expected_thread_id.clone()),
+            "each create owns a distinct native thread"
+        );
         assert_active_codex_runtime_thread(&boot, card_id, &expected_thread_id).await;
         let mut card = boot
             .repo
@@ -1341,6 +1368,7 @@ async fn codex_create_recovery_from_tx_committed_reaches_terminal_phase() {
     });
     let env_for_output = env.clone();
     let runtime_id_for_tx = runtime_id.clone();
+    let cwd_for_tx = boot._tmp.path().to_string_lossy().into_owned();
     let (card, term, _token) = write_in_tx_typed(boot.repo.as_ref(), move |tx| {
         Box::pin(async move {
             card_with_codex_create_tx(
@@ -1351,7 +1379,7 @@ async fn codex_create_recovery_from_tx_committed_reaches_terminal_phase() {
                 track_id.into(),
                 None,
                 None,
-                "/workspace".into(),
+                cwd_for_tx,
                 env.clone(),
                 None,
                 None,
@@ -1377,7 +1405,7 @@ async fn codex_create_recovery_from_tx_committed_reaches_terminal_phase() {
         "runtime_id": runtime_id,
         "track_id": boot.track_id.clone(),
         "terminal_id": term.id,
-        "cwd": "/workspace",
+        "cwd": boot._tmp.path().to_string_lossy(),
         "env": env_for_output,
         "prompt": Value::Null,
     });
@@ -1400,7 +1428,7 @@ async fn codex_create_recovery_from_tx_committed_reaches_terminal_phase() {
         serde_json::to_string(&json!({ "type": "runtime", "id": output.target_id.as_deref() }))
             .unwrap(),
     )
-    .bind(serde_json::to_string(&codex_payload(&boot.track_id, None)).unwrap())
+    .bind(serde_json::to_string(&codex_payload(&boot.track_id, boot._tmp.path(), None)).unwrap())
     .bind(serde_json::to_string(&output).unwrap())
     .bind("dead-process")
     .bind(now + 60_000)
@@ -1464,6 +1492,7 @@ async fn claude_create_recovery_from_tx_committed_reaches_terminal_phase_and_wri
     let claude_session_id_for_tx = claude_session_id.clone();
     let command_line_for_tx = command_line.clone();
     let runtime_id_for_tx = runtime_id.clone();
+    let cwd_for_tx = boot._tmp.path().to_string_lossy().into_owned();
     let (card, term) = write_in_tx_typed(boot.repo.as_ref(), move |tx| {
         Box::pin(async move {
             card_with_claude_create_tx(
@@ -1474,7 +1503,7 @@ async fn claude_create_recovery_from_tx_committed_reaches_terminal_phase_and_wri
                 None,
                 None,
                 command_line_for_tx,
-                "/workspace".into(),
+                cwd_for_tx,
                 env,
                 None,
                 None,
@@ -1509,7 +1538,7 @@ async fn claude_create_recovery_from_tx_committed_reaches_terminal_phase_and_wri
         "settings_path": settings_path,
         "claude_session_id": claude_session_id,
         "command_line": command_line,
-        "cwd": "/workspace",
+        "cwd": boot._tmp.path().to_string_lossy(),
         "env": env_for_output,
     });
     let op_id = new_id();
@@ -1597,7 +1626,7 @@ async fn codex_prompt_recovery_from_tx_committed_reaches_terminal_phase() {
         "runtime_id": runtime_id,
         "track_id": boot.track_id.clone(),
         "terminal_id": terminal_id,
-        "cwd": "/workspace",
+        "cwd": boot._tmp.path().to_string_lossy(),
         "env": env_for_output,
         "prompt": "recover prompt",
     });
@@ -1620,7 +1649,7 @@ async fn codex_prompt_recovery_from_tx_committed_reaches_terminal_phase() {
         serde_json::to_string(&json!({ "type": "runtime", "id": output.target_id.as_deref() }))
             .unwrap(),
     )
-    .bind(serde_json::to_string(&codex_payload(&boot.track_id, Some("recover prompt"))).unwrap())
+    .bind(serde_json::to_string(&codex_payload(&boot.track_id, boot._tmp.path(), Some("recover prompt"))).unwrap())
     .bind(serde_json::to_string(&output).unwrap())
     .bind("dead-process")
     .bind(now + 60_000)
@@ -1678,7 +1707,7 @@ async fn codex_prompt_recovery_from_app_server_interact_reuses_existing_thread_m
         "runtime_id": runtime_id,
         "track_id": boot.track_id.clone(),
         "terminal_id": terminal_id,
-        "cwd": "/workspace",
+        "cwd": boot._tmp.path().to_string_lossy(),
         "env": env_for_output,
         "prompt": "recover prompt",
     });
@@ -1709,8 +1738,12 @@ async fn codex_prompt_recovery_from_app_server_interact_reuses_existing_thread_m
                 .unwrap(),
             )
             .bind(
-                serde_json::to_string(&codex_payload(&boot.track_id, Some("recover prompt")))
-                    .unwrap(),
+                serde_json::to_string(&codex_payload(
+                    &boot.track_id,
+                    boot._tmp.path(),
+                    Some("recover prompt"),
+                ))
+                .unwrap(),
             )
             .bind(serde_json::to_string(&output).unwrap())
             .bind(
@@ -1800,7 +1833,7 @@ async fn codex_prompt_recovery_with_turn_started_marker_waits_for_lifecycle_with
         "runtime_id": runtime_id,
         "track_id": boot.track_id.clone(),
         "terminal_id": terminal_id,
-        "cwd": "/workspace",
+        "cwd": boot._tmp.path().to_string_lossy(),
         "env": env_for_output,
         "prompt": "recover prompt",
         "codex_thread_id": "t1",
@@ -1833,8 +1866,12 @@ async fn codex_prompt_recovery_with_turn_started_marker_waits_for_lifecycle_with
                 .unwrap(),
             )
             .bind(
-                serde_json::to_string(&codex_payload(&boot.track_id, Some("recover prompt")))
-                    .unwrap(),
+                serde_json::to_string(&codex_payload(
+                    &boot.track_id,
+                    boot._tmp.path(),
+                    Some("recover prompt"),
+                ))
+                .unwrap(),
             )
             .bind(serde_json::to_string(&output).unwrap())
             .bind(
@@ -1921,7 +1958,7 @@ async fn codex_prompt_recovery_without_marker_replays_turn_start_idempotently() 
         "runtime_id": runtime_id,
         "track_id": boot.track_id.clone(),
         "terminal_id": terminal_id,
-        "cwd": "/workspace",
+        "cwd": boot._tmp.path().to_string_lossy(),
         "env": env_for_output,
         "prompt": "recover prompt",
         "codex_thread_id": "t1",
@@ -1953,8 +1990,12 @@ async fn codex_prompt_recovery_without_marker_replays_turn_start_idempotently() 
                 .unwrap(),
             )
             .bind(
-                serde_json::to_string(&codex_payload(&boot.track_id, Some("recover prompt")))
-                    .unwrap(),
+                serde_json::to_string(&codex_payload(
+                    &boot.track_id,
+                    boot._tmp.path(),
+                    Some("recover prompt"),
+                ))
+                .unwrap(),
             )
             .bind(serde_json::to_string(&output).unwrap())
             .bind(
@@ -2048,7 +2089,7 @@ async fn codex_prompt_recovery_with_turn_started_marker_times_out_without_lifecy
         "runtime_id": runtime_id,
         "track_id": boot.track_id.clone(),
         "terminal_id": terminal_id,
-        "cwd": "/workspace",
+        "cwd": boot._tmp.path().to_string_lossy(),
         "env": env_for_output,
         "prompt": "recover prompt",
         "codex_thread_id": "t1",
@@ -2081,8 +2122,12 @@ async fn codex_prompt_recovery_with_turn_started_marker_times_out_without_lifecy
                 .unwrap(),
             )
             .bind(
-                serde_json::to_string(&codex_payload(&boot.track_id, Some("recover prompt")))
-                    .unwrap(),
+                serde_json::to_string(&codex_payload(
+                    &boot.track_id,
+                    boot._tmp.path(),
+                    Some("recover prompt"),
+                ))
+                .unwrap(),
             )
             .bind(serde_json::to_string(&output).unwrap())
             .bind(
@@ -2125,12 +2170,10 @@ async fn codex_prompt_recovery_with_turn_started_marker_times_out_without_lifecy
     assert_eq!(boot.spawn_count.load(Ordering::SeqCst), 0);
 }
 
-#[tokio::test]
-async fn codex_empty_recovery_from_spawn_started_rehydrates_pending_registry() {
-    let boot = boot_codex_with_counted_spawn().await;
+async fn seed_legacy_empty_spawn_started(boot: &Boot, label: &str) -> (String, Card) {
     let card_id = new_id();
     let (card, terminal_id, env_for_output, runtime_id) =
-        seed_codex_card_for_operation(&boot, card_id, None).await;
+        seed_codex_card_for_operation(boot, card_id, None).await;
     let mut pending_payload = card.payload.clone();
     pending_payload["codex_thread_status"] = json!("pending_thread_start");
     let card = boot
@@ -2157,7 +2200,7 @@ async fn codex_empty_recovery_from_spawn_started_rehydrates_pending_registry() {
         "runtime_id": runtime_id,
         "track_id": boot.track_id.clone(),
         "terminal_id": terminal_id,
-        "cwd": "/workspace",
+        "cwd": boot._tmp.path().to_string_lossy(),
         "env": env_for_output,
         "prompt": Value::Null,
         "pending_registered": true,
@@ -2173,15 +2216,15 @@ async fn codex_empty_recovery_from_spawn_started_rehydrates_pending_registry() {
            VALUES (?1, ?2, 'codex-create', ?3, ?4, 'runtime', ?5, ?6, ?7, ?8, 'spawn_started', ?9, ?10, ?11, ?11)"#,
     )
     .bind(&op_id)
-    .bind("codex-empty-spawn-started-recovery-op")
-    .bind("codex-empty-spawn-started-recovery-key")
-    .bind("codex-empty-spawn-started-recovery-hash")
+    .bind(format!("legacy-{label}-operation"))
+    .bind(format!("legacy-{label}-key"))
+    .bind(format!("legacy-{label}-hash"))
     .bind(output.target_id.as_deref())
     .bind(
         serde_json::to_string(&json!({ "type": "runtime", "id": output.target_id.as_deref() }))
             .unwrap(),
     )
-    .bind(serde_json::to_string(&codex_payload(&boot.track_id, None)).unwrap())
+    .bind(serde_json::to_string(&codex_payload(&boot.track_id, boot._tmp.path(), None)).unwrap())
     .bind(serde_json::to_string(&output).unwrap())
     .bind("dead-process")
     .bind(now + 60_000)
@@ -2189,6 +2232,13 @@ async fn codex_empty_recovery_from_spawn_started_rehydrates_pending_registry() {
     .await
     .unwrap();
 
+    (op_id, card)
+}
+
+#[tokio::test]
+async fn codex_empty_recovery_from_spawn_started_rehydrates_pending_registry() {
+    let boot = boot_codex_with_counted_spawn().await;
+    let (op_id, card) = seed_legacy_empty_spawn_started(&boot, "single").await;
     assert_eq!(boot.state.pending_codex_threads.pending_count().await, 0);
     let plan = boot
         .state
@@ -2223,6 +2273,66 @@ async fn codex_empty_recovery_from_spawn_started_rehydrates_pending_registry() {
             .unwrap()
     );
     assert_projected_codex_thread(&boot, card.id.as_str(), "T-empty", "started").await;
+}
+
+#[tokio::test]
+async fn legacy_empty_recovery_binds_fifo_to_viewer_spawn_order() {
+    let boot = boot_codex_with_counted_spawn().await;
+    let (first_op, first_card) = seed_legacy_empty_spawn_started(&boot, "first").await;
+    let (second_op, second_card) = seed_legacy_empty_spawn_started(&boot, "second").await;
+    let mut plan = boot
+        .state
+        .operation_runtime
+        .recover_on_boot()
+        .await
+        .unwrap();
+    assert_eq!(plan.items.len(), 2);
+    // Recover the later stored operation first: FIFO attribution must follow
+    // actual viewer spawns, independently of the durable insertion order.
+    plan.items.sort_by_key(|item| match item {
+        RecoveryItem::Recover {
+            op_id,
+            from_phase: Phase::SpawnStarted,
+            ..
+        } => u8::from(op_id != &second_op),
+        other => panic!("expected legacy spawn recovery, got {other:?}"),
+    });
+    boot.state
+        .operation_runtime
+        .apply_recovery(plan)
+        .await
+        .unwrap();
+    for op in [&first_op, &second_op] {
+        assert_eq!(
+            wait_for_terminal_phase(&boot, op, Duration::from_secs(5)).await,
+            PhaseTag::Succeeded
+        );
+    }
+    assert_eq!(boot.spawn_count.load(Ordering::SeqCst), 2);
+    assert!(
+        boot.state
+            .shared_codex_appserver
+            .minted_thread_cwds_for_test()
+            .is_empty()
+    );
+    assert_eq!(boot.state.pending_codex_threads.pending_count().await, 2);
+    for (remaining, card, thread) in [
+        (1, &second_card, "legacy-first-viewer-thread"),
+        (0, &first_card, "legacy-second-viewer-thread"),
+    ] {
+        assert!(
+            boot.state
+                .shared_codex_appserver
+                .handle_thread_started_notification_for_test(thread)
+                .await
+                .unwrap()
+        );
+        assert_projected_codex_thread(&boot, card.id.as_str(), thread, "started").await;
+        assert_eq!(
+            boot.state.pending_codex_threads.pending_count().await,
+            remaining
+        );
+    }
 }
 
 #[tokio::test]
@@ -2878,9 +2988,10 @@ async fn pre_pr4_operation_payload_deserializes_with_missing_runtime_id() {
             .expect("terminal payload without runtime_id");
     assert!(terminal.worker_session_id.is_none());
 
-    let codex: CodexCreateOperationPayload =
-        serde_json::from_value(without_runtime_id(codex_payload("track-pre-pr4", None)))
-            .expect("codex payload without runtime_id");
+    let codex: CodexCreateOperationPayload = serde_json::from_value(without_runtime_id(
+        codex_payload("track-pre-pr4", Path::new("/"), None),
+    ))
+    .expect("codex payload without runtime_id");
     assert!(codex.worker_session_id.is_none());
 
     let boot = boot_claude_with_counted_spawn().await;
@@ -2919,7 +3030,7 @@ async fn adapter_mints_runtime_id_when_payload_runtime_id_is_none() {
     assert_minted_runtime(&boot.repo, output, WorkerSessionKind::Terminal).await;
 
     let boot = boot_codex_with_counted_spawn().await;
-    let payload = without_runtime_id(codex_payload(&boot.track_id, None));
+    let payload = without_runtime_id(codex_payload(&boot.track_id, boot._tmp.path(), None));
     let route_repo: Arc<dyn calm_server::db::RouteRepo> = boot.repo.clone();
     let adapter = CodexAdapter::new(
         route_repo,
@@ -3101,7 +3212,7 @@ fn install_terminal_worker_runtime_with_hook(
     adapter
 }
 
-fn codex_payload(track_id: &str, prompt: Option<&str>) -> Value {
+fn codex_payload(track_id: &str, cwd: &Path, prompt: Option<&str>) -> Value {
     serde_json::to_value(CodexCreateOperationPayload {
         actor: ActorId::User,
         worker_session_id: Some(new_id()),
@@ -3109,7 +3220,7 @@ fn codex_payload(track_id: &str, prompt: Option<&str>) -> Value {
             track_id: track_id.to_string(),
             title: None,
             sort: Some(1.0),
-            cwd: "/workspace".into(),
+            cwd: cwd.to_string_lossy().into_owned(),
             prompt: prompt.map(ToOwned::to_owned),
             icon_bg: None,
             icon_fg: None,
@@ -3145,7 +3256,7 @@ fn claude_payload(boot: &Boot, track_id: &str, prompt: Option<&str>) -> Value {
             track_id: track_id.to_string(),
             title: None,
             sort: Some(1.0),
-            cwd: Some("/workspace".into()),
+            cwd: Some(boot._tmp.path().to_string_lossy().into_owned()),
             prompt: prompt.map(ToOwned::to_owned),
             icon_bg: None,
             icon_fg: None,
@@ -3390,6 +3501,7 @@ async fn seed_codex_card_for_operation(
     let env_for_output = env.clone();
     let prompt_for_tx = prompt.map(ToOwned::to_owned);
     let runtime_id_for_tx = runtime_id.clone();
+    let cwd_for_tx = boot._tmp.path().to_string_lossy().into_owned();
     let (card, term, _token) = write_in_tx_typed(boot.repo.as_ref(), move |tx| {
         Box::pin(async move {
             card_with_codex_create_tx(
@@ -3400,7 +3512,7 @@ async fn seed_codex_card_for_operation(
                 track_id.into(),
                 None,
                 None,
-                "/workspace".into(),
+                cwd_for_tx,
                 env,
                 prompt_for_tx,
                 None,

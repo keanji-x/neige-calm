@@ -144,6 +144,7 @@ pub struct Fixture {
     pub lifecycle: calm_server::execution_quiesce::ExecutionLifecycle,
     _socket: tempfile::TempDir,
     _root: tempfile::TempDir,
+    supervisor_environment: Vec<(String, std::ffi::OsString)>,
     server: SupervisorChild,
 }
 
@@ -242,12 +243,18 @@ impl Fixture {
         ]
     }
 
-    fn spawn(root: &Path, socket: &Path, key: &Path) -> SupervisorChild {
+    fn spawn(
+        root: &Path,
+        socket: &Path,
+        key: &Path,
+        environment: &[(String, std::ffi::OsString)],
+    ) -> SupervisorChild {
         let child = std::process::Command::new(env!("CARGO_BIN_EXE_osc-probe-child"))
             .arg("--execution-supervisor")
             .arg(root.join("journal"))
             .arg(socket)
             .arg(key)
+            .envs(environment.iter().map(|(key, value)| (key, value)))
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .spawn()
@@ -273,18 +280,28 @@ impl Fixture {
         })
         .await
         .expect("executor disconnect after owned-child reap");
-        self.server = Self::spawn(self._root.path(), &self.socket, &self.key);
+        self.server = Self::spawn(
+            self._root.path(),
+            &self.socket,
+            &self.key,
+            &self.supervisor_environment,
+        );
         Self::wait_available(self.lifecycle.engine().unwrap()).await;
     }
     /// Start the supervisor independently of any kernel or database lifetime.
     pub fn start() -> Self {
+        Self::start_with_environment(Vec::new())
+    }
+
+    /// Give the real supervisor its own operator inputs, independently of its kernel.
+    pub fn start_with_environment(environment: Vec<(String, std::ffi::OsString)>) -> Self {
         let root = tempfile::tempdir().unwrap();
         let socket = calm_test_sockets::socket_dir("typed-gate");
         let path = socket.path().join("control.sock");
         let secret = CapabilityToken::fresh().unwrap();
         let key = root.path().join("key.json");
         std::fs::write(&key, serde_json::to_vec(&secret).unwrap()).unwrap();
-        let server = Self::spawn(root.path(), &path, &key);
+        let server = Self::spawn(root.path(), &path, &key, &environment);
         Self {
             faults: Default::default(),
             key,
@@ -292,6 +309,7 @@ impl Fixture {
             lifecycle: Default::default(),
             _socket: socket,
             _root: root,
+            supervisor_environment: environment,
             server,
         }
     }

@@ -366,6 +366,13 @@ async fn ci_evidence_redacts_tokens_and_control_sequences_per_line() {
         .map(|(key, secret)| EnvGuard::set(key, secret))
         .collect();
     let cx = EvidenceFixture::boot().await;
+    cx.fx._project_environment.declare_values(
+        cx.fx._tmp.path(),
+        &secrets
+            .iter()
+            .map(|(key, value)| (*key, value.as_str()))
+            .collect::<Vec<_>>(),
+    );
     cx.seed_runs(&[cx.run(400, 1, "failure")]);
     let mut job = cx.job(4000, 400, 1, "failure");
     job["name"] = json!(format!("job \u{1b}[31m{}", secrets[0].1));

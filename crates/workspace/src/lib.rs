@@ -3,6 +3,7 @@ pub mod base;
 mod bounded_git;
 pub mod command;
 pub mod directory;
+pub mod environment;
 pub mod error;
 pub mod execution;
 pub mod git;

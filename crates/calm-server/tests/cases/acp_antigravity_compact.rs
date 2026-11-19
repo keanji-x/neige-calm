@@ -1,5 +1,5 @@
 //! Shared canonical maintenance goes through the same human REST command as other backends.
-use super::acp_compact::{compact, human_state, snapshot, turn, wait_phase};
+use super::acp_compact::{compact, create_assistant, human_state, snapshot, turn, wait_phase};
 use super::*;
 
 async fn agy(root: &Root) -> Stack {
@@ -58,21 +58,10 @@ async fn canonical_antigravity_compact_preserves_inputs_receipts_and_session_gra
     let stack = agy(&root).await;
     let (track, card) = planner(&stack).await;
     turn(&stack, &card, "remember context", 1).await;
-    let (status, body) = stack
-        .send_with(
-            axum::http::Request::builder()
-                .method("POST")
-                .uri(format!("/api/tracks/{track}/conversations"))
-                .header("x-calm-actor", "user")
-                .header("idempotency-key", uuid::Uuid::new_v4().to_string()),
-            Some(json!({"provider":"antigravity", "text":"Assistant context"})),
-        )
-        .await;
-    assert_eq!(status, StatusCode::CREATED, "{body}");
-    let assistant = body["id"].as_str().unwrap();
-    stack.wait_outcomes(assistant, 1).await;
-    completed(&stack, assistant).await;
-    for card in [&card, assistant] {
+    let assistant = create_assistant(&stack, &track, "antigravity", "Assistant context").await;
+    stack.wait_outcomes(&assistant, 1).await;
+    completed(&stack, &assistant).await;
+    for card in [&card, &assistant] {
         let runtime = stack.runtime(card).await;
         let native = runtime.session_id.clone().unwrap();
         let token =
@@ -126,10 +115,11 @@ async fn canonical_antigravity_compact_errors_cannot_complete_and_revoke_only_ow
     ] {
         let root = Root::new("unused");
         let stack = agy(&root).await;
-        let (_, first) = planner(&stack).await;
-        let (_, second) = planner(&stack).await;
+        let (track, first) = planner(&stack).await;
         turn(&stack, &first, "first", 1).await;
-        turn(&stack, &second, "second", 1).await;
+        let second = create_assistant(&stack, &track, "antigravity", "second").await;
+        stack.wait_outcomes(&second, 1).await;
+        completed(&stack, &second).await;
         let token = |native: &str| {
             std::fs::read_to_string(root.path().join(format!("{native}.test-token"))).unwrap()
         };
@@ -182,10 +172,11 @@ async fn canonical_antigravity_compact_empty_menu_refuses_before_write() {
 async fn canonical_antigravity_two_compacts_route_independent_results() {
     let root = Root::new("unused");
     let stack = agy(&root).await;
-    let (_, first) = planner(&stack).await;
-    let (_, second) = planner(&stack).await;
+    let (track, first) = planner(&stack).await;
     turn(&stack, &first, "first", 1).await;
-    turn(&stack, &second, "second", 1).await;
+    let second = create_assistant(&stack, &track, "antigravity", "second").await;
+    stack.wait_outcomes(&second, 1).await;
+    completed(&stack, &second).await;
     std::fs::write(root.path().join("scenario"), "shared-compact-wait").unwrap();
     for card in [&first, &second] {
         let (status, body) = compact(&stack, card).await;
@@ -223,16 +214,21 @@ async fn antigravity_close_leaves_routed_sibling_running_until_workspace_drain()
     let root = Root::new("unused");
     let stack = agy(&root).await;
     let (track, first) = planner(&stack).await;
-    let (_, sibling) = planner(&stack).await;
     turn(&stack, &first, "first", 1).await;
     let first_worker = stack.runtime(&first).await;
     let first_native = first_worker.session_id.unwrap();
     std::fs::write(root.path().join("scenario"), "resident-drain-sibling").unwrap();
-    assert_eq!(
-        stack.post_input(&sibling, "stay active").await.0,
-        StatusCode::OK,
-    );
+    let sibling = create_assistant(&stack, &track, "antigravity", "stay active").await;
     wait_file(&root, "resident-sibling-held").await;
+    assert_one_prompt_process(&root);
+    let pool = stack.repo().sqlite_db().unwrap();
+    let generations =
+        calm_truth::db::sqlite::acp_resident::for_worker(pool.read_pool(), &first_worker.id)
+            .await
+            .unwrap();
+    assert_eq!(generations.len(), 1);
+    let generation =
+        workspace_runtime::execution::ExecutionId::try_from(generations[0].clone()).unwrap();
 
     stack
         .state
@@ -245,12 +241,6 @@ async fn antigravity_close_leaves_routed_sibling_running_until_workspace_drain()
     assert_eq!(closes[0]["params"]["sessionId"], first_native);
     assert!(stack.outcomes(&sibling).await.is_empty());
 
-    let wiring = stack.state.planner_wiring();
-    let sweep = || calm_server::acp_planner::config::sweep_track(stack.repo(), &wiring.acp, &track);
-    assert!(matches!(
-        sweep().await,
-        Err(calm_server::error::CalmError::Conflict(_))
-    ));
     assert!(requests(&root, "session/cancel").is_empty());
     std::fs::write(root.path().join("release-resident-sibling"), "").unwrap();
     assert_eq!(
@@ -258,7 +248,22 @@ async fn antigravity_close_leaves_routed_sibling_running_until_workspace_drain()
         "completed"
     );
     assert_one_prompt_process(&root);
-    sweep().await.unwrap();
+    calm_server::acp_planner::config::sweep_track(
+        stack.repo(),
+        &stack.state.planner_wiring().acp,
+        &track,
+    )
+    .await
+    .unwrap();
+    let settled = calm_server::provider_execution::settlement(&pool, &generation)
+        .await
+        .unwrap()
+        .expect("shared generation has executor settlement");
+    assert!(
+        settled.descendants_complete(),
+        "workspace descendants must have exited: {settled:?}"
+    );
+    assert!(requests(&root, "session/cancel").is_empty());
     stack.shutdown().await;
 }
 

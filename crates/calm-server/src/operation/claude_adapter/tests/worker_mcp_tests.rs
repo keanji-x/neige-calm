@@ -5,20 +5,7 @@
 use super::*;
 use crate::mcp_server::wiring::claude_mcp_config_json;
 
-/// The argv `/bin/sh -c` gives the CLI for `command_line`, as the terminal runs it.
-fn shell_argv(command_line: &str) -> Vec<String> {
-    let output = std::process::Command::new("/bin/sh")
-        .arg("-c")
-        .arg(format!("set -- {command_line}; printf '%s\\0' \"$@\""))
-        .output()
-        .unwrap();
-    assert!(output.status.success(), "{output:?}");
-    String::from_utf8(output.stdout)
-        .unwrap()
-        .split_terminator('\0')
-        .map(ToOwned::to_owned)
-        .collect()
-}
+use crate::test_support::claude_argv::shell_argv;
 
 /// The one `--mcp-config` file before `--`, with `--strict-mcp-config` beside it and the kernel
 /// server's tools allowed without a prompt.

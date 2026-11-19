@@ -22,9 +22,20 @@ impl CodexAppServer {
         thread_id: &str,
         gate: &PreSendGate<'_>,
     ) -> Result<ThreadResult> {
+        self.request_gated("thread/read", thread_read_params(thread_id, true), gate)
+            .await
+    }
+
+    /// Read status with the caller's admission checked after the outbound queue.
+    pub async fn thread_read_gated(
+        &self,
+        thread_id: &str,
+        include_turns: bool,
+        gate: &PreSendGate<'_>,
+    ) -> Result<ThreadReadResponse> {
         self.request_gated(
             "thread/read",
-            json!({"threadId":thread_id,"includeTurns":true}),
+            thread_read_params(thread_id, include_turns),
             gate,
         )
         .await
@@ -127,4 +138,8 @@ fn thread_start_params(params: ThreadStartParams) -> Value {
         value["config"] = config;
     }
     value
+}
+
+fn thread_read_params(thread_id: &str, include_turns: bool) -> Value {
+    json!({"threadId":thread_id,"includeTurns":include_turns})
 }

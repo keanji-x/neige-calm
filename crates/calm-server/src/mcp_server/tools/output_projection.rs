@@ -26,9 +26,7 @@ pub(super) fn step_text(text: &str, selected: &str) -> String {
 mod tests {
     use super::*;
     use crate::operation::gate_lifecycle::GateStep;
-    use crate::operation::gate_process::{
-        GateEvidence, render_gate_wrapper, verdict_from_exit_code,
-    };
+    use crate::operation::gate_process::{GateEvidence, WrapperSteps, verdict_from_exit_code};
     use calm_types::observation::Observation;
     use std::io::Write;
 
@@ -50,7 +48,7 @@ mod tests {
             ],
         };
         let script = dir.path().join("gate.sh");
-        std::fs::write(&script, render_gate_wrapper(&evidence.steps)).unwrap();
+        std::fs::write(&script, WrapperSteps::Logged(&evidence.steps).render()).unwrap();
         let mut child = std::process::Command::new("/bin/sh")
             .arg(script)
             .current_dir(dir.path())

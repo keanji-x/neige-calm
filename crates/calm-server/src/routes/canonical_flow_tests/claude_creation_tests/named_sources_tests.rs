@@ -95,11 +95,38 @@ async fn canonical_claude_named_unconfirmed_launch_preserves_pending_context_wit
     let mut body = super::create_body(&app, &cookie).await;
     body["template_id"] = json!("small-change");
     body["first_message"] = json!(FIRST_BODY);
-    u7_nondelivery::hold(&fixture).await;
+    // This case needs a committed launch to recover. Crossing-time revocation
+    // now refuses earlier, before project evaluation or launch admission.
+    (fixture.repo.db())
+        .writer()
+        .execute(sqlx::query(
+            "CREATE TRIGGER revoke_u7_crossing AFTER INSERT ON claude_session_launches
+             BEGIN DELETE FROM area_members; END",
+        ))
+        .await
+        .unwrap();
+    // Later attempts reuse the unconfirmed launch, so revoke at their crossing
+    // instead. The first crossing has no launch and must reach admission above.
+    (fixture.repo.db())
+        .writer()
+        .execute(sqlx::query(
+            "CREATE TRIGGER revoke_named_retry_crossing AFTER UPDATE OF handle_state_json ON worker_sessions
+             WHEN EXISTS(SELECT 1 FROM claude_session_launches WHERE worker_session_id=NEW.id)
+              AND json_array_length(NEW.handle_state_json,'$.canonical_inputs.attempts')
+                > json_array_length(OLD.handle_state_json,'$.canonical_inputs.attempts')
+             BEGIN DELETE FROM area_members; END",
+        ))
+        .await
+        .unwrap();
     let created = post(&app, &cookie, "/api/tracks", "first", body.clone()).await;
     let track = created["id"].as_str().unwrap().to_owned();
     let (card, worker, _) = fixture.carrier(&track).await;
     u7_nondelivery::release_twice(&fixture, &app, &cookie, &track, &body, None).await;
+    (fixture.repo.db())
+        .writer()
+        .execute(sqlx::query("DROP TRIGGER revoke_named_retry_crossing"))
+        .await
+        .unwrap();
     let before = fixture.carrier(&track).await.2.canonical_inputs;
     let receipt = fixture.receipt(body["area_id"].as_str().unwrap()).await;
     // Admission retains unconfirmed launch evidence before the native CLI can run.

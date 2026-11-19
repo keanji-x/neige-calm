@@ -117,11 +117,12 @@ async fn resident_opencode_accepts_mcp_calls_only_from_the_credential_owner() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn retiring_resident_opencode_preserves_routed_sibling_until_it_finishes() {
+async fn retiring_resident_opencode_workspace_preserves_other_workspace_execution() {
     let root = Root::new("unused");
     let stack = boot(&root).await;
     let (track, first) = create(&stack).await;
-    let (_, sibling) = create(&stack).await;
+    let (sibling_track, sibling) = create(&stack).await;
+    assert_ne!(track, sibling_track);
     assert_eq!(
         turn(&stack, &first, "first", 1).await["status"],
         "completed"
@@ -132,12 +133,48 @@ async fn retiring_resident_opencode_preserves_routed_sibling_until_it_finishes()
         StatusCode::OK
     );
     wait_file(&root, "resident-sibling-held").await;
+    let prompts = requests(&root, "session/prompt");
+    assert_eq!(prompts.len(), 2);
+    assert_ne!(prompts[0]["_pid"], prompts[1]["_pid"]);
+    let pool = stack.repo().sqlite_db().unwrap();
+    let first_worker = stack.runtime(&first).await.id;
+    let sibling_worker = stack.runtime(&sibling).await.id;
+    let first_generations =
+        calm_truth::db::sqlite::acp_resident::for_worker(pool.read_pool(), &first_worker)
+            .await
+            .unwrap();
+    let sibling_generations =
+        calm_truth::db::sqlite::acp_resident::for_worker(pool.read_pool(), &sibling_worker)
+            .await
+            .unwrap();
+    assert_eq!(first_generations.len(), 1);
+    assert_eq!(sibling_generations.len(), 1);
+    assert_ne!(first_generations, sibling_generations);
+    let first_generation =
+        workspace_runtime::execution::ExecutionId::try_from(first_generations[0].clone()).unwrap();
     let wiring = stack.state.planner_wiring();
     let sweep = || calm_server::acp_planner::config::sweep_track(stack.repo(), &wiring.acp, &track);
-    assert!(matches!(
-        sweep().await,
-        Err(calm_server::error::CalmError::Conflict(_))
-    ));
+    sweep().await.unwrap();
+    let settled = calm_server::provider_execution::settlement(&pool, &first_generation)
+        .await
+        .unwrap()
+        .expect("target generation has executor settlement");
+    assert!(
+        settled.descendants_complete(),
+        "target workspace descendants must have exited: {settled:?}"
+    );
+    assert!(
+        calm_truth::db::sqlite::acp_resident::for_worker(pool.read_pool(), &first_worker)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        calm_truth::db::sqlite::acp_resident::for_worker(pool.read_pool(), &sibling_worker)
+            .await
+            .unwrap(),
+        sibling_generations
+    );
     assert!(stack.outcomes(&sibling).await.is_empty());
     assert!(requests(&root, "session/cancel").is_empty());
     std::fs::write(root.path().join("release-resident-sibling"), "").unwrap();
@@ -146,6 +183,7 @@ async fn retiring_resident_opencode_preserves_routed_sibling_until_it_finishes()
         "completed"
     );
     sweep().await.unwrap();
+    assert!(requests(&root, "session/cancel").is_empty());
     stack.shutdown().await;
 }
 
@@ -164,19 +202,16 @@ async fn keep_after_resident_sibling_drain(refuse_completion: bool) {
     use calm_types::harness::snapshot::CanonicalHarnessSnapshot;
     let root = Root::new("unused");
     let stack = boot(&root).await;
-    let (_, first) = stack
-        .create_canonical_track_with(json!({"planner_provider":"opencode"}))
-        .await;
-    let (_, sibling) = stack
+    let (track, first) = stack
         .create_canonical_track_with(json!({"planner_provider":"opencode"}))
         .await;
     super::acp_compact::turn(&stack, &first, "first", 1).await;
     std::fs::write(root.path().join("scenario"), "resident-drain-sibling").unwrap();
-    assert_eq!(
-        stack.post_input(&sibling, "sibling").await.0,
-        StatusCode::OK
-    );
+    let sibling = super::acp_compact::create_assistant(&stack, &track, "opencode", "sibling").await;
     wait_file(&root, "resident-sibling-held").await;
+    let initial = requests(&root, "session/prompt");
+    assert_eq!(initial.len(), 2);
+    assert_eq!(initial[0]["_pid"], initial[1]["_pid"]);
     let pool = stack.repo().sqlite_db().unwrap();
     if refuse_completion {
         let runtime = stack.runtime(&first).await;

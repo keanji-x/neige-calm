@@ -63,6 +63,40 @@ fn run_git<const N: usize>(repo: &Path, args: [&str; N]) {
     );
 }
 
+fn isolate_workspace_identity(root: &Path) {
+    let home = root.join("home");
+    let config = root.join("config");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::create_dir_all(&config).unwrap();
+    // This binary's tests hold ENV_LOCK; nextest additionally isolates each test process.
+    unsafe {
+        std::env::set_var("HOME", &home);
+        std::env::set_var("CODEX_HOME", home.join("codex"));
+        std::env::set_var("XDG_CONFIG_HOME", &config);
+        std::env::remove_var("DIRENV_CONFIG");
+    }
+}
+
+fn authorize_workspace_environment(source: &Path) {
+    std::fs::write(
+        source.join(".envrc"),
+        "export GH_TOKEN=workspace-worker-sentinel\nexport WORKSPACE_TOOL_MODE=worker\n\
+         export HTTP_PROXY=http://upper.invalid:8080\n\
+         export http_proxy=http://lower.invalid:8080\n",
+    )
+    .unwrap();
+    assert!(
+        Command::new("direnv")
+            .arg("allow")
+            .arg(source)
+            .env_remove("DIRENV_DIFF")
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+}
+
 struct Boot {
     repo: Arc<dyn Repo>,
     events: EventBus,
@@ -366,12 +400,26 @@ async fn worker_thread_start_carries_neige_mcp_exec_shell_env() {
         std::env::set_var("FAKE_CODEX_CAPTURE_REQUESTS", &capture_file);
     }
 
+    // Keep direnv's authorization database separate from the developer's HOME.
+    isolate_workspace_identity(capture.path());
     let boot = boot().await;
+    authorize_workspace_environment(boot._tmp.path());
     // `server`/`_mcp_tmp` own the bound MCP socket and must outlive the worker spawn.
     let (_dispatcher, server, _mcp_tmp) = spawn_dispatcher_with_mcp(&boot).await;
     write_codex_task_block(&boot, "worker-mcp-env-1", "prove worker exec-shell env").await;
 
     let thread_start = wait_for_worker_thread_start(&capture_file).await;
+
+    assert_eq!(
+        thread_start.pointer("/params/config/shell_environment_policy/set/GH_TOKEN"),
+        Some(&json!("workspace-worker-sentinel")),
+        "the worker must use its workspace's authorized directory environment"
+    );
+    assert_eq!(
+        thread_start.pointer("/params/config/shell_environment_policy/inherit"),
+        Some(&json!("none")),
+        "the shared daemon must not supply another project's environment"
+    );
 
     unsafe {
         std::env::remove_var("FAKE_CODEX_CAPTURE_REQUESTS");
@@ -429,4 +477,107 @@ async fn worker_thread_start_carries_neige_mcp_exec_shell_env() {
          cannot authenticate to the MCP socket and `neige task done` \
          fails. Captured request: {thread_start}"
     );
+}
+
+#[tokio::test]
+async fn codex_workspace_policy_overrides_global_filters_and_refuses_case_collisions() {
+    use calm_server::shared_codex_appserver::{SharedThreadStartParams, ThreadConfig};
+    let _guard = ENV_LOCK.lock().await;
+    let capture = TempDir::new().unwrap();
+    let requests = capture.path().join("policy-requests.ndjson");
+    isolate_workspace_identity(capture.path());
+    unsafe {
+        std::env::set_var("FAKE_CODEX_CAPTURE_REQUESTS", &requests);
+    }
+    let boot = boot().await;
+    authorize_workspace_environment(boot._tmp.path());
+    let track = boot
+        .repo
+        .track_get(boot.track_id.as_str())
+        .await
+        .unwrap()
+        .unwrap();
+    for (name, inherited) in [
+        (
+            "legacy-null-set",
+            json!({"include_only":["HOME"], "set":null}),
+        ),
+        (
+            "legacy",
+            json!({"include_only":["HOME"], "set":{"STALE_PROJECT_TOKEN":"synthetic-global-secret"}}),
+        ),
+        (
+            "canonical",
+            json!({"filters":{"*":"include","HOME":"include"}}),
+        ),
+        (
+            "collision",
+            json!({"set":{"gh_token":"synthetic-global-secret"}}),
+        ),
+        (
+            "collision-unicode",
+            json!({"set":{"GH_TOKEN":"synthetic-global-secret"}}),
+        ),
+        (
+            "canonical-casefold",
+            json!({"filters":{"gh_token":"include"},"set":null}),
+        ),
+        (
+            "canonical-casefold-unicode",
+            json!({"filters":{"GH_TOKEN":"include"},"set":null}),
+        ),
+    ] {
+        // This sidecar is the fake app-server's declared config/read contract.
+        std::fs::write(
+            boot.shared.sock_path().with_extension("config-read"),
+            serde_json::to_vec(&json!({"config":{"shell_environment_policy":inherited}})).unwrap(),
+        )
+        .unwrap();
+        let result = boot
+            .shared
+            .thread_start_mint_for_card(
+                boot.planner_card_id.as_str(),
+                SharedThreadStartParams {
+                    cwd: track.workspace.agent_cwd().into(),
+                    approval_policy: "never".into(),
+                    sandbox_mode: "workspace-write".into(),
+                    developer_instructions: None,
+                    config: ThreadConfig::NoMcp,
+                },
+            )
+            .await;
+        if name.starts_with("collision") {
+            let error = result.unwrap_err();
+            assert!(matches!(
+                error,
+                calm_server::error::CalmError::BadRequest(_)
+            ));
+            assert!(!error.to_string().contains("synthetic-global-secret"));
+            continue;
+        }
+        result.unwrap();
+        let raw = std::fs::read_to_string(&requests).unwrap();
+        let request = raw
+            .lines()
+            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+            .rfind(|row| row["method"] == "thread/start")
+            .unwrap();
+        let policy = &request["params"]["config"]["shell_environment_policy"];
+        assert_eq!(policy["set"]["GH_TOKEN"], "workspace-worker-sentinel");
+        assert_eq!(policy["set"]["HTTP_PROXY"], "http://upper.invalid:8080");
+        assert_eq!(policy["set"]["http_proxy"], "http://lower.invalid:8080");
+        assert_eq!(policy["inherit"], "none");
+        assert!(policy.get("filters").is_none());
+        assert_eq!(policy["exclude"], json!([]));
+        let admitted = policy["include_only"].as_array().unwrap();
+        let set = policy["set"].as_object().unwrap();
+        assert_eq!(admitted.len(), set.len());
+        for key in set.keys() {
+            assert!(admitted.contains(&json!(key)));
+        }
+        assert!(!admitted.contains(&json!("STALE_PROJECT_TOKEN")));
+    }
+    unsafe {
+        std::env::remove_var("FAKE_CODEX_CAPTURE_REQUESTS");
+    }
 }

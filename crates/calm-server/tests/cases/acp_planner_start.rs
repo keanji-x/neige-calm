@@ -79,7 +79,7 @@ async fn acp_pipe_failure_after_prepare_retires_original_batch_without_resend() 
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn acp_two_owner_decoy_is_untouched_by_bound_start_interrupt_and_shutdown() {
+async fn acp_workspace_two_owner_decoy_is_untouched_by_bound_start_interrupt_and_shutdown() {
     let root = Root::new("unused");
     let stack = boot(&root).await;
     let (_, a) = create(&stack).await;
@@ -130,6 +130,24 @@ async fn acp_two_owner_decoy_is_untouched_by_bound_start_interrupt_and_shutdown(
     assert_eq!(status, StatusCode::OK, "{body}");
     stack.wait_phase(&ra.id, "turn_running").await;
     let a_receipt = receipt(&stack, &ra.id).await;
+    let a_native = stack.runtime(&a).await.session_id.unwrap();
+    let a_pid = tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            if let Some(prompt) = requests(&root, "session/prompt")
+                .into_iter()
+                .find(|r| r["params"]["sessionId"] == a_native)
+            {
+                break prompt["_pid"].as_u64().unwrap();
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_ne!(
+        a_pid, b_pid,
+        "different workspaces own different ACP processes"
+    );
     let ha = stack.harness(&ra.id);
     assert_eq!(a_receipt.0, "shared-key");
     assert_eq!(b_receipt.0, "shared-key");

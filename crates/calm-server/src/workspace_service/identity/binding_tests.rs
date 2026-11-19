@@ -393,12 +393,18 @@ async fn workspace_identity_identical_facts_stale_probe_is_idempotent() {
 #[tokio::test]
 async fn workspace_identity_concurrent_terminal_hooks_converge_identical_facts() {
     use crate::{
-        db::sqlite::{DirectoryObservation, workspace_observation_snapshot},
+        db::{
+            RepoRead, RepoSyncDomainRaw,
+            sqlite::{DirectoryObservation, task_claim_pending_tx, workspace_observation_snapshot},
+        },
         ids::ActorId,
+        model::NewCard,
         operation::{
             ProviderAdapter, SqlxOperationRepo,
             terminal_adapter::{TerminalWorkerAdapter, TerminalWorkerOperationPayload},
         },
+        state::WriteContext,
+        track_report::{ReportDocOp, ReportEditTarget, TrackReportPayload},
     };
     use std::sync::Arc;
     let tmp = tempfile::tempdir().unwrap();
@@ -423,6 +429,77 @@ async fn workspace_identity_concurrent_terminal_hooks_converge_identical_facts()
         Arc::new(SqlxOperationRepo::new(repo.db().clone())),
     )
     .with_execution(execution.lifecycle.clone());
+    let report = repo
+        .card_create(NewCard {
+            track_id: current.id.clone(),
+            title: None,
+            kind: "track-report".into(),
+            sort: None,
+            payload: serde_json::to_value(TrackReportPayload::initial()).unwrap(),
+        })
+        .await
+        .unwrap();
+    let write = WriteContext::new(
+        repo.card_role_cache().clone(),
+        repo.track_area_cache().clone(),
+    );
+    for key in ["first", "second"] {
+        let declaration = serde_json::json!({
+            "key": key, "kind": "terminal", "command": "true",
+            "ready": true, "declared_by": "user",
+        });
+        let target = ReportEditTarget::resolve(repo.as_ref(), current.id.as_str())
+            .await
+            .unwrap();
+        let revision =
+            crate::track_report_read::load_report_doc_snapshot(repo.as_ref(), report.id.as_str())
+                .await
+                .unwrap()
+                .doc_rev;
+        crate::track_report::write::rest_user_block_op(
+            repo.as_ref(),
+            &ctx.events,
+            &write,
+            target,
+            ReportDocOp::UpsertBlock {
+                id: None,
+                kind: "task".into(),
+                content: calm_types::report_blocks::render_fence("task", &declaration),
+                if_rev: None,
+                if_doc_rev: Some(revision),
+                position: None,
+            },
+        )
+        .await
+        .unwrap();
+    }
+    let monitor = crate::task_context::TaskContextMonitor::new(
+        repo.clone(),
+        ctx.events.clone(),
+        write.clone(),
+    );
+    let mut tasks = Vec::new();
+    for key in ["first", "second"] {
+        let task = repo
+            .task_current_get(current.id.as_str(), key)
+            .await
+            .unwrap()
+            .unwrap();
+        let closure = monitor
+            .resolve_task_closure(current.id.as_str(), key)
+            .await
+            .unwrap();
+        let task_id = task.id.clone();
+        let claimed = crate::db::write_in_tx_typed(repo.as_ref(), move |tx| {
+            Box::pin(async move {
+                Ok(task_claim_pending_tx(tx, &task_id, 1, &closure.refs, false).await?)
+            })
+        })
+        .await
+        .unwrap();
+        assert_eq!(claimed, 1);
+        tasks.push(task);
+    }
     let adapter = TerminalWorkerAdapter::new(
         repo.clone(),
         repo.card_role_cache().clone(),
@@ -438,8 +515,8 @@ async fn workspace_identity_concurrent_terminal_hooks_converge_identical_facts()
         })
         .unwrap()
     };
-    let first = payload("first");
-    let second = payload("second");
+    let first = payload(&tasks[0].id);
+    let second = payload(&tasks[1].id);
     let first_op = super::legacy_tests::pending_terminal_operation(&ctx, &first).await;
     let second_op = super::legacy_tests::pending_terminal_operation(&ctx, &second).await;
     let (a, b) = tokio::join!(

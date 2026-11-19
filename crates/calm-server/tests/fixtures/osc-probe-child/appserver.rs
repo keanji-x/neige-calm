@@ -288,6 +288,8 @@ impl WedgeControl {
 ///   * `<sock>.config-read`  — verbatim JSON-RPC `result` for `config/read`.
 ///   * `<sock>.account-read` — verbatim JSON-RPC `result` for `account/read` (#1817);
 ///     absent ⇒ an API-key account, i.e. logged in.
+///   * `<sock>.thread-reads` — results keyed by the requested thread id. A test
+///     declares which persisted threads its new daemon has not loaded yet.
 ///   * `<sock>.model-list-no-answer` / `<sock>.config-read-no-answer` —
 ///     present ⇒ that method is read and then never answered, modelling a
 ///     daemon that has accepted the request and stalled. Every other method
@@ -468,10 +470,18 @@ async fn serve_conn(
                 .await?;
             }
             "thread/read" => {
+                let scripted =
+                    ReadFixtures::result_or(&reads.sock.with_extension("thread-reads"), json!({}));
+                let thread = req["params"]["threadId"].as_str().unwrap();
                 send_result(
                     &mut write,
                     &id,
-                    ReadFixtures::result_or(&reads.sock.with_extension("thread-read"), json!({})),
+                    scripted.get(thread).cloned().unwrap_or_else(|| {
+                        ReadFixtures::result_or(
+                            &reads.sock.with_extension("thread-read"),
+                            json!({}),
+                        )
+                    }),
                 )
                 .await?;
             }
